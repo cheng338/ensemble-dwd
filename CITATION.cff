@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "Please cite this software and the dissertation describing its ensemble method."
+type: software
+title: "ensemble-dwd: Binary Ensemble Kernel Distance Weighted Discrimination"
+version: 0.1.1
+authors:
+  - family-names: Cheng
+    given-names: Chang
+abstract: >-
+  Binary classification using uniform subsampling without replacement,
+  kernel DWD fits, raw decision-value consensus selection, and a final
+  kernel DWD refit.
+references:
+  - type: thesis
+    title: "Overcoming the Curses of Dimensionality and Kernelization: Scalable DWD and Supervised NMF"
+    authors:
+      - family-names: Cheng
+        given-names: Chang
+    institution:
+      name: Purdue University
+    year: 2026
+    month: 8
