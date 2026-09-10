@@ -4,11 +4,14 @@ Archive keys may be x_train/y_train/x_test/y_test (standard Keras format),
 X_train/y_train/X_test/y_test, or X/y. Images may be flattened or have shape
 (n, 28, 28). With X/y, a stratified 25% test split is made before CV. A supplied
 test split remains held out. Data are never downloaded.
+The CLI holds final fitting and test scoring when the selected lambda/gamma
+is at or beyond a coarse endpoint. No grid is extended automatically.
 
 Preview: python examples/tune_mnist.py --refine
 Run: python examples/tune_mnist.py --data mnist.npz --refine --run --jobs 1
 """
 import argparse
+from copy import deepcopy
 from pathlib import Path
 import re
 import sys
@@ -157,14 +160,29 @@ def report_search(label, search):
     return best
 
 
+def boundary_parameters(parameters, grid, *, regularization='lambd', prefix='ensemble__'):
+    """Identify selected regularization/gamma values at or beyond coarse endpoints.
+
+    Values outside the coarse range can arise in the optional DWD local search.
+    Sampling and selection fractions never trigger this review.
+    """
+    names = (prefix + regularization, prefix + 'gamma')
+    return [name for name in names
+            if parameters[name] <= min(grid[name]) or parameters[name] >= max(grid[name])]
+
+
 def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         run_dir, *, jobs=1, error_policy='nan', refine=False,
-                        settings=None, verbose=1):
+                        settings=None, verbose=1, selection_review=None):
     """Checkpoint completed CV stages before fitting the selected bare pipeline.
 
     ``run_dir`` must be newly created by ``new_run_directory``. Fold indices
     refer to the training arrays in their original order. No automatic fallback
     or resume is performed, and the held-out set is scored only after final fit.
+    An optional selection_review(parameters) callback runs after the selection
+    checkpoint and before final fitting. Return a list of review reasons to
+    hold both final fitting and held-out scoring, or None/an empty list to
+    continue. The default leaves the DWD workflow unchanged.
     """
     run_dir = Path(run_dir).resolve()
     failure_dir = run_dir / 'failures'
@@ -173,6 +191,8 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     jobs = positive_int(jobs)
     if error_policy not in ('nan', 'raise'):
         raise ValueError("error_policy must be 'nan' or 'raise'.")
+    if selection_review is not None and not callable(selection_review):
+        raise TypeError('selection_review must be callable or None.')
     folds = [(np.asarray(train, dtype=np.int64), np.asarray(test, dtype=np.int64))
              for train, test in folds]
     identity = {'training': data_fingerprint(X_train, y_train),
@@ -181,6 +201,7 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
         'schema_version': 1, 'data': identity,
         'folds': [{'train': train, 'validation': test} for train, test in folds],
         'settings': {'jobs': jobs, 'error_policy': error_policy, 'refine': refine,
+                     'selection_review_enabled': selection_review is not None,
                      'scoring': 'accuracy', 'native_threads': 1,
                      'parameters': parameter_snapshot(pipeline),
                      'user': {} if settings is None else settings},
@@ -234,6 +255,27 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                          'parameters': parameters,
                          'mean_cv_accuracy': float(search.cv_results_['mean_test_score'][selected])}
             write_json_atomic(run_dir / 'selection.json', {**metadata, **selection})
+            review = None
+            if selection_review is not None:
+                phase = 'parameter_review'
+                write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
+                reasons = selection_review(deepcopy(parameters))
+                reasons = [] if reasons is None else reasons
+                if not isinstance(reasons, (list, tuple)) or any(
+                        not isinstance(reason, str) or not reason.strip() for reason in reasons):
+                    raise ValueError('selection_review must return a list of nonempty strings or None.')
+                review = {**selection, 'state': 'needs_review' if reasons else 'accepted',
+                          'reasons': list(reasons), 'final_refit_performed': False,
+                          'held_out_scored': False}
+                write_json_atomic(run_dir / 'review.json', review)
+                if reasons:
+                    write_json_atomic(run_dir / 'status.json', {
+                        'state': 'needs_review', 'phase': phase, 'reasons': list(reasons),
+                        'final_refit_performed': False, 'held_out_scored': False}, replace=True)
+                    print('CV selection requires review: ' + '; '.join(reasons))
+                    print('Final fitting and held-out scoring were not run. Completed CV results are saved.')
+                    return {'coarse_search': coarse, 'selected_search': search, 'model': None,
+                            'completed': None, 'selection': selection, 'review': review, 'run_dir': run_dir}
             phase = 'final_refit'
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
             start = perf_counter()
@@ -268,7 +310,7 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     print(f'Final refit seconds: {refit_seconds:.4f}')
     print(f'Held-out test accuracy: {test_accuracy:.4f}')
     return {'coarse_search': coarse, 'selected_search': search, 'model': final_model,
-            'completed': completed, 'run_dir': run_dir}
+            'completed': completed, 'selection': selection, 'review': review, 'run_dir': run_dir}
 
 
 def main():
@@ -304,6 +346,7 @@ def main():
     print('The final selected candidate adds 6 DWD fits for its full-training refit.')
     print('These are upper bounds before base-stage cache reuse. Completed CV stages '
           'are saved before final refit; unexpected failures stop the search.')
+    print('Lambda/gamma endpoint winners hold final fitting/test scoring for training-only review.')
     if not args.run:
         print('Prepared only. Supply --data PATH --run to start; no data were loaded.')
         return
@@ -324,12 +367,17 @@ def main():
     folds = list(StratifiedKFold(5, shuffle=True, random_state=42).split(X_train, y_train))
     print(f'Training rows: {len(X_train)}; held-out test rows: {len(X_test)}.')
     print(f'Run records: {run_dir}')
-    run_search_workflow(
+    result = run_search_workflow(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
         jobs=args.jobs, error_policy=args.error_score, refine=args.refine,
+        selection_review=lambda parameters: boundary_parameters(parameters, grid),
         settings={'data_path': str(args.data.resolve()), 'digits': args.digits,
                   'cache_dir': cache_dir, 'store_base_estimators': False},
     )
+    if result['model'] is None:
+        print('Review lambda/gamma endpoints using training-only CV: ' + ', '.join(result['review']['reasons']))
+        print(f"Saved selection: {run_dir / 'selection.json'}; review: {run_dir / 'review.json'}")
+        print('Adjust the explicit grid if warranted before running a new search; the test set was not scored.')
 
 
 if __name__ == '__main__':
