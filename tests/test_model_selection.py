@@ -1,6 +1,7 @@
 import unittest
 
-from ensemble_dwd.model_selection import mnist_param_grid
+from sklearn.model_selection import ParameterGrid
+from ensemble_dwd.model_selection import mnist_param_grid, mnist_svm_param_grid
 
 
 class ParameterGridTests(unittest.TestCase):
@@ -25,6 +26,29 @@ class ParameterGridTests(unittest.TestCase):
         for prefix in [None, 1, ["ensemble__"]]:
             with self.subTest(prefix=prefix), self.assertRaises(TypeError):
                 mnist_param_grid(prefix)
+
+    def test_svm_grid_matches_geometry_and_candidate_budget(self):
+        dwd = mnist_param_grid()
+        svm = mnist_svm_param_grid()
+        self.assertEqual(set(svm), {"C", "gamma", "theta", "sv_selection_ratio"})
+        self.assertEqual(svm["C"], [10.0 ** k for k in range(-4, 5)])
+        self.assertEqual(len(svm["C"]), len(dwd["lambd"]))
+        for name in ("gamma", "theta", "sv_selection_ratio"):
+            self.assertEqual(svm[name], dwd[name])
+        self.assertEqual(len(ParameterGrid(svm)), 810)
+        self.assertEqual(len(ParameterGrid(svm)), len(ParameterGrid(dwd)))
+
+    def test_svm_prefix_and_isolation(self):
+        grid = mnist_svm_param_grid("ensemble__")
+        self.assertEqual(grid, {"ensemble__" + k: v
+                                for k, v in mnist_svm_param_grid().items()})
+        for values in grid.values():
+            values.clear()
+        self.assertEqual(len(mnist_svm_param_grid()["gamma"]), 9)
+        self.assertEqual(len(mnist_param_grid()["gamma"]), 9)
+        for prefix in (None, 1, ["ensemble__"]):
+            with self.subTest(prefix=prefix), self.assertRaises(TypeError):
+                mnist_svm_param_grid(prefix)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,171 @@
+# Ensemble kernel SVM comparator
+
+`EnsembleKernelSVM` provides an RBF SVM comparison method alongside Chang
+Cheng's ensemble kernel DWD. It uses scikit-learn's compiled LIBSVM `SVC`
+implementation for every base learner and the final fit. No new numerical
+dependency is required.
+
+## Method
+
+1. Draw M subsets, each of size `max(2, floor(theta * n))`, uniformly without
+   replacement conditional on containing both classes. Different subsets may
+   overlap. This is the same sampler as ensemble DWD.
+2. Fit one RBF SVC to each subset and calculate their arithmetic mean raw
+   decision value g on every row supplied to this fit.
+3. Encode the ordered binary labels as -1 and +1 and rank by
+   `abs(y_signed * g - 1)`. Keep `floor(sv_selection_ratio * n)` observations,
+   resolving exact ties by input row order.
+4. Fit a fresh RBF SVC on the selected observations. Its predictions are the
+   ensemble's predictions; the base models are used for selection only.
+
+The signed score implements a ranking around Mao et al.'s condition
+`y * g ≈ 1`. Mao's paper instead uses a squared-loss kernel coefficient fit
+after selection. This package uses a hinge-loss SVC refit and independently
+drawn, potentially overlapping subsets. It is an SVI-inspired comparison
+variant, not an exact reproduction of Mao's algorithm. The paper does not
+specify the retained-fraction grid used here. [Mao et al., *Fast Kernel SVM
+Training via Support Vector Identification*, ICPR 2016, Eqs. 1–9](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
+
+The original `binary.py` and the dissertation's SVM description use the
+unsigned score `abs(abs(g) - 1)`. The signed rule is an explicit methodological
+revision for this comparator. Those scores coincide on correctly classified
+observations and can differ on misclassified observations. Existing results
+from the unsigned implementation must retain that label. DWD continues to
+select by `abs(g)`; its method is unchanged.
+
+Neither rule is an exact detector of the full-data SVM's support vectors.
+Accuracy and time advantages require measurement. The matched architecture
+is base classifiers, selection, and a final classifier of the same family.
+
+## Defaults and regularization
+
+| Parameter | SVM default | Relationship to ensemble DWD |
+|---|---:|---|
+| M | 5 | Same |
+| theta | 0.1 | Same |
+| sv_selection_ratio | 0.3 | Same |
+| random_state | 42 | Same sampler and repeatable subsets |
+| gamma | `"scale"` | Resolve once from this fit's input, then share |
+| prediction_batch_size | 1024 | Same |
+| store_base_estimators | True | Same inspectable default |
+| cache_dir | None | Optional reuse of deterministic base fits |
+| C | 1.0 | Native SVC convention; independently tuned |
+| tol | 1e-3 | LIBSVM stopping tolerance |
+| max_iter | -1 | No iteration cap; standard SVC default |
+| shrinking | True | LIBSVM optimization heuristic |
+| cache_size | 200 MB | Per-active-SVC kernel cache |
+
+SVC minimizes `0.5 * ||f||_H**2 + C * sum(hinge_loss)`, with a separate,
+unregularized intercept. The same numerical C is passed to every base and
+final fit, as in the original SVM script. There is no automatic rescaling
+by sample size. Equivalently, the mean-loss form has squared-norm coefficient
+`1 / (2 * C * n_fit)`. Thus C is not interchangeable with DWD's `lambd`, and
+sharing C across different-sized subsets is different from sharing a
+mean-loss norm coefficient. [SVC mathematical formulation](https://scikit-learn.org/stable/modules/svm.html#svc).
+
+`gamma="scale"` is calculated from the full input of the current binary fit,
+which must be a training fold during CV. It is not recalculated on the sampled
+or selected subsets. In OvO, it resolves separately in each binary pair;
+specify a numerical gamma to share it across pairs. The first SVM release
+supports dense RBF feature inputs; precomputed and other kernels are excluded
+from this estimator's contract.
+
+## External tuning and matched budgets
+
+`mnist_svm_param_grid(prefix="")` returns fresh lists:
+
+| Parameter | Candidates | Count |
+|---|---|---:|
+| C | `10**e`, e = -4, -3, ..., 4 | 9 |
+| gamma | `10**e`, e = -8, -7, ..., 0 | 9 |
+| theta | 0.1, 0.2 | 2 |
+| sv_selection_ratio | 0.1, 0.15, 0.2, 0.25, 0.3 | 5 |
+
+M remains fixed at the estimator default 5 unless explicitly changed. Both
+SVM and DWD presets have 810 candidates and 4,050 ensemble fits with fivefold
+CV. The C grid spans eight orders of magnitude, includes C=1, and avoids
+automatically starting at the very large extreme of the dissertation grid.
+It is a coarse starting range for scaled MNIST, not a universal optimum or a
+runtime guarantee. Extend an endpoint or refine between neighboring values
+when training-only CV warrants it. Retuning C and DWD lambda independently
+is necessary for a meaningful comparison; equal grid sizes do not imply
+equivalent regularization or equal wall-clock cost.
+
+```python
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from ensemble_dwd import EnsembleKernelSVM, mnist_svm_param_grid
+
+pipeline = Pipeline([
+    ("scale", StandardScaler()),
+    ("ensemble", EnsembleKernelSVM(
+        cache_dir=".ensemble-svm-cache", store_base_estimators=False,
+    )),
+])
+search = GridSearchCV(
+    pipeline, mnist_svm_param_grid("ensemble__"),
+    cv=StratifiedKFold(5, shuffle=True, random_state=42),
+    scoring="accuracy", n_jobs=2, pre_dispatch=2, error_score="raise",
+)
+# Supply only training data. Keep the final test set held out.
+# search.fit(X_train, y_train)
+```
+
+This minimal snippet stops on all fit errors. A broad grid may contain
+ineligible single-class selections; the checkpointed example below can
+exclude those specific candidates while allowing unexpected errors to stop
+the run. Setting ordinary GridSearchCV's `error_score` to NaN alone would
+also hide unrelated fit errors, so it is not the same policy.
+
+The helper and estimator never run internal CV. See
+`examples/tune_mnist_svm.py` for an explicit, checkpointed search on a local
+MNIST archive. Its default invocation only previews the budget. The DWD
+example's lambda-specific optional refinement is not used for SVM.
+
+Before final fitting or held-out scoring, the example checks the selected C
+and gamma against their coarse search endpoints. A boundary winner preserves the CV
+and selection records, writes `review.json`, and sets `status.json` to
+`needs_review`. Expand the indicated range and compare candidates using
+training-only CV. The example does not automatically expand the grid.
+Sampling and retention fractions keep their specified ranges. The binary DWD
+example applies the corresponding check to lambda and gamma. This review
+policy belongs to the external examples; the estimators never tune or change
+their own parameters.
+
+## Parallel work, caching and diagnostics
+
+Base fits are sequential inside one binary estimator. Parallelize external
+GridSearchCV candidates/folds, or use `OvOClassifier(..., n_jobs=...)` for
+pair-level parallelism in a standalone multiclass fit. Avoid running both
+levels with unrestricted worker counts. A single LIBSVM SVC does not expose
+an n_jobs setting; additional BLAS threads do not parallelize that solver.
+
+Changing only the selection ratio can reuse the same base models and margins
+through the process-safe disk cache. The final SVC is always fitted anew.
+Cache identity includes the training rows/labels, sampled rows, SVM settings
+and runtime/source identity; it cannot share DWD results or results from a
+different CV fold. A custom subclass or random_state=None bypasses caching.
+The optional disk cache and SVC's in-memory `cache_size` are distinct.
+
+Budget worker memory for feature copies, retained models, scoring buffers
+and each active SVC's cache. `store_base_estimators=False` reduces retained
+models while preserving selection and diagnostic arrays. Prediction batches
+limit transient query storage. `prediction_batch_size` accepts `None` or a
+positive integer and can be changed after fitting. Both `predict` and
+`decision_function` revalidate it before allocating output or calling the
+final SVC. Invalid values raise `ValueError` without invalidating the fitted
+model; set a valid value to resume prediction.
+
+`n_iter_`, `fit_status_` and `converged_` record each of the M base fits and
+the final fit, with the final fit last. `support_counts_` and `n_support_`
+record support-vector counts. Standard SVC convergence warnings remain
+visible. A user-specified iteration cap may return an unconverged classifier;
+it must not be reported as a converged result. Cached unconverged base fits
+must retain their diagnostics and warnings.
+
+An insufficient or single-class selection raises `IneligibleSelectionError`,
+as it does for DWD. No extra points are silently inserted and no different
+classifier is substituted. Failed refits clear the fitted state. The final
+SVC's own predict method is used, including its behavior at an exact zero
+decision value.

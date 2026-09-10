@@ -1,83 +1,96 @@
-# ensemble-dwd 0.2.1 validation
+# ensemble-dwd 0.3.0 validation
 
-The release source passed **123 tests** under the requested `py12_df`
-environment using conventional CPython 3.12 and the optimized DWD 1.3.5
-compiled Windows wheel. Native numerical threads were limited to one for
-the test run. The suite completed in 24.189 seconds with no failed or skipped
-tests. These are functional and concurrency checks, not an accuracy benchmark.
+The unpublished 0.3.0 candidate adds the signed-margin ensemble SVM comparator
+and repairs validation of prediction batch sizes changed after fitting. The
+binary tuning examples hold final fitting and held-out scoring when the
+selected regularization or gamma lies at or beyond a coarse search endpoint.
+The generic workflow makes this external review optional; the DWD and SVM
+binary command-line examples both enable it. Neither estimator performs CV.
 
-## Dependency identity
+## Environment and dependency
 
-The installation metadata pins the following cheng338/dwd 1.3.5 artifacts:
+Local validation uses Windows, Anaconda CPython 3.12.14 in `py12_df`, NumPy
+2.5.2, SciPy 1.18.0, scikit-learn 1.9.0, joblib 1.5.3, and the published
+optimized cheng338/dwd 1.3.5 dependency with its compiled Windows helper.
+Imports are isolated from older ensemble installations in that environment.
+Native numerical threads are limited to one for the functional tests.
+
+The metadata pins these optimized DWD artifacts:
 
 | Artifact | SHA-256 |
 |---|---|
 | `dwd-1.3.5-cp311-abi3-win_amd64.whl` | `f792d5fa251c57526990221c7d573274e50a99da60e5f508f51515f8f622435e` |
 | `dwd-1.3.5-py3-none-any.whl` | `45ec234a373f6080d805089bb24fa869e6de57a1660c3988aeba6ae2c529cb13` |
 
-Conventional Windows AMD64 CPython uses the compiled helper. Other supported
-platforms use the portable wheel. The dependency update provides the tested
-kernel numerical recovery while preserving the DWD objective and free
-intercept. The README documents a separate portable-wheel installation for
-free-threaded Windows Python; that interpreter configuration was not tested
-locally.
+The DWD dependency and its objective, unregularized intercept, and stopping
+defaults are unchanged by this repair. The shared DWD, cache, multiclass and
+model-selection implementation files are byte-identical to the candidate
+used in the completed three-pair study.
 
-## Cache synchronization repair
+## Regression coverage
 
-The original implementation initialized an empty lock file before acquiring
-its lock. If another worker acquired byte zero first, the pending initialization
-flush could fail with `PermissionError`. The repaired function opens or creates
-the lock file and locks byte zero without writing file contents. Windows
-supports locking a region beyond EOF; POSIX flock also supports empty files.
-Existing one-byte lock files remain compatible.
+All **159 source tests passed** in 38.747 seconds, with no failures or skips.
+The three-pair source prediction check also passed, preserving all labels
+and scores exactly and verifying 171 frozen-file identities before and after.
+Installed-wheel test receipts and distribution hashes accompany the built
+release artifacts.
 
-Four real Windows multiprocessing regressions cover:
+The original candidate reproduced the post-fit batching defect. Regression
+checks cover negative, zero, boolean, floating-point, nonfinite and string
+batch sizes; both prediction methods must reject them before calling SVC.
+Restoring a valid size preserves the fitted state and resumes prediction.
+Positive Python/NumPy integers and `None` retain the same labels and scores,
+including when changed through a scikit-learn Pipeline.
 
-- 32 simultaneous workers on one new cache key: exactly one computation,
-  31 cache hits, and identical returned results.
-- An empty lock file held by another process: the contender waits without
-  attempting the unsafe initialization write.
-- Compatibility with existing nonempty lock files.
-- Operating-system lock release after an owned worker exits unexpectedly.
+The full suite also covers independently reconstructed real SVC base and
+final fits, signed selection, arbitrary labels, exact ties and rounding,
+shared C/gamma, cold/warm cache reuse and warnings, failed-refit cleanup,
+real multi-worker GridSearchCV with fold-local scaling, all 45 ten-class OvO
+pairs, scikit-learn estimator checks, and Windows cache concurrency.
+Workflow checks verify that a boundary hold saves CV/selection records and
+performs neither final fitting nor held-out scoring; valid review and default
+workflow paths still complete. Unexpected failures remain explicit.
 
-The original 0.2.0 initialization failure was reproduced separately before the
-repair. The earlier repair validation passed 121 tests: 117 existing tests
-plus those four concurrency regressions. This release adds two metadata checks
-preventing an obsolete README wheel filename or inconsistent/unhashed DWD
-dependency links, bringing the source suite to 123.
+## Completed MNIST study and prediction checks
 
-`estimator.py`, `multiclass.py` and `model_selection.py` are byte-identical to
-0.2.0. The cache module differs only in lock acquisition initialization.
-Within the same DWD dependency and numerical settings, the repair preserves
-sampled rows, consensus scores, selected observations and predictions. An
-earlier MNIST cold/warm cache comparison verified these identities; this
-release validation did not rerun MNIST or use official test images.
+The five-classifier study used 20% of each pair's official MNIST training
+partition, fivefold training-only CV and the full corresponding official test
+partition. Its detailed record is in
+[the three-pair validation summary](docs/mnist-validation-0.3.0.md).
+The frozen pre-repair source, models, outputs and protocol are preserved.
 
-## Retained functionality
+The batching regression reuses the three already fitted SVM ensembles. It
+compares labels and float64 decision values byte for byte with the saved
+results at several valid batch sizes, checks invalid values, and checks exact
+recovery after restoring a valid value. This is an inference regression,
+without fitting or parameter selection. Source and installed-wheel checks
+also verify the frozen source/data and all 15 model/output identities.
 
-The suite covers binary parameter sharing, the unregularized-intercept DWD
-configuration, exact-M conditional sampling without replacement, M=1 score
-shape, deterministic subset seeds, absolute-mean consensus ranking and a
-fresh selected-set final fit. Invalid selections propagate explicitly instead
-of substituting another classifier.
+This does not establish a universal accuracy or speed advantage. The SVM
+variant differs from the dissertation's unsigned selection rule; those
+historical results are not interchangeable. All final SVC fits completed;
+the study's DWD fits reached their configured 100-iteration cap and did not
+claim numerical convergence.
 
-Multiclass checks cover all 45 class pairs, pair-only training data, label
-orientation, maximum-wins voting, exact ties, string and large integer labels,
-serial/parallel parity, nested GridSearchCV tuning and fold-local scaling.
-Cache tests verify reuse across retention ratios, distinct data/fold keys,
-checksum handling and lean retained models. Search-workflow tests preserve
-completed selection records if final fitting fails.
+## Performance review and distribution
 
-Normal upgrades produce fresh source-based cache keys. No old cache or
-checkpoint is silently treated as belonging to the new release. The estimator
-still performs no internal cross-validation; supplied examples use external
-GridSearchCV.
+A bounded profile on the three saved models' training rows found roughly
+1–2 ms of prediction-wrapper overhead. Removing batching saved less than
+1 ms on those cases, so the default stays at 1024. Base fits are already
+reused across selection ratios. No additional solver rewrite or nested
+parallelism was justified by these measurements.
 
-Built-wheel checks and artifact hashes are recorded with the release
-artifacts. Cross-platform GitHub Actions results are separate from the local
-Windows validation above. Historical numerical comparisons remain in
-[the 0.2.0 record](docs/validation-0.2.0.md) and
-[the 0.1.1 record](docs/validation-0.1.1.md).
+The wheel and source distribution are checked against the release source;
+the source distribution includes the changelog, tests, examples and method
+documentation. Local results do not substitute for the configured Linux/
+Windows and Python-version GitHub Actions matrix. Free-threaded Python has
+not been runtime-tested locally.
 
+An observed NumPy shape-assignment deprecation warning originates in
+joblib 1.5.3 array deserialization and also reproduces without either DWD
+package. It does not change the verified loaded arrays or predictions.
+
+Historical validation remains in the [0.2.1](docs/validation-0.2.1.md),
+[0.2.0](docs/validation-0.2.0.md) and [0.1.1](docs/validation-0.1.1.md) records.
 Chang Cheng's authorship, private research status and undecided software
 license remain unchanged.
