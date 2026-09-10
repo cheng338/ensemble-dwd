@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 import warnings
@@ -15,7 +16,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from ensemble_dwd import IneligibleSelectionError
+from ensemble_dwd import IneligibleSelectionError, mnist_param_grid
 
 
 EXAMPLE_PATH = Path(__file__).resolve().parents[1] / 'examples' / 'tune_mnist.py'
@@ -170,12 +171,126 @@ class SearchWorkflowTests(unittest.TestCase):
 
     def test_all_invalid_search_preserves_complete_cv_results(self):
         with self.assertRaisesRegex(ValueError, 'No candidate'):
-            self.run_workflow({'ensemble__mode': ['ineligible']})
+            self.run_workflow({'ensemble__mode': ['ineligible']},
+                              selection_review=lambda _: self.fail('An invalid candidate reached review.'))
         self.assertEqual(self.read('coarse-cv.json')['fully_valid'], [False])
         self.assertIsNone(self.read('coarse-cv.json')['selected_parameters'])
         self.assertEqual(self.read('status.json')['state'], 'failed')
         self.assertFalse((self.run_dir / 'selection.json').exists())
         self.assertNotIn(('fit', 10), ControlledClassifier.events)
+
+    def test_selection_review_holds_refit_and_test_after_durable_cv(self):
+        called = []
+
+        def review(parameters):
+            self.assertTrue((self.run_dir / 'coarse-cv.json').is_file())
+            self.assertEqual(self.read('selection.json')['parameters'], parameters)
+            called.append(parameters.copy())
+            parameters['ensemble__mode'] = 'numerical'  # A callback cannot alter the saved selection.
+            return ['ensemble__C', 'ensemble__gamma']
+
+        result = self.run_workflow({'ensemble__mode': ['good']}, selection_review=review)
+        self.assertEqual(called, [{'ensemble__mode': 'good'}])
+        self.assertEqual(ControlledClassifier.events.count(('fit', 8)), 5)
+        self.assertNotIn(('fit', 10), ControlledClassifier.events)
+        self.assertNotIn(('predict', 4), ControlledClassifier.events)
+        self.assertIsNone(result['model'])
+        self.assertIsNone(result['completed'])
+        self.assertEqual(result['selection']['parameters'], {'ensemble__mode': 'good'})
+        self.assertEqual(self.read('review.json'), result['review'])
+        self.assertEqual(self.read('review.json')['reasons'], ['ensemble__C', 'ensemble__gamma'])
+        self.assertEqual(self.read('status.json')['state'], 'needs_review')
+        self.assertEqual(self.read('status.json')['phase'], 'parameter_review')
+        self.assertFalse(self.read('status.json')['held_out_scored'])
+        self.assertFalse(self.read('status.json')['final_refit_performed'])
+        self.assertFalse((self.run_dir / 'refit.json').exists())
+        self.assertFalse((self.run_dir / 'completed.json').exists())
+        self.assertEqual(self.failures(), [])
+
+    def test_empty_selection_review_continues_existing_final_workflow(self):
+        for index, response in enumerate(([], None)):
+            with self.subTest(response=response):
+                self.run_dir = new_run_directory(Path(self.temporary.name) / f'accepted-{index}')
+                ControlledClassifier.events = []
+                result = self.run_workflow({'ensemble__mode': ['good']},
+                                           selection_review=lambda _: response)
+                self.assertEqual(self.read('review.json')['state'], 'accepted')
+                self.assertEqual(ControlledClassifier.events.count(('fit', 10)), 1)
+                self.assertEqual(ControlledClassifier.events.count(('predict', 4)), 1)
+                self.assertEqual(result['completed']['held_out_accuracy'], 1.)
+                self.assertEqual(self.read('status.json')['state'], 'completed')
+
+    def test_review_exception_preserves_cv_and_records_correct_failure_phase(self):
+        def failed_review(parameters):
+            raise RuntimeError('Review callback failed.')
+
+        with self.assertRaisesRegex(RuntimeError, 'Review callback failed'):
+            self.run_workflow({'ensemble__mode': ['good']}, selection_review=failed_review)
+        self.assertTrue((self.run_dir / 'coarse-cv.json').is_file())
+        self.assertTrue((self.run_dir / 'selection.json').is_file())
+        self.assertEqual(self.read('status.json')['phase'], 'parameter_review')
+        self.assertEqual(self.read('status.json')['state'], 'failed')
+        self.assertTrue(any(row['phase'] == 'parameter_review' for row in self.failures()))
+        self.assertFalse((self.run_dir / 'refit.json').exists())
+        self.assertFalse((self.run_dir / 'completed.json').exists())
+        self.assertNotIn(('fit', 10), ControlledClassifier.events)
+        self.assertNotIn(('predict', 4), ControlledClassifier.events)
+
+    def test_malformed_review_response_cannot_silently_continue(self):
+        with self.assertRaisesRegex(ValueError, 'list of nonempty strings'):
+            self.run_workflow({'ensemble__mode': ['good']}, selection_review=lambda _: 'boundary')
+        self.assertEqual(self.read('status.json')['phase'], 'parameter_review')
+        self.assertNotIn(('fit', 10), ControlledClassifier.events)
+        self.assertNotIn(('predict', 4), ControlledClassifier.events)
+
+    def test_noncallable_review_rejected_before_cv(self):
+        with self.assertRaisesRegex(TypeError, 'callable or None'):
+            self.run_workflow({'ensemble__mode': ['good']}, selection_review=True)
+        self.assertEqual(ControlledClassifier.events, [])
+        self.assertFalse((self.run_dir / 'run.json').exists())
+
+    def test_dwd_boundary_review_uses_lambd_gamma_including_refinement_outside_range(self):
+        grid = mnist_param_grid('ensemble__')
+        middle = {name: values[len(values) // 2] for name, values in grid.items()}
+        for end in (0, -1):
+            fractions = {**middle, 'ensemble__theta': grid['ensemble__theta'][end],
+                         'ensemble__sv_selection_ratio': grid['ensemble__sv_selection_ratio'][end]}
+            self.assertEqual(example.boundary_parameters(fractions, grid), [])
+            endpoints = {**fractions, 'ensemble__lambd': grid['ensemble__lambd'][end],
+                         'ensemble__gamma': grid['ensemble__gamma'][end]}
+            self.assertEqual(example.boundary_parameters(endpoints, grid),
+                             ['ensemble__lambd', 'ensemble__gamma'])
+        outside = {**middle, 'ensemble__lambd': min(grid['ensemble__lambd']) / 4,
+                   'ensemble__gamma': max(grid['ensemble__gamma']) * 10}
+        self.assertEqual(example.boundary_parameters(outside, grid),
+                         ['ensemble__lambd', 'ensemble__gamma'])
+
+    def test_dwd_cli_wires_same_gate_before_final_fit_and_test(self):
+        directory = Path(self.temporary.name) / 'dwd-cli'
+        calls = []
+
+        def workflow(pipeline, grid, *args, **kwargs):
+            parameters = {name: values[len(values) // 2] for name, values in grid.items()}
+            parameters['ensemble__lambd'] = min(grid['ensemble__lambd']) / 4
+            reasons = kwargs['selection_review'](parameters)
+            self.assertEqual(reasons, ['ensemble__lambd'])
+            self.assertTrue(kwargs['refine'])
+            calls.append(parameters)
+            return {'model': None, 'completed': None, 'review': {'reasons': reasons}}
+
+        output = io.StringIO()
+        argv = [str(EXAMPLE_PATH), '--data', 'unused.npz', '--run', '--refine',
+                '--output-dir', str(directory)]
+        with (patch.object(sys, 'argv', argv), patch.object(example, 'load_local_data',
+                return_value=(self.X, self.X_test, self.y, self.y_test)), patch.object(
+                example, 'run_search_workflow', side_effect=workflow),
+                contextlib.redirect_stdout(output)):
+            example.main()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(ControlledClassifier.events, [])
+        self.assertIn('lambda/gamma endpoints using training-only CV', output.getvalue())
+        self.assertIn('test set was not scored', output.getvalue())
+        self.assertFalse((directory / 'completed.json').exists())
 
     def test_local_stage_uses_identical_folds_and_no_intermediate_refit(self):
         grid = {'ensemble__lambd': [1.], 'ensemble__gamma': [1.],
