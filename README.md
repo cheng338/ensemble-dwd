@@ -10,11 +10,14 @@ Supervised NMF* (Purdue University, August 2026).
 classification using the dissertation's one-versus-one maximum-wins vote.
 For ten classes, it fits 45 binary ensembles.
 
-`EnsembleKernelSVM` provides the corresponding RBF SVM comparator using
-scikit-learn's LIBSVM-backed `SVC`. It uses Mao et al.'s label-aware margin
-selection condition and a final SVC refit. See [the SVM method and tuning
-guide](docs/ensemble-svm.md) for its precise relationship to the dissertation
-and Mao's original SVI algorithm. It also works with `OvOClassifier`.
+`EnsembleKernelSVM` adapts the support-vector-identification approach of
+[Mao et al. (2016), *Fast Kernel SVM Training via Support Vector Identification*](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
+Chang Cheng implemented the variant provided here: it retains Mao's label-aware
+margin-selection principle, while using independently drawn, potentially
+overlapping subsets and a final hinge-loss `SVC` refit in place of Mao's
+squared-loss kernel-coefficient fit. It uses scikit-learn's LIBSVM-backed `SVC`
+and works with `OvOClassifier`. See [the SVM method and tuning
+guide](docs/ensemble-svm.md) for details.
 
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
