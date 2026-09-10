@@ -158,7 +158,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         Absolute successive-objective tolerance for objective stopping.
     stopping : {'objective', 'fixed', 'optimality'}, default='objective'
         Shared stopping policy. Validation stopping needs separate per-learner
-        validation provisioning and is not supported in this binary release.
+        validation provisioning and is not supported by this estimator.
     tol : positive float, default=1e-6
         Shared optimality tolerance, forwarded to optimized DWD.
     acceleration : {None, 'restart'}, default=None
@@ -204,6 +204,10 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
 
     Notes
     -----
+    This estimator accepts exactly two classes. Use
+    ``OvOClassifier(EnsembleKernelDWD(...))`` for multiclass classification.
+    Each class pair fits its own ensemble, and only its final model votes.
+
     Inputs are dense feature rows converted to float64. Use a StandardScaler
     before this estimator inside a Pipeline to fit preprocessing within CV.
     Each learner has an unregularized intercept and identical kernel, loss,

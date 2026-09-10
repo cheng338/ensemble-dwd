@@ -46,7 +46,8 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
     ----------
     estimator : estimator object
         Binary classifier with ``fit`` and ``predict``. Use an
-        ``EnsembleKernelDWD`` instance for ensemble kernel DWD. A fresh clone
+        ``EnsembleKernelDWD`` instance for ensemble kernel DWD, or an
+        ``EnsembleKernelSVM`` instance for the ensemble SVM comparator. A fresh clone
         is fitted for every pair with the first original class encoded as +1
         and the second as -1. In particular, an exactly zero DWD margin votes
         for the second original class, as in ``multi.py``.
@@ -86,13 +87,16 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
     All pairs clone the same parameter configuration, including its random
     state. No cross-validation is performed here. Use a preprocessing Pipeline
     and external GridSearchCV to select one shared configuration across all
-    pairs, with nested parameter names such as ``estimator__lambd``.
+    pairs, with nested parameter names such as ``estimator__lambd`` for DWD
+    or ``estimator__C`` for SVM.
 
-    A numeric kernel gamma is shared across pairs. ``EnsembleKernelDWD``
-    resolves gamma='scale' from each pair's input separately, before sampling
-    its base learners. Use numeric gamma for an identical coefficient across
-    all pairwise classifiers. The binary DWD objective, intercept handling,
-    consensus selection, and stopping policy are unchanged by this wrapper.
+    A numeric kernel gamma is shared across pairs. Both ``EnsembleKernelDWD``
+    and ``EnsembleKernelSVM`` resolve gamma='scale' from each pair's input
+    separately, before sampling their base learners. Use numeric gamma for an
+    identical coefficient across all pairwise classifiers. The wrapper leaves
+    each binary estimator's objective, intercept handling, selection rule and
+    stopping policy unchanged. DWD uses absolute consensus scores and its MM
+    controls; SVM uses signed-margin selection and native SVC controls.
 
     Inputs are dense, finite feature rows converted to float64. Precomputed
     kernels are not supported because rows are selected for each pair.
