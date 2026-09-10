@@ -25,10 +25,9 @@ import dwd
 def _key_lock(path):
     # Operating-system locks are released even if a worker exits unexpectedly.
     with open(path, "a+b") as stream:
-        stream.seek(0, os.SEEK_END)
-        if stream.tell() == 0:
-            stream.write(b"0")
-            stream.flush()
+        # Both Windows byte-range locking and POSIX flock support an empty
+        # file. Never initialize its contents before acquiring the lock: a
+        # concurrent owner may already hold byte zero and deny that write.
         stream.seek(0)
         if os.name == "nt":
             import msvcrt
