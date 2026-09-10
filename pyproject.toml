@@ -32,5 +32,5 @@ classifiers = [
 name = "ensemble_dwd"
 
 [tool.flit.sdist]
-include = ["docs/", "examples/", "tests/", "CITATION.cff", "VALIDATION.md", ".github/", ".gitattributes"]
+include = ["docs/", "examples/", "tests/", "CITATION.cff", "CHANGELOG.md", "VALIDATION.md", ".github/", ".gitattributes"]
 exclude = ["**/__pycache__/**", "**/*.pyc", "build/", "dist/"]

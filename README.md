@@ -10,6 +10,12 @@ Supervised NMF* (Purdue University, August 2026).
 classification using the dissertation's one-versus-one maximum-wins vote.
 For ten classes, it fits 45 binary ensembles.
 
+`EnsembleKernelSVM` provides the corresponding RBF SVM comparator using
+scikit-learn's LIBSVM-backed `SVC`. It uses Mao et al.'s label-aware margin
+selection condition and a final SVC refit. See [the SVM method and tuning
+guide](docs/ensemble-svm.md) for its precise relationship to the dissertation
+and Mao's original SVI algorithm. It also works with `OvOClassifier`.
+
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
 
@@ -26,7 +32,7 @@ To build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.2.1-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.0-py3-none-any.whl
 ```
 
 The dependency metadata pins SHA-256-verified wheels from
@@ -132,6 +138,11 @@ search = GridSearchCV(
 # search.fit(X_train, y_train)
 ```
 
+This minimal example stops on every fit error, including an expected
+single-class selection. For a broad search, use the checkpointed example
+below: it excludes only `IneligibleSelectionError` and still stops on
+unexpected failures.
+
 The broad MNIST preset contains:
 
 - `lambd`: `2**e` for `e` in `[-30, -26, -22, -18, -14, -10, -6, -2, 0]`.
@@ -169,8 +180,15 @@ values may extend beyond the coarse grid. This adds at most 27 candidates,
 135 ensemble CV fits, or up to 810 uncached DWD CV fits. Both stages reuse the
 same training folds. Each completed stage writes its CV results, fold indices, data
 fingerprint and selected parameters before the final refit. Both searches use
-`refit=False`; the selected pipeline is then fitted explicitly on all training
-rows. A final-fit failure leaves the completed CV checkpoint available, and
+`refit=False`. Before final fitting, the binary DWD and SVM examples check
+whether the selected regularization or gamma value is at or beyond a coarse
+search endpoint, including after optional local refinement.
+A boundary winner produces `review.json` and a `needs_review` status, without
+final fitting or held-out scoring. Expand the indicated range using training
+CV before accepting that candidate. Sampling and retention boundaries do not
+trigger this hold, and the examples do not automatically expand a grid.
+After this review passes, the selected pipeline is fitted explicitly on all
+training rows. A final-fit failure leaves the completed CV checkpoint available, and
 the held-out test set is scored only after a successful final fit. Running the
 example without `--run`
 prints these budgets without loading data or fitting models.
@@ -220,8 +238,11 @@ diagnostics. Entries that retain base models also contain their training rows.
 
 Training still requires dense kernel matrices. Limiting workers and prediction
 batches controls some allocations; it is not an automatic RAM guarantee.
-Choose `--jobs` for the available memory. Changing constructor parameters after
-fitting takes effect on the next fit, including `prediction_batch_size`.
+Choose `--jobs` for the available memory. Changes to DWD constructor parameters,
+including `prediction_batch_size`, take effect on the next fit. For
+`EnsembleKernelSVM`, `prediction_batch_size` can also be changed after fitting:
+every prediction call validates it as `None` or a positive integer. Other
+SVM fitting parameters take effect on the next fit.
 
 ## Results and boundaries
 
