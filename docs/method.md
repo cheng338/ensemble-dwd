@@ -3,8 +3,8 @@
 The estimator implements the four stages in Section 5.1.1 of Chang Cheng's
 dissertation, *Overcoming the Curses of Dimensionality and Kernelization:
 Scalable DWD and Supervised NMF* (Purdue University, August 2026, pp. 46–47).
-It supports binary classification; multiclass composition is outside this
-version's scope.
+`EnsembleKernelDWD` supports binary classification. `OvOClassifier` composes
+it into the multiclass procedure described in [the multiclass method](multiclass.md).
 
 ## Fit and prediction
 

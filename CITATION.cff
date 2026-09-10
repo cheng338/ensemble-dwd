@@ -1,13 +1,13 @@
 cff-version: 1.2.0
 message: "Please cite this software and the dissertation describing its ensemble method."
 type: software
-title: "ensemble-dwd: Binary Ensemble Kernel Distance Weighted Discrimination"
-version: 0.1.1
+title: "ensemble-dwd: Ensemble Kernel Distance Weighted Discrimination"
+version: 0.2.1
 authors:
   - family-names: Cheng
     given-names: Chang
 abstract: >-
-  Binary classification using uniform subsampling without replacement,
+  Binary and one-versus-one multiclass classification using uniform subsampling without replacement,
   kernel DWD fits, raw decision-value consensus selection, and a final
   kernel DWD refit.
 references:

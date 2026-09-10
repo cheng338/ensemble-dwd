@@ -6,6 +6,10 @@ It implements the four-stage method in Chapter 5 of Chang Cheng's dissertation,
 *Overcoming the Curses of Dimensionality and Kernelization: Scalable DWD and
 Supervised NMF* (Purdue University, August 2026).
 
+`OvOClassifier(EnsembleKernelDWD(...))` extends this procedure to multiclass
+classification using the dissertation's one-versus-one maximum-wins vote.
+For ten classes, it fits 45 binary ensembles.
+
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
 
@@ -22,15 +26,28 @@ To build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.1.1-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.2.1-py3-none-any.whl
 ```
 
-The dependency metadata pins the DWD implementation to commit
-`9ed1892d74c4eda5ed2e058df239ffb7973c120a` of
-[cheng338/dwd](https://github.com/cheng338/dwd/tree/9ed1892d74c4eda5ed2e058df239ffb7973c120a).
-Installation downloads that source archive unless it is already available to
-the installer. Install the package with its declared dependencies; installing
+The dependency metadata pins SHA-256-verified wheels from
+[cheng338/dwd 1.3.5](https://github.com/cheng338/dwd/releases/tag/v1.3.5).
+Conventional GIL-enabled CPython on Windows AMD64 uses the wheel with the compiled prediction helper;
+other platforms use the portable wheel. Both contain the optimized DWD
+implementation. Install the package with its declared dependencies; installing
 `dwd` by name separately can retrieve another implementation.
+
+Free-threaded Windows CPython cannot load that `abi3` wheel, and Python's
+dependency markers cannot distinguish it from the conventional build. On
+that interpreter, install the portable DWD wheel and numerical dependencies
+explicitly, then install this package without dependency resolution:
+
+```shell
+python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.5/dwd-1.3.5-py3-none-any.whl#sha256=45ec234a373f6080d805089bb24fa869e6de57a1660c3988aeba6ae2c529cb13"
+python -m pip install --no-deps .
+```
+
+This installation workaround has not been runtime-tested on free-threaded
+Python. The validated environment uses conventional CPython 3.12.
 
 ## Basic use
 
@@ -67,7 +84,7 @@ refitted model; the average base-model scores are used during selection.
 | `lambd` | `1e-6` | Shared package DWD regularization parameter. |
 | `q` | `1.0` | Ordinary DWD loss exponent. |
 | `kernel` | `'rbf'` | Kernel used by every learner. |
-| `gamma` | `'scale'` | Resolved once from the complete current training fold and shared. |
+| `gamma` | `'scale'` | Resolved once per binary fit and shared by its base and final learners. |
 | `max_iter`, `obj_tol` | `100`, `1e-5` | Default objective-change stopping controls. |
 | `stopping`, `tol` | `'objective'`, `1e-6` | Stopping policy and optional optimality tolerance. |
 | `acceleration` | `None` | Ordinary MM updates. |
@@ -216,7 +233,8 @@ learner. An objective stopping event does not itself certify optimality.
 linear and callable kernels. Callable kernels receive only their explicitly
 supplied `kernel_kws`; the top-level gamma is not injected into them.
 
-The package accepts exactly two classes. Precomputed kernels are unsupported.
+`EnsembleKernelDWD` accepts exactly two classes. Wrap it in `OvOClassifier`
+for two or more classes. Precomputed kernels are unsupported.
 Base subsets are sampled uniformly without replacement conditional on
 containing both classes. Final selection keeps exactly
 `floor(sv_selection_ratio * n)` rows in stable order of absolute consensus
@@ -224,6 +242,67 @@ score. It raises an error if that set has fewer than two rows or only one
 class; it does not substitute another classifier or expand the retained set.
 
 See [the method and parameter conventions](docs/method.md) for details.
+
+## Multiclass use
+
+```python
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from ensemble_dwd import EnsembleKernelDWD, OvOClassifier, mnist_param_grid
+
+pipeline = Pipeline([
+    ('scale', StandardScaler()),
+    ('ovo', OvOClassifier(EnsembleKernelDWD(
+        M=5, random_state=42, store_base_estimators=False,
+        cache_dir='.ensemble-dwd-cache',
+    ), n_jobs=1)),
+])
+# A single candidate's parameters are shared across all class pairs.
+search = GridSearchCV(
+    pipeline, mnist_param_grid(prefix='ovo__estimator__'),
+    cv=StratifiedKFold(5, shuffle=True, random_state=42),
+    scoring='accuracy', n_jobs=1, error_score='raise',
+)
+# search.fit(X_train, y_train)
+```
+
+Each class pair trains the same binary selection-and-refit procedure. Only
+its final classifier votes. Ties select the smallest sorted original label,
+as in `multi.py`; no confidence-based tie breaker is added. Labels retain
+their input dtype, including strings and large integers. `vote_counts(X)`
+returns integer counts in `classes_` order, not probabilities.
+
+Numeric `gamma` is shared across all pairs. With `gamma='scale'`, each pair
+resolves its own value and shares it within that pair's base and final fits.
+Use numeric gamma when a single coefficient across pairs is required.
+The configured binary random seed is cloned unchanged for each pair.
+
+`OvOClassifier.n_jobs` controls parallel pair fitting and defaults to 1.
+When CV uses multiple workers, leave it at 1 and limit native BLAS threads
+inside each worker. For a standalone fit, pair parallelism can be enabled
+through `n_jobs`. Prediction streams pair votes in batches controlled by
+`prediction_batch_size=1024`. Retaining only final models with
+`store_base_estimators=False` reduces memory without changing predictions.
+
+Inspect `pairs_`, `estimators_` and `pair_indices_` after fitting. A child's
+sampled/selected indices are local to that pair; map them through its
+`pair_indices_` entry to obtain rows of the original multiclass training input.
+An ineligible binary selection fails that entire multiclass candidate. No
+missing pair or substitute model is silently accepted.
+
+The broad five-fold grid costs up to 1,093,500 binary DWD fits for ten classes
+and `M=5`, before base-stage cache reuse. It is not launched automatically.
+The new example supports a compact validation grid and stratified subsets
+from a local MNIST archive with separate training and test arrays:
+
+```shell
+python examples/tune_mnist_multiclass.py --smoke-grid
+python examples/tune_mnist_multiclass.py --data mnist.npz --train-size 6000 --jobs 8 --smoke-grid --run
+```
+
+The example keeps preprocessing inside each CV fold and uses external
+`GridSearchCV`. See [the multiclass method and audit](docs/multiclass.md).
 
 ## Attribution
 
