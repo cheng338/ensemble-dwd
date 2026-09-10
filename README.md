@@ -1,5 +1,10 @@
 # ensemble-dwd
 
+`ensemble-dwd` implements Chang Cheng's ensemble kernel Distance Weighted
+Discrimination for binary and multiclass classification. Use
+`EnsembleKernelDWD` for two classes and
+`OvOClassifier(EnsembleKernelDWD(...))` for multiclass classification.
+
 `EnsembleKernelDWD` is a binary classifier that uses several kernel DWD models
 to select a smaller training set, then fits one final kernel DWD classifier.
 It implements the four-stage method in Chapter 5 of Chang Cheng's dissertation,
@@ -9,15 +14,6 @@ Supervised NMF* (Purdue University, August 2026).
 `OvOClassifier(EnsembleKernelDWD(...))` extends this procedure to multiclass
 classification using the dissertation's one-versus-one maximum-wins vote.
 For ten classes, it fits 45 binary ensembles.
-
-`EnsembleKernelSVM` adapts the support-vector-identification approach of
-[Mao et al. (2016), *Fast Kernel SVM Training via Support Vector Identification*](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
-Chang Cheng implemented the variant provided here: it retains Mao's label-aware
-margin-selection principle, while using independently drawn, potentially
-overlapping subsets and a final hinge-loss `SVC` refit in place of Mao's
-squared-loss kernel-coefficient fit. It uses scikit-learn's LIBSVM-backed `SVC`
-and works with `OvOClassifier`. See [the SVM method and tuning
-guide](docs/ensemble-svm.md) for details.
 
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
@@ -60,6 +56,9 @@ Python. The validated environment uses conventional CPython 3.12.
 
 ## Basic use
 
+This example demonstrates binary DWD. See [Multiclass use](#multiclass-use)
+for classification with more than two classes.
+
 ```python
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
@@ -84,6 +83,9 @@ two input class labels. Its `decision_function` and `predict` use the final
 refitted model; the average base-model scores are used during selection.
 
 ## Defaults
+
+The following defaults apply to `EnsembleKernelDWD`, including each pairwise
+DWD ensemble inside `OvOClassifier`.
 
 | Parameter | Default | Meaning |
 |---|---:|---|
@@ -269,6 +271,10 @@ See [the method and parameter conventions](docs/method.md) for details.
 
 ## Multiclass use
 
+The following example tunes multiclass ensemble DWD. Each candidate uses
+one parameter configuration across all
+class pairs.
+
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
@@ -328,12 +334,23 @@ python examples/tune_mnist_multiclass.py --data mnist.npz --train-size 6000 --jo
 The example keeps preprocessing inside each CV fold and uses external
 `GridSearchCV`. See [the multiclass method and audit](docs/multiclass.md).
 
+For comparison experiments, the package also includes `EnsembleKernelSVM`,
+with binary and multiclass usage documented in [the comparator guide](docs/ensemble-svm.md).
+
 ## Attribution
 
-Chang Cheng developed the ensemble method. Kernel DWD fitting is provided by
+Chang Cheng developed the ensemble kernel DWD method and its multiclass
+extension. Kernel DWD fitting is provided by
 the separately installed `cheng338/dwd` dependency, derived from
 [slicersalt/dwd](https://github.com/slicersalt/dwd), originally authored by Iain
 Carmichael with upstream maintenance by David Allemang / Kitware. The
 dependency retains its own MIT license and attribution. Its license does not
 grant rights to this separate package. Citation information is in
 [CITATION.cff](CITATION.cff).
+
+The SVM comparator is Chang Cheng's adaptation of
+[Mao et al. (2016), *Fast Kernel SVM Training via Support Vector Identification*](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
+It retains the label-aware margin-selection principle, with independently
+sampled, potentially overlapping subsets and a final hinge-loss `SVC` refit
+in place of Mao's squared-loss kernel-coefficient fit. See the
+[comparator guide](docs/ensemble-svm.md) for details.
