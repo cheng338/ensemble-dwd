@@ -1,5 +1,9 @@
 # Multiclass ensemble kernel DWD
 
+`OvOClassifier(EnsembleKernelDWD(...))` provides one-versus-one multiclass
+classification using the binary ensemble DWD estimator for each class pair.
+The package therefore supports both binary and multiclass classification.
+
 ## Method
 
 Chapter 5's multiclass experiment in Chang Cheng's dissertation trains one
@@ -27,7 +31,7 @@ identical replacement for this rule.
 ## Shared parameters and preprocessing
 
 One external `GridSearchCV` candidate supplies shared binary parameters to
-all 45 pairs. It is scored on the complete multiclass prediction. Individual
+all class pairs. It is scored on the complete multiclass prediction. Individual
 pairs do not run separate searches. Within each pair, all `M` base models
 and the final refit share their DWD parameters. The parameters `theta` and
 `sv_selection_ratio` denote the base sampling fraction and final retention
@@ -51,6 +55,11 @@ is an execution and integration check, not a claim of optimal parameters.
 The theoretical augmented-norm treatment in the dissertation remains distinct
 from its practical unregularized-intercept implementation; this integration
 does not supply a new justification for applying those bounds.
+
+For an optional SVM comparison, the same wrapper accepts
+`EnsembleKernelSVM`; use `mnist_svm_param_grid` with the
+`ovo__estimator__` prefix. Its distinct method, attribution and usage example
+are documented in [the SVM comparator guide](ensemble-svm.md#multiclass-use).
 
 ## Audit of the original script
 

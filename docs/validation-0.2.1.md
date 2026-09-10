@@ -76,8 +76,8 @@ GridSearchCV.
 Built-wheel checks and artifact hashes are recorded with the release
 artifacts. Cross-platform GitHub Actions results are separate from the local
 Windows validation above. Historical numerical comparisons remain in
-[the 0.2.0 record](docs/validation-0.2.0.md) and
-[the 0.1.1 record](docs/validation-0.1.1.md).
+[the 0.2.0 record](validation-0.2.0.md) and
+[the 0.1.1 record](validation-0.1.1.md).
 
 Chang Cheng's authorship, private research status and undecided software
 license remain unchanged.

@@ -1,9 +1,15 @@
 # Ensemble kernel SVM comparator
 
-`EnsembleKernelSVM` provides an RBF SVM comparison method alongside Chang
+`EnsembleKernelSVM` provides a binary RBF SVM comparison method alongside Chang
 Cheng's ensemble kernel DWD. It uses scikit-learn's compiled LIBSVM `SVC`
 implementation for every base learner and the final fit. No new numerical
 dependency is required.
+
+`OvOClassifier(EnsembleKernelSVM(...))` provides multiclass classification:
+each class pair trains its own binary ensemble, and the pair's final SVC
+casts one vote. The maximum-wins rule matches the ensemble DWD wrapper.
+See [multiclass use](#multiclass-use) for an example and
+[the ensemble DWD multiclass guide](multiclass.md) for the shared voting design.
 
 ## Method
 
@@ -132,6 +138,60 @@ Sampling and retention fractions keep their specified ranges. The binary DWD
 example applies the corresponding check to lambda and gamma. This review
 policy belongs to the external examples; the estimators never tune or change
 their own parameters.
+
+## Multiclass use
+
+`OvOClassifier(EnsembleKernelSVM(...))` applies the same pairwise training and
+maximum-wins voting to Chang Cheng's SVM implementation, which adapts the
+support-vector-identification idea of Mao et al. (2016). Each pair selects
+rows by `abs(y_signed * mean_score - 1)` and fits a final hinge-loss `SVC`.
+The independently sampled subsets may overlap. These choices distinguish
+the implementation from Mao's squared-loss kernel-coefficient refit; see
+[the method and attribution above](#method).
+
+Only each pair's final SVC votes, using SVC's native `predict` behavior.
+The DWD-specific exactly-zero-margin convention should not be applied to
+SVC. Equal total vote counts still select the smallest sorted class label.
+For `M=5`, an uncached ten-class SVM fit likewise comprises 45 ensembles and
+270 SVC fits. SVM uses native `C`, `tol` and `max_iter` conventions; it does
+not use DWD's `lambd`, loss power or MM stopping policies.
+
+One external CV candidate shares its parameter configuration across all
+class pairs. Within each pair, the same numerical `C` is passed to all base
+and final learners without sample-size rescaling. A numerical `gamma` gives
+a common coefficient across pairs; `gamma="scale"` resolves separately for
+each pair before sampling.
+
+Use `mnist_svm_param_grid(prefix='ovo__estimator__')` for the nested estimator.
+This constructs a training-only search; it does not launch it:
+
+```python
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from ensemble_dwd import EnsembleKernelSVM, OvOClassifier, mnist_svm_param_grid
+
+pipeline = Pipeline([
+    ('scale', StandardScaler()),
+    ('ovo', OvOClassifier(EnsembleKernelSVM(
+        M=5, random_state=42, store_base_estimators=False,
+        cache_dir='.ensemble-svm-cache',
+    ), n_jobs=1)),
+])
+search = GridSearchCV(
+    pipeline, mnist_svm_param_grid(prefix='ovo__estimator__'),
+    cv=StratifiedKFold(5, shuffle=True, random_state=42),
+    scoring='accuracy', n_jobs=1, pre_dispatch=1, error_score='raise',
+)
+# search.fit(X_train, y_train)  # Keep the final test set held out.
+```
+
+The full preset has 810 candidates and can be expensive across all class
+pairs. This minimal example stops on any fit error. As with DWD, an
+ineligible pair selection invalidates the complete multiclass candidate.
+Parameter tuning and any search-boundary review remain external to the
+estimators. The checkpointed multiclass command-line example currently
+demonstrates DWD; the code above shows the SVM composition.
 
 ## Parallel work, caching and diagnostics
 

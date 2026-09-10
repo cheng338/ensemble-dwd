@@ -22,7 +22,7 @@ The source reference files `multi.py` and `formal2.tex` were not modified.
 - Updated dependency metadata from an older fork commit to hash-pinned
   optimized cheng338/dwd 1.3.4 release wheels.
 
-See [the detailed method and original-script audit](docs/multiclass.md).
+See [the detailed method and original-script audit](multiclass.md).
 Private status, Chang Cheng's authorship and the undecided license remain.
 
 ## Tests
