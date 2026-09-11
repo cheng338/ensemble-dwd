@@ -22,7 +22,7 @@
 - Clarified expected ineligible selections in the tuning documentation and
   included the changelog in the source distribution.
 - Documented the SVI-inspired comparator, including its differences from
-  the original unsigned selection in binary.py and Mao's least-squares refit.
+  the unsigned margin-selection criterion and Mao's squared-loss refit.
 
 The DWD estimator, its search preset and the pinned cheng338/dwd 1.3.5
 dependency retain their existing definitions.
