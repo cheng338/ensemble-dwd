@@ -76,7 +76,9 @@ def fresh_real_cache_worker(cache_dir):
     # controllers before fit could itself initialize the runtime being tested.
     X = np.column_stack((np.arange(24, dtype=float) - 11.5, np.arange(24) % 3)) / 6.
     y = np.zeros(24, dtype=int)
-    y[-1] = 1
+    # Put one rare-class row in each fixed seed-17 disjoint block; this
+    # fixture tests runtime cache provenance, not sampling eligibility.
+    y[[10, 23]] = 1
     settings = dict(M=2, theta=.5, sv_selection_ratio=1., lambd=.05, gamma=.2,
                     max_iter=8, stopping='fixed', random_state=17, cache_dir=cache_dir)
     first = EnsembleKernelDWD(**settings).fit(X, y)
@@ -104,7 +106,7 @@ class CacheEstimatorTests(unittest.TestCase):
         self.y = np.tile(['left', 'right'], 10)
 
     def model(self, **kwargs):
-        params = dict(M=3, theta=.4, sv_selection_ratio=.3, gamma=.02,
+        params = dict(M=3, theta=.3, sv_selection_ratio=.3, gamma=.02,
                       random_state=17, cache_dir=self.directory.name)
         params.update(kwargs)
         return EnsembleKernelDWD(**params)
@@ -132,7 +134,7 @@ class CacheEstimatorTests(unittest.TestCase):
 
     def test_base_parameter_changes_invalidate_the_entry(self):
         baseline = self.fit_spy(self.model())
-        changes = [dict(M=2), dict(theta=.5), dict(lambd=.02), dict(q=2.),
+        changes = [dict(M=2), dict(theta=.25), dict(lambd=.02), dict(q=2.),
                    dict(gamma=.04), dict(kernel='linear'), dict(max_iter=11),
                    dict(obj_tol=2e-5), dict(stopping='fixed'), dict(tol=2e-6),
                    dict(acceleration='restart'), dict(random_state=19),
@@ -166,7 +168,7 @@ class CacheEstimatorTests(unittest.TestCase):
         self.assertEqual(first.cache_key_, second.cache_key_)
 
     def test_nondeterministic_or_callable_models_bypass_the_cache(self):
-        for options in [dict(random_state=None), dict(kernel=constant_kernel)]:
+        for options in [dict(random_state=None, M=1, theta=1.), dict(kernel=constant_kernel)]:
             with self.subTest(options=options):
                 CacheProbeDWD.fits = []
                 first = self.fit_spy(self.model(**options))
@@ -175,7 +177,7 @@ class CacheEstimatorTests(unittest.TestCase):
                 self.assertFalse(second.cache_hit_)
                 self.assertIsNone(first.cache_key_)
                 self.assertIsNone(second.cache_key_)
-                self.assertEqual(len(CacheProbeDWD.fits), 8)
+                self.assertEqual(len(CacheProbeDWD.fits), 2 * (second.M + 1))
                 self.assertIsInstance(second.cache_status_, str)
 
     def test_default_cache_off_recomputes_and_is_cloneable(self):

@@ -10,7 +10,7 @@ from sklearn.utils import get_tags
 from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, validate_data
 
-from .estimator import IneligibleSelectionError, _positive_integer
+from .estimator import IneligibleSelectionError, IneligibleSubsetError, _positive_integer
 
 
 def _pair_context(pair):
@@ -26,6 +26,8 @@ def _fit_pair(estimator, X, y, indices, pair):
         pair_y = np.where(y[indices] == pair[0], 1, -1)
         model.fit(X[indices], pair_y)
         return model
+    except IneligibleSubsetError as exc:
+        raise IneligibleSubsetError(f"{_pair_context(pair)}: {exc}") from exc
     except IneligibleSelectionError as exc:
         raise IneligibleSelectionError(f"{_pair_context(pair)}: {exc}") from exc
     except Exception as exc:

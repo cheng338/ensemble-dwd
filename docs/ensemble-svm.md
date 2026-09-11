@@ -13,9 +13,11 @@ See [multiclass use](#multiclass-use) for an example and
 
 ## Method
 
-1. Draw M subsets, each of size `max(2, floor(theta * n))`, uniformly without
-   replacement conditional on containing both classes. Different subsets may
-   overlap. This is the same sampler as ensemble DWD.
+1. Shuffle the training rows once and divide the first
+   `M * max(2, floor(theta * n))` indices into `M` disjoint subsets of equal
+   size. This is the same label-independent sampler as ensemble DWD. Every
+   block must contain both classes; an ineligible draw is reported without
+   resampling. See [sampling constraints](method.md#sampling-and-invalid-selections).
 2. Fit one RBF SVC to each subset and calculate their arithmetic mean raw
    decision value g on every row supplied to this fit.
 3. Encode the ordered binary labels as -1 and +1 and rank by
@@ -26,9 +28,9 @@ See [multiclass use](#multiclass-use) for an example and
 
 The signed score implements a ranking around Mao et al.'s condition
 `y * g ≈ 1`. Mao's paper instead uses a squared-loss kernel coefficient fit
-after selection. This package uses a hinge-loss SVC refit and independently
-drawn, potentially overlapping subsets. It is an SVI-inspired comparison
-variant, not an exact reproduction of Mao's algorithm. The paper does not
+after selection. This package follows Mao's disjoint-subset sampling and
+uses a hinge-loss SVC refit. It is an SVI-inspired comparison variant, not
+an exact reproduction of Mao's algorithm. The paper does not
 specify the retained-fraction grid used here. [Mao et al., *Fast Kernel SVM
 Training via Support Vector Identification*, ICPR 2016, Eqs. 1–9](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
 
@@ -83,11 +85,11 @@ from this estimator's contract.
 |---|---|---:|
 | C | `10**e`, e = -4, -3, ..., 4 | 9 |
 | gamma | `10**e`, e = -8, -7, ..., 0 | 9 |
-| theta | 0.1, 0.2 | 2 |
+| theta | 0.1 (fixed) | 1 |
 | sv_selection_ratio | 0.1, 0.15, 0.2, 0.25, 0.3 | 5 |
 
 M remains fixed at the estimator default 5 unless explicitly changed. Both
-SVM and DWD presets have 810 candidates and 4,050 ensemble fits with fivefold
+SVM and DWD presets have 405 candidates and 2,025 ensemble fits with fivefold
 CV. The C grid spans eight orders of magnitude, includes C=1, and avoids
 automatically starting at the very large extreme of the dissertation grid.
 It is a coarse starting range for scaled MNIST, not a universal optimum or a
@@ -144,7 +146,7 @@ their own parameters.
 maximum-wins voting to Chang Cheng's SVM implementation, which adapts the
 support-vector-identification idea of Mao et al. (2016). Each pair selects
 rows by `abs(y_signed * mean_score - 1)` and fits a final hinge-loss `SVC`.
-The independently sampled subsets may overlap. These choices distinguish
+The base subsets are disjoint within each pair. The final SVC distinguishes
 the implementation from Mao's squared-loss kernel-coefficient refit; see
 [the method and attribution above](#method).
 
@@ -185,7 +187,7 @@ search = GridSearchCV(
 # search.fit(X_train, y_train)  # Keep the final test set held out.
 ```
 
-The full preset has 810 candidates and can be expensive across all class
+The full preset has 405 candidates and can be expensive across all class
 pairs. This minimal example stops on any fit error. As with DWD, an
 ineligible pair selection invalidates the complete multiclass candidate.
 Parameter tuning and any search-boundary review remain external to the
@@ -223,8 +225,9 @@ visible. A user-specified iteration cap may return an unconverged classifier;
 it must not be reported as a converged result. Cached unconverged base fits
 must retain their diagnostics and warnings.
 
-An insufficient or single-class selection raises `IneligibleSelectionError`,
-as it does for DWD. No extra points are silently inserted and no different
+An insufficient or single-class final selection raises `IneligibleSelectionError`,
+as it does for DWD. An infeasible disjoint allocation or a one-class base block
+raises its subclass `IneligibleSubsetError` before base fitting. No extra points are silently inserted and no different
 classifier is substituted. Failed refits clear the fitted state. The final
 SVC's own predict method is used, including its behavior at an exact zero
 decision value.

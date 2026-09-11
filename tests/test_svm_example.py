@@ -24,8 +24,8 @@ class SVMExampleTests(unittest.TestCase):
     def test_preview_neither_loads_data_nor_starts_fits(self):
         result = subprocess.run([sys.executable, str(EXAMPLE), "--data", "missing.npz"],
                                 text=True, capture_output=True, timeout=30, check=True)
-        self.assertIn("810 candidates", result.stdout)
-        self.assertIn("4050 ensemble CV fits", result.stdout)
+        self.assertIn("405 candidates", result.stdout)
+        self.assertIn("2025 ensemble CV fits", result.stdout)
         self.assertIn("Prepared only", result.stdout)
 
     def test_boundary_detection_uses_C_not_lambda(self):

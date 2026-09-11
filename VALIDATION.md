@@ -1,3 +1,37 @@
+# ensemble-dwd validation
+
+## 0.3.2: disjoint base subsets and fixed 10% sampling
+
+Both ensemble classifiers use one label-independent uniform permutation to
+form disjoint base subsets, following Mao et al. (2016), Section III-A.
+The MNIST search presets fix `theta=0.1`, with `M=5` in the examples, and
+retain nine regularization values, nine gamma values and five retention
+fractions: 405 candidates. CV boundary review still applies only to
+regularization and gamma. Selection fractions keep their specified range.
+
+All 180 package tests passed against each released DWD 1.3.7 wheel (native
+and portable) under Anaconda `py12_df`, with no failures or skips. Coverage
+includes exhaustive small-population allocation checks, global uniqueness,
+unused remainders, block-size/capacity constraints, label-independent draws,
+no redraw after an ineligible proposal, pre-fit failure cleanup, shared DWD/SVM
+sampling, cache separation, OvO context, and external CV eligibility reporting.
+The usual solver, selection, prediction, sklearn and concurrency checks remain
+in the suite. Distribution hashes and installed-wheel verification accompany
+the release artifacts.
+
+`IneligibleSubsetError` reports an impossible disjoint allocation or a sampled
+single-class block. It subclasses `IneligibleSelectionError`; unexpected
+numerical and memory failures still propagate. Neither classifier changes its
+sampling or numerical parameters automatically in response to a failure.
+The DWD backend option is shared by all base and final fits and distinguished
+in cache keys; the default remains `auto`.
+
+The prior independent draws allowed overlap. Their validation results below
+and in historical reports describe that earlier sampling scheme. They are
+not disjoint-sampling accuracy or timing results.
+
+---
+
 # ensemble-dwd 0.3.0 validation
 
 This record describes validation of the `v0.3.0` release of ensemble-dwd,

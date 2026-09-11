@@ -1,8 +1,6 @@
 """Algorithm and estimator contracts using a deterministic DWD stand-in."""
 
-import itertools
 import unittest
-from collections import Counter
 from unittest.mock import patch
 
 import numpy as np
@@ -12,7 +10,7 @@ from sklearn.base import clone, is_classifier
 from sklearn.exceptions import NotFittedError
 from sklearn.utils.validation import check_is_fitted
 
-from ensemble_dwd import EnsembleKernelDWD
+from ensemble_dwd import EnsembleKernelDWD, IneligibleSubsetError
 from ensemble_dwd.estimator import _sample_subsets
 
 
@@ -63,7 +61,7 @@ class ContractTests(unittest.TestCase):
         self.y = np.tile(["left", "right"], 10)
 
     def model(self, **kwargs):
-        params = dict(M=3, theta=0.4, sv_selection_ratio=0.5,
+        params = dict(M=3, theta=0.3, sv_selection_ratio=0.5,
                       gamma=0.02, random_state=17)
         params.update(kwargs)
         return EnsembleKernelDWD(**params)
@@ -250,7 +248,7 @@ class ContractTests(unittest.TestCase):
                         self.fit_spy(self.model(**{key: value}))
 
     def test_positive_parameters_are_not_limited_to_search_grid(self):
-        model = self.fit_spy(self.model(theta=0.35, sv_selection_ratio=0.85,
+        model = self.fit_spy(self.model(theta=0.25, sv_selection_ratio=0.85,
                                        gamma=3.7, lambd=0.03, q=2.5))
         self.assertEqual(model.gamma_, 3.7)
         self.assertEqual(len(model.selected_indices_), 17)
@@ -346,37 +344,18 @@ class ContractTests(unittest.TestCase):
             model.decision_function(np.ones((3, 3)))
 
 
-class ConditionalSamplingTests(unittest.TestCase):
-    def test_draws_have_exact_size_unique_rows_and_both_classes(self):
-        y = np.array([0] * 49 + [1])
-        subsets = _sample_subsets(y, 7, 20, np.random.RandomState(123))
-        self.assertEqual(len(subsets), 20)
-        for subset in subsets:
-            self.assertEqual(len(subset), 7)
-            self.assertEqual(len(np.unique(subset)), 7)
-            self.assertEqual(set(y[subset]), {0, 1})
-            self.assertTrue(np.all((subset >= 0) & (subset < len(y))))
-
-    def test_small_population_matches_uniform_conditional_distribution(self):
-        y = np.array([0, 0, 0, 0, 1, 1])
-        possible = {tuple(c) for c in itertools.combinations(range(6), 3)
-                    if len(set(y[list(c)])) == 2}
-        subsets = _sample_subsets(y, 3, 1600, np.random.RandomState(1234))
-        counts = Counter(tuple(sorted(subset)) for subset in subsets)
-        self.assertEqual(set(counts), possible)
-        # Each of the 16 eligible subsets has probability 1/16. These broad
-        # deterministic-sample bounds detect a forced equal class allocation.
-        self.assertTrue(all(50 < count < 150 for count in counts.values()), counts)
-        one_positive = sum(int(np.sum(y[s]) == 1) for s in subsets)
-        self.assertTrue(1120 < one_positive < 1280, one_positive)
-
+class SamplingCompatibilityTests(unittest.TestCase):
     def test_full_population_draws_and_reproducibility(self):
         y = np.array([0, 1, 0, 1])
-        first = _sample_subsets(y, 4, 3, np.random.RandomState(55))
-        second = _sample_subsets(y, 4, 3, np.random.RandomState(55))
+        first = _sample_subsets(y, 4, 1, np.random.RandomState(55))
+        second = _sample_subsets(y, 4, 1, np.random.RandomState(55))
         for a, b in zip(first, second):
             assert_array_equal(np.sort(a), np.arange(4))
             assert_array_equal(a, b)
+
+    def test_repeated_full_population_subsets_are_ineligible(self):
+        with self.assertRaises(IneligibleSubsetError):
+            _sample_subsets(np.array([0, 1, 0, 1]), 4, 3, np.random.RandomState(55))
 
 
 if __name__ == "__main__":

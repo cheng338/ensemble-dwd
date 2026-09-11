@@ -11,7 +11,7 @@ class ParameterGridTests(unittest.TestCase):
         self.assertEqual(grid["lambd"], [2.0 ** k for k in
                                        [-30, -26, -22, -18, -14, -10, -6, -2, 0]])
         self.assertEqual(grid["gamma"], [10.0 ** k for k in range(-8, 1)])
-        self.assertEqual(grid["theta"], [0.1, 0.2])
+        self.assertEqual(grid["theta"], [0.1])
         self.assertEqual(grid["sv_selection_ratio"], [0.1, 0.15, 0.2, 0.25, 0.3])
 
     def test_pipeline_prefix_and_fresh_lists(self):
@@ -35,7 +35,7 @@ class ParameterGridTests(unittest.TestCase):
         self.assertEqual(len(svm["C"]), len(dwd["lambd"]))
         for name in ("gamma", "theta", "sv_selection_ratio"):
             self.assertEqual(svm[name], dwd[name])
-        self.assertEqual(len(ParameterGrid(svm)), 810)
+        self.assertEqual(len(ParameterGrid(svm)), 405)
         self.assertEqual(len(ParameterGrid(svm)), len(ParameterGrid(dwd)))
 
     def test_svm_prefix_and_isolation(self):

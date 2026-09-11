@@ -13,6 +13,7 @@ def mnist_param_grid(prefix=""):
     step named ``ensemble``, use ``prefix="ensemble__"``. The grid fixes neither
     ``M`` nor ``q``; configure those on the estimator. Each call returns fresh
     lists so a caller may refine the grid without affecting another call.
+    The sampling rate is fixed at 10% in this preset.
 
     ``lambd`` is the underlying DWD package's coefficient of the squared RKHS
     norm. ``gamma`` uses ``exp(-gamma * ||x - z||**2)``.
@@ -23,7 +24,7 @@ def mnist_param_grid(prefix=""):
         prefix + "lambd": [2.0 ** exponent for exponent in
                            (-30, -26, -22, -18, -14, -10, -6, -2, 0)],
         prefix + "gamma": [10.0 ** exponent for exponent in range(-8, 1)],
-        prefix + "theta": [0.1, 0.2],
+        prefix + "theta": [0.1],
         prefix + "sv_selection_ratio": [0.1, 0.15, 0.2, 0.25, 0.3],
     }
 
@@ -36,8 +37,8 @@ def mnist_svm_param_grid(prefix=""):
     is used by every base and final SVC, without sample-size rescaling. C is
     not numerically interchangeable with the DWD norm coefficient ``lambd``.
 
-    Gamma, sampling rates and retention fractions match ``mnist_param_grid``.
-    Both presets contain 810 candidates. Set M on the estimator (default 5).
+    Gamma, the fixed 10% sampling rate and retention fractions match ``mnist_param_grid``.
+    Both presets contain 405 candidates. Set M on the estimator (default 5).
     Equal candidate counts are comparable search budgets, not guarantees of
     equal runtime or equally optimal hyperparameters. Inspect CV boundary
     winners and refine/extend C and gamma using training data when necessary.

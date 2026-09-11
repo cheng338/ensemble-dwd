@@ -157,13 +157,13 @@ def load_local_multiclass_data(path, train_size=6000, test_size=None, *, random_
 
 
 def search_grid(smoke=False):
-    """Return the broad grid or an explicitly limited eight-candidate grid."""
+    """Return the broad grid or an explicitly limited four-candidate grid."""
     if not smoke:
         return mnist_param_grid(prefix=PARAMETER_PREFIX)
     return {
         PARAMETER_PREFIX + 'lambd': [2.0 ** -24, 2.0 ** -18],
         PARAMETER_PREFIX + 'gamma': [1e-4, 1e-3],
-        PARAMETER_PREFIX + 'theta': [0.1, 0.2],
+        PARAMETER_PREFIX + 'theta': [0.1],
         PARAMETER_PREFIX + 'sv_selection_ratio': [0.3],
     }
 
@@ -180,9 +180,9 @@ def main(argv=None):
     parser.add_argument('--jobs', type=positive_int, default=1,
                         help='Positive outer CV worker count; pair fitting remains sequential.')
     parser.add_argument('--smoke-grid', action='store_true',
-                        help='Use eight explicit validation candidates instead of the broad 810-candidate grid.')
+                        help='Use four explicit validation candidates instead of the broad 405-candidate grid.')
     parser.add_argument('--error-score', choices=('raise', 'nan'), default='nan',
-                        help='nan skips only ineligible selections; unexpected failures stop the run.')
+                        help='nan skips only ineligible subsets or selections; unexpected failures stop the run.')
     parser.add_argument('--output-dir', type=Path, help='New run directory; an existing directory is rejected.')
     cache = parser.add_mutually_exclusive_group()
     cache.add_argument('--cache-dir', type=Path, help='Shared trusted base-stage cache directory.')

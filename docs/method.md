@@ -10,9 +10,9 @@ it into the multiclass procedure described in [the multiclass method](multiclass
 
 For training rows `(X, y)` of size `n`:
 
-1. Generate `M` subsets of size `max(2, floor(theta * n))`, without replacement
-   within a subset. Subsets can overlap each other. Each subset contains both
-   classes.
+1. Permute the training-row indices uniformly once. Split the first
+   `M * max(2, floor(theta * n))` indices into `M` disjoint base subsets of
+   equal size. Validate every subset before fitting any learner.
 2. Fit an optimized kernel DWD model on every subset.
 3. Evaluate each base learner's raw decision function on every training row.
    Average across learners and rank rows by the absolute average. Break ties
@@ -32,15 +32,28 @@ support representation of the full-data DWD optimum.
 
 ## Sampling and invalid selections
 
-The dissertation specifies uniform sampling without replacement. A binary
-learner also requires both labels to be represented. This implementation uses
-that distribution conditional on drawing both classes: sample the first
-class's count from the feasible, truncated hypergeometric distribution, then
-sample the required rows uniformly within each class. This avoids silently
-reducing the number of learners after unsuccessful random retries.
+Sampling follows the disjoint-subset rule in Mao et al. (2016), Section III-A,
+for both ensemble DWD and the SVM comparator. With `N` input rows and
+`k = max(2, floor(theta * N))`, the required capacity is `M * k <= N`.
+One uniform random permutation supplies all blocks; the remaining rows are
+unused by the base learners but remain available for scoring and final selection.
+Disjointness applies within one binary fit, including each OvO class pair.
+The final selected set is drawn from that fit's complete training set.
 
-The minimum subset size of two is an explicit finite-data rule. Sampling
-parameters must still specify a feasible subset of the available rows.
+The permutation does not use the labels. There is no class conditioning,
+stratification, redraw, or replacement of rows after sampling. Both binary
+classes must appear in every realized block. `IneligibleSubsetError` is raised
+before any learner fit or base-cache lookup when the capacity is insufficient,
+a class has fewer than `M` observations, or a sampled block has only one class.
+It subclasses `IneligibleSelectionError`, so existing handlers continue to
+recognize an ineligible candidate. An external search can report and exclude
+it; `--error-score raise` retains the original exception for inspection.
+
+The minimum block size of two is an explicit finite-data rule. The presets
+fix the sampling rate at 0.1 (10%) and the examples use `M=5`. Increasing `M` requires checking the capacity on every CV
+training fold and every OvO pair. Independent subset draws in older versions
+could overlap; their predictions and accuracy results are historical results
+for that sampling scheme and do not establish disjoint-sampling performance.
 
 Final consensus selection follows the ranking exactly. A retained count below
 two, or a selected set containing only one class, raises an error. No minority
@@ -179,7 +192,7 @@ Validation rows are used only for scoring. Scaling each subset independently
 would define a different metric across the base learners.
 
 `mnist_param_grid(prefix='')` returns a dictionary of nine `lambd` values,
-nine `gamma` values, two sampling fractions, and five retention fractions
+nine `gamma` values, one fixed 10% sampling rate, and five retention fractions
 documented in the README. `GridSearchCV` evaluates their Cartesian product.
 Configure the RBF kernel, `M`, `q`, and stopping controls on the estimator;
 this helper does not set or search them. The provided examples use `M=5`
@@ -190,8 +203,9 @@ independently or launch a search.
 Use five-fold stratified cross-validation with accuracy scoring for the
 provided MNIST example. Keep a final test set separate from parameter
 selection. The example wraps the whole pipeline for candidate evaluation. Its
-`--error-score nan` default handles only `IneligibleSelectionError`, marking an
-expected invalid consensus selection ineligible and reporting it. Unexpected
+`--error-score nan` default handles only `IneligibleSelectionError`
+(including `IneligibleSubsetError`), marking an
+ineligible base subset or final selection and reporting it. Unexpected
 exceptions are recorded with their context and propagate to stop the search;
 they are not treated as ordinary parameter choices.
 Only candidates with finite scores on every fold and a finite mean score are

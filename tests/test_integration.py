@@ -45,10 +45,10 @@ class IntegrationTests(unittest.TestCase):
                                  max_iter=12, stopping="fixed")
 
     def test_sklearn_estimator_contract(self):
-        # Full retention makes all generated binary fixtures eligible without
-        # altering the estimator's ordinary sampling or final-fit procedure.
-        # The framework handles optional checks according to installed extras.
-        check_estimator(EnsembleKernelDWD(M=2, theta=0.5, sv_selection_ratio=1.0,
+        # Some generated binary fixtures have only one minority-class row.
+        # One full-size base keeps those checks feasible under disjoint sampling;
+        # the remaining integration tests exercise multiple disjoint bases.
+        check_estimator(EnsembleKernelDWD(M=1, theta=1.0, sv_selection_ratio=1.0,
                                          lambd=0.05, gamma=0.2), on_skip=None)
 
     def test_real_solver_finite_predictions_and_shared_parameters(self):
