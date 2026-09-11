@@ -51,7 +51,7 @@ through cross-validation.
 ## Shared parameters and regularization
 
 Each base model and the final model receives the same kernel, resolved gamma,
-`lambd`, `q`, stopping controls, and acceleration choice. Fitted coefficients
+`lambd`, `q`, stopping controls, acceleration choice, and backend. Fitted coefficients
 and intercepts are learned separately. Every DWD fit explicitly chooses the
 optimized implementation of the pinned dependency. Its intercept remains
 unregularized.
@@ -112,11 +112,19 @@ fitting and subsequent query evaluation require explicit row correspondence.
 and `stopping='optimality'` are explicit alternatives; `tol` controls the latter.
 There is no automatic validation split or validation-based early stopping.
 
-`acceleration=None` retains ordinary MM updates. Changing stopping or
+For MM backends, `acceleration=None` retains ordinary MM updates. Changing stopping or
 acceleration can change raw decision values and therefore the consensus set,
 even when base classification signs agree. Evaluate such changes through the
 complete estimator. `converged_` reports the dependency's checked numerical
 criterion separately from iteration counts and stopping policy.
+
+`backend='auto'` retains the optimized DWD dependency's default backend.
+Use `backend='spectral'` or `backend='cholesky'` to select an MM representation,
+or `backend='lbfgs'` for the dependency's alternative optimizer. The choice is
+shared across every base and final fit, including each multiclass pair, and
+forms part of the base-cache key. Runtime depends on the data and parameters;
+no backend is uniformly faster. Finite-budget scores and selected rows can
+differ, so validate an explicit backend through the complete estimator.
 
 Prediction is evaluated in batches to limit query-kernel allocations.
 Training still uses dense kernel matrices. At `M=5`, an uncached successful fit
