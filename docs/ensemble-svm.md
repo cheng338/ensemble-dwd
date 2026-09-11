@@ -32,8 +32,7 @@ variant, not an exact reproduction of Mao's algorithm. The paper does not
 specify the retained-fraction grid used here. [Mao et al., *Fast Kernel SVM
 Training via Support Vector Identification*, ICPR 2016, Eqs. 1–9](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
 
-The original `binary.py` and the dissertation's SVM description use the
-unsigned score `abs(abs(g) - 1)`. The signed rule is an explicit methodological
+The dissertation's SVM description uses the unsigned score `abs(abs(g) - 1)`. The signed rule is an explicit methodological
 revision for this comparator. Those scores coincide on correctly classified
 observations and can differ on misclassified observations. Existing results
 from the unsigned implementation must retain that label. DWD continues to
@@ -63,7 +62,7 @@ is base classifiers, selection, and a final classifier of the same family.
 
 SVC minimizes `0.5 * ||f||_H**2 + C * sum(hinge_loss)`, with a separate,
 unregularized intercept. The same numerical C is passed to every base and
-final fit, as in the original SVM script. There is no automatic rescaling
+final fit. There is no automatic rescaling
 by sample size. Equivalently, the mean-loss form has squared-norm coefficient
 `1 / (2 * C * n_fit)`. Thus C is not interchangeable with DWD's `lambd`, and
 sharing C across different-sized subsets is different from sharing a
