@@ -35,6 +35,11 @@ pairs do not run separate searches. Within each pair, all `M` base models
 and the final refit share their DWD parameters. The parameters `theta` and
 `sv_selection_ratio` denote the base sampling fraction and final retention
 fraction respectively; both fractions are applied to that pair's row count.
+For each pair, one permutation supplies `M` disjoint blocks of size
+`k = max(2, floor(theta * N_pair))`, requiring `M * k <= N_pair`.
+Every block must contain both pair labels; the sampler does not redraw an
+ineligible allocation. Disjointness is enforced within each pair. The same
+observation can participate in other class pairs and in the final selected set.
 
 Put a `StandardScaler` before the OVO estimator inside a sklearn `Pipeline`.
 Each CV training fold then fits one scaler on that fold's multiclass rows.
@@ -91,6 +96,6 @@ child's selected rows in the original multiclass training input, use
 `model.pair_indices_[p][model.estimators_[p].selected_indices_]`.
 Each child's `n_iter_` and `converged_` cover its `M` base fits followed by
 its final fit. An objective-change stopping event does not certify optimality.
-Ineligible selections invalidate the complete candidate and are reported with
+Ineligible base subsets or final selections invalidate the complete candidate and are reported with
 the responsible pair. Changing the retention ratio is a new CV candidate,
 not an automatic recovery action.
