@@ -18,6 +18,9 @@ For ten classes, it fits 45 binary ensembles.
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
 
+See the [release validation](docs/validation-0.3.3.md) for the justification,
+tests and limitations of major implementation changes.
+
 ## Installation
 
 Python 3.11 or later is required. From this source directory:
@@ -31,11 +34,11 @@ To build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.2-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.3-py3-none-any.whl
 ```
 
 The dependency metadata pins SHA-256-verified wheels from
-[cheng338/dwd 1.3.7](https://github.com/cheng338/dwd/releases/tag/v1.3.7).
+[cheng338/dwd 1.3.8](https://github.com/cheng338/dwd/releases/tag/v1.3.8).
 Conventional GIL-enabled CPython on Windows AMD64 uses the wheel with the compiled prediction helper;
 other platforms use the portable wheel. Both contain the optimized DWD
 implementation. Install the package with its declared dependencies; installing
@@ -47,7 +50,7 @@ that interpreter, install the portable DWD wheel and numerical dependencies
 explicitly, then install this package without dependency resolution:
 
 ```shell
-python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.7/dwd-1.3.7-py3-none-any.whl#sha256=ccfa52124121fdffecf19d9cd9ef637715a4032a5032e6531382dd431c5610e0"
+python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.8/dwd-1.3.8-py3-none-any.whl#sha256=27eaa3f12e9b980e27f2113b0abf1b5376d53e717beb48303a2a669194c7b212"
 python -m pip install --no-deps .
 ```
 
@@ -154,76 +157,94 @@ single-class selection. For a broad search, use the checkpointed example
 below: it excludes `IneligibleSelectionError` and its `IneligibleSubsetError`
 subclass while still stopping on unexpected failures.
 
-The broad MNIST preset contains:
+The default MNIST grid starts with 125 candidates:
 
-- `lambd`: `2**e` for `e` in `[-30, -26, -22, -18, -14, -10, -6, -2, 0]`.
-- `gamma`: `10**e` for `e` in `[-8, -7, -6, -5, -4, -3, -2, -1, 0]`.
+- `lambd`: `2**e` for `e` in `[-30, -22, -14, -6, 0]`.
+- `gamma`: `10**e` for `e` in `[-8, -6, -4, -2, 0]`.
 - `theta`: `[0.1]` (fixed at 10%).
 - `sv_selection_ratio`: `[0.1, 0.15, 0.2, 0.25, 0.3]`.
 
-This is 405 candidates and 2,025 ensemble fits with five folds. With `M=5`,
-the uncached budget is up to 12,150 DWD fits for cross-validation, plus six for
-the selected candidate's refit. Reusing base fits across retention ratios can
-reduce that work. This is a proposed search space, not a benchmark result.
-The helper returns a parameter grid and does not launch fitting.
+Call `mnist_param_grid(prefix='ensemble__', broad=True)` to restore the
+historical 405-candidate grid: lambda exponents
+`[-30, -26, -22, -18, -14, -10, -6, -2, 0]` and every integer gamma exponent
+from -8 through 0, with the same fractions. Both grids cover the same outer
+range. Neither helper fits models or tunes parameters internally.
 
-`examples/tune_mnist.py` accepts a local NumPy archive with standard Keras keys
-`x_train/y_train/x_test/y_test`, capitalized `X_train/X_test` equivalents, or
-`X/y`. It requires `--run` before starting a search and does not download
-MNIST. Set `--jobs` to a positive worker count that fits the available RAM;
-each worker trains its DWD models sequentially with one native BLAS thread.
-`examples/basic_usage.py` demonstrates a single fit on bundled digits.
+With five folds and `M=5`, the default coarse stage has 625 ensemble CV fits,
+or up to 3,750 DWD fits before base-cache reuse. The broad coarse stage has
+2,025 ensemble CV fits, or up to 12,150 DWD fits. These are initial-stage
+budgets, not measured runtimes or the total cost of adaptive search.
 
-The broad search example defaults to `--error-score nan` for the expected
-`IneligibleSelectionError`, including `IneligibleSubsetError`: a requested
-base allocation may be infeasible or a base/final set may contain only one
-class or too few rows. Such candidates are reported and excluded. Unexpected
-exceptions, including numerical or input errors, are recorded and stop the
-search. Use `--error-score raise` to stop on ineligible selections as well.
-Only candidates with finite scores in every fold and a finite mean may be
-selected; an all-invalid search stops. Failures are never assigned zero
-accuracy or replaced by fallback classifiers.
+`examples/tune_mnist.py` runs bounded adaptive search through external
+`GridSearchCV`. Each stage uses the same saved stratified five-fold split,
+fits preprocessing inside each training fold, and sets `refit=False`.
+Only new complete parameter combinations are evaluated. Results from earlier
+stages in that run remain eligible for selection; changing only retention
+can also reuse the package's base-stage cache.
 
-Add `--refine` for a second, explicit local search around the three best fully
-valid coarse candidates. For each candidate, multiply lambda by
-`[0.25, 1, 4]` and gamma by `[10**-0.5, 1, 10**0.5]`, keeping that candidate's
-sampling and retention fractions. Duplicate combinations are removed, and
-values may extend beyond the coarse grid. This adds at most 27 candidates,
-135 ensemble CV fits, or up to 810 uncached DWD CV fits. Both stages reuse the
-same training folds. Each completed stage writes its CV results, fold indices, data
-fingerprint and selected parameters before the final refit. Both searches use
-`refit=False`. Before final fitting, the binary DWD and SVM examples check
-whether the selected regularization or gamma value is at or beyond a coarse
-search endpoint, including after optional local refinement.
-A boundary winner produces `review.json` and a `needs_review` status, without
-final fitting or held-out scoring. Expand the indicated range using training
-CV before accepting that candidate. Sampling and retention boundaries do not
-trigger this hold, and the examples do not automatically expand a grid.
-After this review passes, the selected pipeline is fitted explicitly on all
-training rows. A final-fit failure leaves the completed CV checkpoint available, and
-the held-out test set is scored only after a successful final fit. Running the
-example without `--run`
-prints these budgets without loading data or fitting models.
+The policy expands lambda/gamma endpoints reached by the best or tied-best
+fully valid candidates, including cross-combinations when both axes expand.
+Each outward step is at most one decade (a factor of 10), or the smaller
+adjacent logarithmic spacing when the explored grid is finer. Sampling stays at 10% and retention stays on the five specified fractions.
+Local refinement is enabled by default: it takes the top three distinct
+lambda/gamma pairs, proposes logarithmic midpoints within the explored bounds,
+and evaluates those pairs with all fixed fraction choices. Duplicate complete
+candidates are removed. `--no-refine` disables this stage; `--refine` remains
+accepted for compatibility.
+
+Defaults are three complete expansion rounds, 500 unique candidates total,
+a top-three refinement, two nonimproving complete expansion rounds for the
+plateau rule, improvement tolerance 0, and boundary tie tolerance `1e-12`.
+Use `--max-expansions`, `--max-candidates`, and `--broad-grid` to choose an
+explicit budget. A complete proposed stage that does not fit the remaining
+budget is held rather than partially evaluated. Unresolved boundaries or
+exhausted limits produce `review.json` with `needs_review`, without final
+fitting or test scoring. A documented plateau can finish the search even
+while a best or tied-best candidate remains at a boundary. This stopping rule
+does **not** prove a global optimum or rule out improvement farther away.
+
+Only candidates with finite scores in every fold and a finite mean may win.
+The default `--error-score nan` excludes only `IneligibleSelectionError` and
+its `IneligibleSubsetError` subclass. Unexpected numerical, input or other
+exceptions are recorded and stop the run; they are not silently assigned zero
+accuracy or replaced by fallback classifiers. `--error-score raise` stops on
+ineligible candidates too. An all-invalid search stops.
+
+The selected parameters and review decision are saved before fitting the
+pipeline once on all training rows. The separate test set is scored only
+after the search is accepted and this final fit succeeds. A failed final fit
+leaves the completed CV records available. The existing
+`run_search_workflow` Python helper retains its explicit coarse/local behavior
+for historical reproduction; the CLI now calls `run_adaptive_search`.
 
 ```shell
-python examples/tune_mnist.py --refine
-python examples/tune_mnist.py --data mnist.npz --jobs 2 --error-score nan --refine --run
+python examples/tune_mnist.py
+python examples/tune_mnist.py --data mnist.npz --jobs 2 --run
+python examples/tune_mnist.py --broad-grid --max-candidates 1000 --no-refine
 ```
 
-The example creates a separate output directory for each run, uses a shared
-base-fit cache inside it, and discards fitted base models after recording their
-diagnostics. Use `--output-dir PATH` to choose a fresh run directory; otherwise
-it creates a unique directory under `results/`. `--cache-dir PATH` selects a
-trusted shared cache, and `--no-cache` disables reuse.
+Without `--run`, the example only previews its budget and does not load data.
+It accepts local NumPy archives with Keras keys `x_train/y_train/x_test/y_test`,
+capitalized `X_train/X_test` equivalents, or `X/y`; it never downloads data.
+A supplied test split is preserved. `X/y` creates a separate stratified 25%
+test split before CV. No dataset dimensions or sample-count defaults were
+changed by the adaptive policy.
 
-`run.json` records input hashes, folds and settings. `coarse-cv.json` and,
-when requested, `local-cv.json` hold completed CV results. `selection.json` is
-written before final fitting; `refit.json`, `status.json` and any
-`failures/failure-*.json` records explain the outcome. `completed.json` contains
-the held-out score after success. These files preserve completed work for an
-explicit retry; automatic resume is not implemented. An interrupted or failed
-CV stage may not have complete CV results, but its run and failure records
-remain available. CV stays external through `GridSearchCV`.
+Choose a positive `--jobs` count for the available RAM. `pre_dispatch` equals
+that count, each worker uses one native thread, and base models fit sequentially.
+`--output-dir` must name a fresh directory; the default creates a unique
+`results/mnist-*` directory with a shared base cache. `--cache-dir` selects a
+trusted cache and `--no-cache` disables reuse. The examples discard base models
+after retaining their diagnostics, scores and indices.
+
+`run.json` records folds, data fingerprints, estimator settings and the search
+policy. `coarse-cv.json`, `expansion-*-cv.json`, `local-cv.json` when present,
+and `accumulated-cv.json` preserve completed stage results. `selection.json`
+and `review.json` record the selection before final fitting; `refit.json`,
+`status.json`, and `failures/failure-*.json` explain success or failure.
+`completed.json` contains the held-out score after success. Reuse of scored
+candidates is within one run; automatic recovery of interrupted stages across
+new invocations is not implemented.
 
 ## Reusing work and storing models
 
@@ -335,8 +356,10 @@ sampled/selected indices are local to that pair; map them through its
 An ineligible binary selection fails that entire multiclass candidate. No
 missing pair or substitute model is silently accepted.
 
-The broad five-fold grid costs up to 546,750 binary DWD fits for ten classes
-and `M=5`, before base-stage cache reuse. It is not launched automatically.
+The default 125-candidate coarse stage costs up to 168,750 binary DWD fits
+for ten classes and five folds; the broad 405-candidate stage costs up to
+546,750. These counts precede adaptive stages and base-cache reuse. Fitting
+is not launched automatically.
 The multiclass example supports a compact validation grid and stratified subsets
 from a local MNIST archive with separate training and test arrays:
 
@@ -345,8 +368,11 @@ python examples/tune_mnist_multiclass.py --smoke-grid
 python examples/tune_mnist_multiclass.py --data mnist.npz --train-size 6000 --jobs 8 --smoke-grid --run
 ```
 
-The example keeps preprocessing inside each CV fold and uses external
-`GridSearchCV`. See [the multiclass method guide](docs/multiclass.md).
+The normal multiclass example uses the same adaptive policy and keeps
+preprocessing inside each CV fold. `--smoke-grid` overrides the adaptive
+budget to exactly four candidates, zero expansions and no refinement;
+unresolved winners remain held from final fitting/test scoring. This is an
+integration check, not an adequate search for comparative accuracy. See [the multiclass method guide](docs/multiclass.md).
 
 For comparison experiments, the package also includes `EnsembleKernelSVM`,
 with binary and multiclass usage documented in [the comparator guide](docs/ensemble-svm.md).
