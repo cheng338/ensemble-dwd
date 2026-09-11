@@ -33,13 +33,15 @@ def binary_fixture():
 
 
 def fixed_subsets(y, M=3):
-    """Explicit class-balanced subsets, independent of the package sampler."""
+    """Disjoint explicit subsets for the independent score/refit oracle."""
     negative, positive = [np.flatnonzero(y == label) for label in np.unique(y)]
+    rng = np.random.RandomState(11)
+    negative, positive = rng.permutation(negative), rng.permutation(positive)
+    assert len(negative) >= 10 * M and len(positive) >= 10 * M
     subsets = []
-    for seed in (11, 19, 31)[:M]:
-        rng = np.random.RandomState(seed)
-        chosen = np.concatenate((rng.permutation(negative)[:12],
-                                 rng.permutation(positive)[:12]))
+    for index in range(M):
+        chosen = np.concatenate((negative[10 * index:10 * (index + 1)],
+                                 positive[10 * index:10 * (index + 1)]))
         subsets.append(rng.permutation(chosen))
     return subsets
 
@@ -65,7 +67,7 @@ class SVMMathematicalTests(unittest.TestCase):
         self.X, self.y = binary_fixture()
 
     def model(self, **overrides):
-        parameters = dict(M=3, theta=24 / 64, sv_selection_ratio=.75,
+        parameters = dict(M=3, theta=20 / 64, sv_selection_ratio=.75,
                           C=.7, gamma=.15, tol=1e-5, random_state=42,
                           prediction_batch_size=7)
         parameters.update(overrides)
@@ -244,8 +246,9 @@ class SVMMathematicalTests(unittest.TestCase):
         second = clone(first).fit(self.X, self.y)
         for left, right in zip(first.subset_indices_, second.subset_indices_):
             assert_array_equal(left, right)
-            self.assertEqual(len(np.unique(left)), 24)
+            self.assertEqual(len(np.unique(left)), 20)
             self.assertEqual(len(np.unique(self.y[left])), 2)
+        self.assertEqual(len(np.unique(np.concatenate(first.subset_indices_))), 60)
         assert_array_equal(first.predict(self.X), second.predict(self.X))
 
     def test_max_iteration_exhaustion_is_reported_without_silent_solver_substitution(self):

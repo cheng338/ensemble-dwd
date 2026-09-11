@@ -34,13 +34,13 @@ class SequenceDWD:
 
 class NumericalBoundaryTests(unittest.TestCase):
     def setUp(self):
-        self.X = np.array([[-2.], [-1.], [1.], [2.]])
-        self.y = np.array([0, 1, 0, 1])
+        self.X = np.linspace(-2., 2., 10)[:, None]
+        self.y = np.tile([0, 1], 5)
 
     def fit_margins(self, margins):
         SequenceDWD.margins = margins
         SequenceDWD.fitted = 0
-        model = EnsembleKernelDWD(M=len(margins), theta=1.,
+        model = EnsembleKernelDWD(M=len(margins), theta=.2,
                                   sv_selection_ratio=1., gamma=.1)
         with patch('ensemble_dwd.estimator.KernGDWD', SequenceDWD):
             model.fit(self.X, self.y)
@@ -53,21 +53,21 @@ class NumericalBoundaryTests(unittest.TestCase):
             with self.subTest(values=values):
                 model = self.fit_margins(values)
                 expected = float(sum(Fraction.from_float(float(x)) for x in values) / len(values))
-                assert_array_equal(model.consensus_scores_, np.full(4, expected))
+                assert_array_equal(model.consensus_scores_, np.full(len(self.y), expected))
                 self.assertTrue(np.isfinite(model.consensus_scores_).all())
-                assert_array_equal(model.selected_indices_, np.arange(4))
+                assert_array_equal(model.selected_indices_, np.arange(len(self.y)))
 
     def test_overflow_recovery_preserves_opposing_large_terms_and_small_remainder(self):
         largest = np.finfo(np.float64).max
         values = [largest, largest, -largest, -largest, 1.]
         model = self.fit_margins(values)
-        assert_array_equal(model.consensus_scores_, np.full(4, .2))
-        assert_array_equal(model.selected_indices_, np.arange(4))
+        assert_array_equal(model.consensus_scores_, np.full(len(self.y), .2))
+        assert_array_equal(model.selected_indices_, np.arange(len(self.y)))
 
     def test_ordinary_consensus_arithmetic_remains_unchanged(self):
         values = [.3, -.7, .1, 1.1, -.2]
         model = self.fit_margins(values)
-        expected = np.mean(np.repeat(np.asarray(values)[:, None], 4, axis=1), axis=0)
+        expected = np.mean(np.repeat(np.asarray(values)[:, None], len(self.y), axis=1), axis=0)
         assert_array_equal(model.consensus_scores_, expected)
 
     def test_nonconstant_variance_underflow_is_not_treated_as_constant_input(self):
@@ -85,7 +85,7 @@ class NumericalBoundaryTests(unittest.TestCase):
         SequenceDWD.fitted = 0
         model = EnsembleKernelDWD(M=1, theta=1., sv_selection_ratio=1.)
         with patch('ensemble_dwd.estimator.KernGDWD', SequenceDWD):
-            model.fit(np.full((4, 1), 1e-200), self.y)
+            model.fit(np.full((len(self.y), 1), 1e-200), self.y)
         self.assertEqual(model.gamma_, 1.)
         self.assertEqual(model.final_estimator_.params['implementation'], 'optimized')
 

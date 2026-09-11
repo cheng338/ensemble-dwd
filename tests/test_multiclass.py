@@ -19,7 +19,7 @@ from sklearn.svm import SVC
 from sklearn.utils.estimator_checks import check_estimator
 from sklearn.utils.validation import check_is_fitted
 
-from ensemble_dwd import EnsembleKernelDWD, IneligibleSelectionError, OvOClassifier
+from ensemble_dwd import EnsembleKernelDWD, IneligibleSelectionError, IneligibleSubsetError, OvOClassifier
 
 
 class RecordingBinary(ClassifierMixin, BaseEstimator):
@@ -43,6 +43,8 @@ class RecordingBinary(ClassifierMixin, BaseEstimator):
                 tuple(self.coordinates_) == tuple(self.fail_pair)):
             if self.failure == "ineligible":
                 raise IneligibleSelectionError("injected ineligible selection")
+            if self.failure == "subset":
+                raise IneligibleSubsetError("injected single-class base subset")
             raise FloatingPointError("injected numerical failure")
         self.centers_ = np.array([
             self.X_[self.y_ == label, 0].mean() for label in self.classes_
@@ -258,6 +260,19 @@ class MulticlassContractTests(unittest.TestCase):
         self.assertFalse(any(name.endswith("_") for name in vars(model)))
         model.set_params(estimator__fail_pair=None).fit(self.X, self.y)
         assert_array_equal(model.predict(self.X), self.y)
+
+    def test_ineligible_subset_preserves_type_pair_context_and_clears_state(self):
+        for jobs in (1, 2):
+            with self.subTest(n_jobs=jobs):
+                model = OvOClassifier(RecordingBinary(), n_jobs=jobs).fit(self.X, self.y)
+                model.set_params(estimator__fail_pair=(0.0, 2.0), estimator__failure='subset')
+                with self.assertRaisesRegex(IneligibleSubsetError, 'OVO pair') as caught:
+                    model.fit(self.X, self.y)
+                self.assertIsInstance(caught.exception, IneligibleSelectionError)
+                self.assertIn('single-class base subset', str(caught.exception))
+                self.assertFalse(any(name.endswith('_') for name in vars(model)))
+                with self.assertRaises(NotFittedError):
+                    model.predict(self.X)
 
     def test_invalid_prediction_labels_and_shapes_raise_instead_of_becoming_votes(self):
         for prediction in ["bad_label", "bad_shape"]:

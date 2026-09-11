@@ -16,7 +16,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from ensemble_dwd import IneligibleSelectionError, mnist_param_grid
+from ensemble_dwd import IneligibleSelectionError, IneligibleSubsetError, mnist_param_grid
 
 
 EXAMPLE_PATH = Path(__file__).resolve().parents[1] / 'examples' / 'tune_mnist.py'
@@ -42,6 +42,8 @@ class ControlledClassifier(ClassifierMixin, BaseEstimator):
 
     def fit(self, X, y):
         type(self).events.append(('fit', len(y)))
+        if self.mode == 'ineligible_subset':
+            raise IneligibleSubsetError('A sampled block contains one class.')
         if self.mode == 'ineligible':
             raise IneligibleSelectionError('The selected rows contain one class.')
         if self.mode == 'numerical':
@@ -122,6 +124,25 @@ class SearchWorkflowTests(unittest.TestCase):
         self.assertEqual(ControlledClassifier.events.count(('predict', 4)), 1)
         self.assertEqual(self.read('refit.json')['state'], 'completed')
         self.assertEqual(self.read('status.json')['state'], 'completed')
+
+    def test_ineligible_subset_is_skipped_with_distinct_failure_category(self):
+        result = self.run_workflow({'ensemble__mode': ['ineligible_subset', 'good']})
+        self.assertEqual(self.read('coarse-cv.json')['fully_valid'], [False, True])
+        self.assertEqual(len(self.failures()), 5)
+        self.assertTrue(all(row['category'] == 'ineligible_subset' for row in self.failures()))
+        self.assertEqual(result['completed']['held_out_accuracy'], 1.)
+        self.assertEqual(ControlledClassifier.events.count(('predict', 4)), 1)
+
+    def test_ineligible_subset_adapter_preserves_error_type(self):
+        adapter = CandidateEvaluator(ControlledClassifier('ineligible_subset'))
+        adapter.fit(self.X, self.y)
+        self.assertFalse(adapter.eligible_)
+        self.assertTrue(np.isnan(eligible_accuracy(adapter, self.X_test, self.y_test)))
+        with self.assertRaises(IneligibleSubsetError):
+            adapter.predict(self.X_test)
+        with self.assertRaises(IneligibleSubsetError):
+            CandidateEvaluator(ControlledClassifier('ineligible_subset'),
+                               error_policy='raise').fit(self.X, self.y)
 
     def test_debug_raise_propagates_expected_failure(self):
         with self.assertRaises(IneligibleSelectionError):

@@ -152,7 +152,7 @@ class MulticlassArchiveTests(unittest.TestCase):
                     '--output-dir', str(output), '--run'])
         self.assertIs(result, sentinel)
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir = run.call_args.args
-        self.assertEqual(len(ParameterGrid(grid)), 8)
+        self.assertEqual(len(ParameterGrid(grid)), 4)
         self.assertEqual((len(y_train), len(y_test), len(folds)), (60, 20, 3))
         self.assertGreater(X_train.mean(), 1)  # Scaling has not happened before CV.
         self.assertFalse(hasattr(pipeline.named_steps['scale'], 'mean_'))
@@ -191,8 +191,8 @@ class MulticlassArchiveTests(unittest.TestCase):
 
 class MulticlassPreviewTests(unittest.TestCase):
     def test_default_and_smoke_preview_load_no_data_and_report_45_pair_budget(self):
-        for argv, candidates, budget in (([], 810, '1,093,500'),
-                                         (['--smoke-grid'], 8, '10,800')):
+        for argv, candidates, budget in (([], 405, '546,750'),
+                                         (['--smoke-grid'], 4, '5,400')):
             with self.subTest(argv=argv):
                 output = io.StringIO()
                 with patch.object(example, 'load_local_multiclass_data') as load:
@@ -206,12 +206,12 @@ class MulticlassPreviewTests(unittest.TestCase):
     def test_grid_prefixes_and_smoke_parameter_values(self):
         broad = example.search_grid()
         smoke = example.search_grid(smoke=True)
-        self.assertEqual(len(ParameterGrid(broad)), 810)
-        self.assertEqual(len(ParameterGrid(smoke)), 8)
+        self.assertEqual(len(ParameterGrid(broad)), 405)
+        self.assertEqual(len(ParameterGrid(smoke)), 4)
         self.assertTrue(all(name.startswith('ovo__estimator__') for name in broad))
         self.assertEqual(smoke['ovo__estimator__lambd'], [2.0 ** -24, 2.0 ** -18])
         self.assertEqual(smoke['ovo__estimator__gamma'], [1e-4, 1e-3])
-        self.assertEqual(smoke['ovo__estimator__theta'], [0.1, 0.2])
+        self.assertEqual(smoke['ovo__estimator__theta'], [0.1])
         self.assertEqual(smoke['ovo__estimator__sv_selection_ratio'], [0.3])
 
 
