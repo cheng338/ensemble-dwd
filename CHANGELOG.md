@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- Added a shared `backend` parameter to `EnsembleKernelDWD`, forwarded to
+  every base and final DWD fit, including each multiclass pair. Supported
+  choices are `auto`, `spectral`, `cholesky`, and `lbfgs`; `auto` remains the
+  default. Different backend choices use separate base-cache entries.
+- Updated the hash-pinned optimized DWD dependency to cheng338/dwd 1.3.7.
+
 ## 0.3.0
 
 - Added `EnsembleKernelSVM`, using optimized scikit-learn SVC base learners,

@@ -31,11 +31,11 @@ To build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.1-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.2-py3-none-any.whl
 ```
 
 The dependency metadata pins SHA-256-verified wheels from
-[cheng338/dwd 1.3.6](https://github.com/cheng338/dwd/releases/tag/v1.3.6).
+[cheng338/dwd 1.3.7](https://github.com/cheng338/dwd/releases/tag/v1.3.7).
 Conventional GIL-enabled CPython on Windows AMD64 uses the wheel with the compiled prediction helper;
 other platforms use the portable wheel. Both contain the optimized DWD
 implementation. Install the package with its declared dependencies; installing
@@ -47,7 +47,7 @@ that interpreter, install the portable DWD wheel and numerical dependencies
 explicitly, then install this package without dependency resolution:
 
 ```shell
-python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.6/dwd-1.3.6-py3-none-any.whl#sha256=bb6f920c547d55f6b68668755a3bdfd8c12b602cd9283edb4ba9ae89c1f0e5f1"
+python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.7/dwd-1.3.7-py3-none-any.whl#sha256=ccfa52124121fdffecf19d9cd9ef637715a4032a5032e6531382dd431c5610e0"
 python -m pip install --no-deps .
 ```
 
@@ -103,6 +103,7 @@ DWD ensemble inside `OvOClassifier`.
 | `prediction_batch_size` | `1024` | Query-row batch size for decision evaluation. |
 | `cache_dir` | `None` | Optional local directory for reusing identical base fits. |
 | `store_base_estimators` | `True` | Retain fitted base models for inspection. |
+| `backend` | `'auto'` | Shared optimized DWD backend for all base and final fits. |
 
 Base learners and the final model share their DWD parameters. Every fit
 explicitly uses `implementation='optimized'`; the defaults therefore perform
@@ -111,6 +112,11 @@ reused. A shared stopping policy
 does not require all six fits to take the same number of iterations.
 All DWD fits use zero initialization; they do not draw random initial
 coefficients. `random_state` controls the ensemble's subset sampling.
+
+An explicit `backend='spectral'`, `'cholesky'`, or `'lbfgs'` selects an
+alternative supported by the optimized DWD dependency. Runtime and
+finite-budget decision scores can differ; validate the complete ensemble
+when changing this choice. See [Numerical controls](docs/method.md#numerical-controls).
 
 These are starting settings, not universal optima. `theta` and
 `sv_selection_ratio` have separate roles. The method uses the arithmetic mean
