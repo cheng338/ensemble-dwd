@@ -170,12 +170,14 @@ subsets, resolves gamma, selects retained rows, and trains its own final model.
 Validation rows are used only for scoring. Scaling each subset independently
 would define a different metric across the base learners.
 
-`mnist_param_grid(prefix='')` returns the Cartesian product of nine `lambd`
-values, nine gamma values, two sampling fractions, and five retention
-fractions documented in the README. It leaves `M=5`, `q=1`, the optimized
-implementation, and the selected stopping policy fixed. The prefix is the
-literal sklearn parameter prefix, such as `'ensemble__'` inside a pipeline.
-It does not tune base models independently or launch a hidden search.
+`mnist_param_grid(prefix='')` returns a dictionary of nine `lambd` values,
+nine `gamma` values, two sampling fractions, and five retention fractions
+documented in the README. `GridSearchCV` evaluates their Cartesian product.
+Configure the RBF kernel, `M`, `q`, and stopping controls on the estimator;
+this helper does not set or search them. The provided examples use `M=5`
+and `q=1`. The prefix is the literal scikit-learn parameter prefix, such as
+`'ensemble__'` inside a pipeline. The helper does not tune base models
+independently or launch a search.
 
 Use five-fold stratified cross-validation with accuracy scoring for the
 provided MNIST example. Keep a final test set separate from parameter
@@ -196,16 +198,21 @@ and retention fractions. The union removes duplicate parameter combinations
 and may extend outside the coarse grid. This adds at most 27 candidates.
 Both stages reuse the same five training folds and fit preprocessing within
 each fold. Both GridSearchCV stages disable automatic refitting. Each completed
-stage is checkpointed with its CV results, exact fold indices, data fingerprint
-and selected parameters before fitting the selected bare pipeline on all
-training rows. This preserves the model-selection work if the final fit fails.
-The test set is scored only after a successful final fit. This is an external
-search procedure, not another operation inside `EnsembleKernelDWD.fit`.
+stage saves its CV results, exact fold indices, data fingerprint, and selected
+parameters. Before final fitting, the binary example checks whether the selected
+`lambd` or `gamma` is at or beyond a coarse-grid endpoint, including after optional
+local refinement. Such a winner writes `review.json`, sets the run status to
+`needs_review`, and stops before final fitting or test scoring. Expand the
+indicated range using training-only CV. Sampling and retention endpoints do
+not trigger this hold. After the review passes, the selected pipeline is fitted
+on all training rows and the separate test set is scored. This review and search
+remain external to `EnsembleKernelDWD.fit`.
 
 The run directory records `run.json` with input fingerprints, exact folds,
 settings and the grid; `coarse-cv.json` and optional `local-cv.json` contain
 completed stage results. `selection.json` is committed before the explicit
-final fit. `refit.json` records its success or failure, `status.json` records
+final fit; `review.json` records a boundary hold when required.
+`refit.json` records fit success or failure, `status.json` records
 the run state, and individual `failures/failure-*.json` files preserve error
 context. `completed.json` includes held-out accuracy only after success.
 An unexpected exception during CV can prevent collection of that stage's full

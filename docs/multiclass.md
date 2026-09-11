@@ -20,13 +20,12 @@ intercept, sampling distribution, selection rule and stopping controls.
 The wrapper does not change or reimplement the DWD solver. For `M=5`, a
 successful uncached ten-class fit comprises 45 ensembles and 270 DWD fits.
 
-For closest agreement with `multi.py`, each sorted pair `(a, b)` encodes
-`a` as `+1` and `b` as `-1`. DWD predicts its negative encoded class at an
-exactly zero margin, so an exact zero votes for `b`. Equal total win counts
-select the smallest sorted original class label. The dissertation specifies
-maximum wins; this explicit tie rule follows the script. sklearn's standard
-`OneVsOneClassifier` uses confidence to break vote ties, so it is not an
-identical replacement for this rule.
+For each sorted pair `(a, b)`, encode `a` as `+1` and `b` as `-1`. DWD predicts
+its negative encoded class at an exactly zero margin, so an exact zero votes
+for `b`. Equal total win counts select the smallest sorted original class label.
+This makes the dissertation's maximum-wins rule explicit. scikit-learn's standard
+`OneVsOneClassifier` uses confidence to break vote ties and therefore has
+different tie behavior.
 
 ## Shared parameters and preprocessing
 
@@ -61,31 +60,16 @@ For an optional SVM comparison, the same wrapper accepts
 `ovo__estimator__` prefix. Its distinct method, attribution and usage example
 are documented in [the SVM comparator guide](ensemble-svm.md#multiclass-use).
 
-## Audit of the original script
+## Validation behavior
 
-The review used the author's `multi.py` and `formal2.tex` as reference inputs.
-The original files were not edited. The following issues were addressed by
-composition with the existing binary estimator and the new wrapper/example:
-
-| Finding | Integrated behavior |
-|---|---|
-| Scaling before cross-validation leaks validation-fold statistics. | Fold-local scaling inside the pipeline. |
-| `BaseEstimator` before `ClassifierMixin` can hide classifier tags from modern sklearn. | Classifier mixin first; classifier and stratified-CV checks. |
-| Global random sampling and retry limits can train fewer than `M` learners. | Existing reproducible sampling conditional on both classes; exactly `M`. |
-| Squeezing averaged scores breaks the sample dimension when `M=1`. | Existing binary estimator retains one score per row. |
-| Failed selection can silently substitute the first base model or full-data model. | Pair-context failure; no substituted classifier or missing pair. |
-| Float prediction matrices reject strings and can lose large integer labels. | Integer vote counts and original label dtype. |
-| A failed refit can retain partially fitted pair state. | Failed fits leave the wrapper unfitted. |
-| `error_score=0` masks unexpected failures. | Only expected ineligible selections may receive NaN; other errors propagate. |
-| Automatic CV refit followed by manual refitting repeats work with new random subsets. | Explicit selection followed by one final refit. |
-| Unrestricted CV workers can multiply memory use. | Bounded dispatch, configurable workers and one level of fit parallelism. |
-| Whole-dataset random train/test splitting differs from official MNIST partitions. | Local archives retain their separate training and test arrays. |
-| An `n_samples` by 45 float prediction matrix stores all pair votes. | Batched integer accumulation by class. |
-
-The original script's additional DWSVM/nDWSVM implementations are not part of
-this integration. Its lambda grid and full-data setting also differ from the
-dissertation's reported multiclass experiment. Those historical scores should
-not be treated as a controlled baseline for the new validation.
+Preprocessing is fitted within each CV training fold. Each class pair trains
+exactly `M` base learners, including when `M=1`. Selected sets must be large
+enough and contain both classes; an ineligible pair fails the complete candidate.
+The wrapper preserves original labels, clears fitted state after a failed fit,
+and accumulates votes in batches. The supplied tuning example preserves separate
+training and test arrays, limits dispatched work, and saves completed CV selection
+before one explicit final refit. Compare historical dissertation results only
+after matching data, parameter search, selection rules, and stopping settings.
 
 ## Resource use and diagnostics
 

@@ -1,17 +1,15 @@
 # Private ensemble-dwd 0.2.0 validation
 
-The multiclass extension of Chang Cheng's ensemble kernel DWD is implemented
-and tested under `C:\Users\manea\.conda\envs\py12_df\python.exe`, using
-the installed optimized `cheng338/dwd` 1.3.4 compiled Windows wheel.
-The new wrapper composes the existing binary estimator; the binary estimator,
-cache implementation and parameter-grid helper are byte-identical to 0.1.1.
-The source reference files `multi.py` and `formal2.tex` were not modified.
+The multiclass extension of Chang Cheng's ensemble kernel DWD was tested with
+Anaconda CPython 3.12 in `py12_df`, using the optimized `cheng338/dwd` 1.3.4
+compiled Windows wheel. The wrapper composes the binary estimator; the binary
+estimator, cache implementation, and parameter-grid helper matched version 0.1.1.
 
 ## Changes and audit
 
 - Added `OvOClassifier`, cloning the binary estimator once per class pair.
-- Preserved the dissertation's maximum-wins voting and the script's smallest
-  sorted label tie rule, including its explicit pair-label orientation.
+- Preserved maximum-wins voting, smallest-sorted-label tie resolution,
+  and explicit pair-label orientation.
 - Kept the practical kernel DWD objective and its unregularized intercept.
 - Corrected multiclass sklearn integration, retained original label dtypes,
   bounded pair dispatch, batched vote accumulation, and cleared failed fits.
@@ -22,7 +20,7 @@ The source reference files `multi.py` and `formal2.tex` were not modified.
 - Updated dependency metadata from an older fork commit to hash-pinned
   optimized cheng338/dwd 1.3.4 release wheels.
 
-See [the detailed method and original-script audit](multiclass.md).
+See [the multiclass method guide](multiclass.md).
 Private status, Chang Cheng's authorship and the undecided license remain.
 
 ## Tests
@@ -74,9 +72,8 @@ Mean CV accuracy was 92.0667%. Held-out accuracy was **94.11%**, or
 9,411 correct predictions out of 10,000. The final model contains 45 binary
 ensembles, comprising 225 base fits and 45 selected-set final fits.
 
-A direct transcription of the script's stored-vote/mode prediction rule
-matched the new implementation on 1,000 test rows using the same fitted
-children. A fresh uncached eight-worker refit reproduced every pair's sampled
+An independent transcription of the stored-vote/mode prediction rule matched
+the implementation on 1,000 test rows using the same fitted children. A fresh uncached eight-worker refit reproduced every pair's sampled
 rows, consensus scores and selected rows, and all 10,000 test predictions.
 No missing pair, numerical rejection or ineligible selection occurred in
 these runs. This does not establish that every possible grid input is eligible.
@@ -85,7 +82,7 @@ All 270 DWD fits in the selected model reached 100 updates and reported
 `converged_=False`. The agreed stopping defaults were preserved. These results
 validate classification and integration, not convergence or optimality of the
 underlying DWD fits. They also do not establish a speed or accuracy improvement
-over the historical dissertation table or the original script under identical
+over the historical dissertation table or earlier implementations under identical
 conditions; no such paired comparison was performed here.
 
 ## Runtime and resource settings

@@ -3,8 +3,10 @@
 This completed comparison used 20% of the official training rows for each
 pair, selected reproducibly with seed 42. It used the full official test rows
 for those digits only after training-only CV and parameter selection.
-All arrays were float64, and StandardScaler was fitted inside each training
-fold. Five stratified folds were shared across classifiers.
+Images were flattened to 784 float64 features, and StandardScaler was fitted
+inside each training fold. Five stratified folds were shared across classifiers.
+The official test set was excluded from this run's tuning, but had been
+evaluated in earlier development experiments.
 
 | Pair | Training rows | Official test rows |
 |---|---:|---:|
@@ -27,12 +29,18 @@ to all five classifiers. Only ensemble SVM required expansion: C reached
 winner was interior. Sampling and retention ranges stayed fixed as requested.
 Interior status is not proof of a global optimum between grid points.
 
+Linear SVM used `SVC(kernel='linear')`, with C values `10**e` for e = -6, ..., 2.
+Kernel SVM used `SVC(kernel='rbf')` with the same initial C and gamma grids as
+ensemble SVM. Kernel DWD used the same initial `lambd` and gamma grids as
+ensemble DWD.
+
 ## Final test accuracy and training time
 
 Each cell below shows accuracy (%) followed by final training time (seconds).
 Times are uncached, sequential final fits with one native thread, excluding
 CV and test scoring. Ensemble times include all five base fits, selection
-and the final selected-set fit.
+and the final selected-set fit. Final-fit times include fitting StandardScaler
+and were measured once per selected model; they are not repeated benchmark means.
 
 | Classifier | 2 vs 3 | 4 vs 9 | 3 vs 8 |
 |---|---:|---:|---:|
