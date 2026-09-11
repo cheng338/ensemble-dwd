@@ -2,7 +2,8 @@ cff-version: 1.2.0
 message: "Please cite this software and the dissertation describing its ensemble method."
 type: software
 title: "ensemble-dwd: Ensemble Kernel Distance Weighted Discrimination"
-version: 0.3.0
+version: 0.3.1
+date-released: 2026-09-11
 authors:
   - family-names: Cheng
     given-names: Chang

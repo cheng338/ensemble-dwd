@@ -13,8 +13,8 @@ dependencies = [
     "scipy",
     "scikit-learn>=1.6",
     "joblib>=1.3",
-    "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.5/dwd-1.3.5-cp311-abi3-win_amd64.whl#sha256=f792d5fa251c57526990221c7d573274e50a99da60e5f508f51515f8f622435e ; platform_system == 'Windows' and platform_machine == 'AMD64' and platform_python_implementation == 'CPython'",
-    "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.5/dwd-1.3.5-py3-none-any.whl#sha256=45ec234a373f6080d805089bb24fa869e6de57a1660c3988aeba6ae2c529cb13 ; platform_system != 'Windows' or platform_machine != 'AMD64' or platform_python_implementation != 'CPython'",
+    "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.6/dwd-1.3.6-cp311-abi3-win_amd64.whl#sha256=295d5edfd7696de28f4c42dbb3531e15408e9568c73004921c4404ad7de885dd ; platform_system == 'Windows' and platform_machine == 'AMD64' and platform_python_implementation == 'CPython'",
+    "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.6/dwd-1.3.6-py3-none-any.whl#sha256=bb6f920c547d55f6b68668755a3bdfd8c12b602cd9283edb4ba9ae89c1f0e5f1 ; platform_system != 'Windows' or platform_machine != 'AMD64' or platform_python_implementation != 'CPython'",
 ]
 classifiers = [
     "Private :: Do Not Upload",

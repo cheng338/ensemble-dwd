@@ -31,11 +31,11 @@ To build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.0-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.1-py3-none-any.whl
 ```
 
 The dependency metadata pins SHA-256-verified wheels from
-[cheng338/dwd 1.3.5](https://github.com/cheng338/dwd/releases/tag/v1.3.5).
+[cheng338/dwd 1.3.6](https://github.com/cheng338/dwd/releases/tag/v1.3.6).
 Conventional GIL-enabled CPython on Windows AMD64 uses the wheel with the compiled prediction helper;
 other platforms use the portable wheel. Both contain the optimized DWD
 implementation. Install the package with its declared dependencies; installing
@@ -47,7 +47,7 @@ that interpreter, install the portable DWD wheel and numerical dependencies
 explicitly, then install this package without dependency resolution:
 
 ```shell
-python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.5/dwd-1.3.5-py3-none-any.whl#sha256=45ec234a373f6080d805089bb24fa869e6de57a1660c3988aeba6ae2c529cb13"
+python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.6/dwd-1.3.6-py3-none-any.whl#sha256=bb6f920c547d55f6b68668755a3bdfd8c12b602cd9283edb4ba9ae89c1f0e5f1"
 python -m pip install --no-deps .
 ```
 
@@ -298,8 +298,8 @@ search = GridSearchCV(
 ```
 
 Each class pair trains the same binary selection-and-refit procedure. Only
-its final classifier votes. Ties select the smallest sorted original label,
-as in `multi.py`; no confidence-based tie breaker is added. Labels retain
+its final classifier votes. Ties select the smallest sorted original label;
+decision-score magnitudes do not break ties. Labels retain
 their input dtype, including strings and large integers. `vote_counts(X)`
 returns integer counts in `classes_` order, not probabilities.
 
@@ -323,7 +323,7 @@ missing pair or substitute model is silently accepted.
 
 The broad five-fold grid costs up to 1,093,500 binary DWD fits for ten classes
 and `M=5`, before base-stage cache reuse. It is not launched automatically.
-The new example supports a compact validation grid and stratified subsets
+The multiclass example supports a compact validation grid and stratified subsets
 from a local MNIST archive with separate training and test arrays:
 
 ```shell
@@ -332,7 +332,7 @@ python examples/tune_mnist_multiclass.py --data mnist.npz --train-size 6000 --jo
 ```
 
 The example keeps preprocessing inside each CV fold and uses external
-`GridSearchCV`. See [the multiclass method and audit](docs/multiclass.md).
+`GridSearchCV`. See [the multiclass method guide](docs/multiclass.md).
 
 For comparison experiments, the package also includes `EnsembleKernelSVM`,
 with binary and multiclass usage documented in [the comparator guide](docs/ensemble-svm.md).
