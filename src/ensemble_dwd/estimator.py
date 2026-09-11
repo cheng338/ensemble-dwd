@@ -153,7 +153,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         Other kernel keywords, such as degree and coef0. Set gamma using the
         top-level parameter, not this dictionary, for built-in kernels.
     max_iter : positive int, default=100
-        Maximum MM updates for each DWD fit. Reaching this cap is not convergence.
+        Maximum updates for each DWD fit. Reaching this cap is not convergence.
     obj_tol : nonnegative float, default=1e-5
         Absolute successive-objective tolerance for objective stopping.
     stopping : {'objective', 'fixed', 'optimality'}, default='objective'
@@ -177,6 +177,12 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     store_base_estimators : bool, default=True
         Retain fitted base models for inspection. False stores only their
         diagnostic arrays and consensus, reducing model and cache storage.
+    backend : {'auto', 'spectral', 'cholesky', 'lbfgs'}, default='auto'
+        Shared optimized DWD backend for every base and final fit. 'auto'
+        retains the dependency's default choice; 'spectral' and 'cholesky'
+        select MM representations, and 'lbfgs' selects its alternative optimizer.
+        Different backends can produce different finite-budget decision scores
+        and selected rows. Backend choices have separate base-cache entries.
 
     Attributes
     ----------
@@ -220,7 +226,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                  q=1.0, kernel="rbf", gamma="scale", kernel_kws=None,
                  max_iter=100, obj_tol=1e-5, stopping="objective", tol=1e-6,
                  acceleration=None, random_state=42, prediction_batch_size=1024,
-                 cache_dir=None, store_base_estimators=True):
+                 cache_dir=None, store_base_estimators=True, backend="auto"):
         self.M = M
         self.theta = theta
         self.sv_selection_ratio = sv_selection_ratio
@@ -238,6 +244,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         self.prediction_batch_size = prediction_batch_size
         self.cache_dir = cache_dir
         self.store_base_estimators = store_base_estimators
+        self.backend = backend
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -282,6 +289,9 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         if self.acceleration is not None and (
                 not isinstance(self.acceleration, str) or self.acceleration != "restart"):
             raise ValueError("acceleration must be None or 'restart'.")
+        if not isinstance(self.backend, str) or self.backend not in (
+                "auto", "spectral", "cholesky", "lbfgs"):
+            raise ValueError("backend must be 'auto', 'spectral', 'cholesky', or 'lbfgs'.")
         if self.prediction_batch_size is not None:
             _positive_integer(self.prediction_batch_size, "prediction_batch_size")
         if self.cache_dir is not None and not isinstance(self.cache_dir, (str, PathLike)):
@@ -320,7 +330,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 kernel_kws=deepcopy(kernel_kws), max_iter=self.max_iter,
                 obj_tol=self.obj_tol, stopping=self.stopping, tol=self.tol,
                 acceleration=self.acceleration, prediction_batch_size=self.prediction_batch_size,
-                implementation="optimized", solver_mode="schur", backend="auto",
+                implementation="optimized", solver_mode="schur", backend=self.backend,
                 initialization="zero", random_state=0)
         except TypeError as error:
             raise ImportError(
