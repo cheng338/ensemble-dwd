@@ -6,8 +6,6 @@ from numbers import Integral, Real
 from os import PathLike
 
 import numpy as np
-from scipy.special import logsumexp
-from scipy.stats import hypergeom
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils import check_random_state
 from sklearn.utils.multiclass import check_classification_targets
@@ -19,7 +17,14 @@ from ._cache import _cached_base_stage, _runtime_provenance
 
 
 class IneligibleSelectionError(ValueError):
-    """The requested consensus set cannot train a binary classifier."""
+    """A requested training-row selection cannot train a binary classifier."""
+
+
+class IneligibleSubsetError(IneligibleSelectionError):
+    """The requested or sampled disjoint base subsets are ineligible."""
+
+
+_SAMPLING_SCHEME = "disjoint-uniform-permutation-v1"
 
 
 def _positive_integer(value, name):
@@ -53,35 +58,34 @@ def _private_random_state(seed):
 
 
 def _sample_subsets(y_encoded, size, M, rng):
-    """Draw uniform subsets conditional on containing both binary classes.
+    """Partition one uniform permutation into M disjoint base subsets.
 
-    A truncated hypergeometric class count followed by uniform within-class
-    sampling has exactly the law of uniform sampling conditioned on two classes.
-    This avoids skipping learners or an unbounded rejection loop on imbalanced
-    data. Shuffling also preserves a uniform ordering within each subset.
+    The draw is independent of labels. An ineligible allocation raises before
+    any learner is fitted; subsets are never redrawn or repaired using labels.
     """
     y_encoded = np.asarray(y_encoded)
-    negative = np.flatnonzero(y_encoded == 0)
-    positive = np.flatnonzero(y_encoded == 1)
+    size = _positive_integer(size, "subset_size")
+    M = _positive_integer(M, "M")
     n = len(y_encoded)
-    low = max(1, size - len(negative))
-    high = min(size - 1, len(positive))
-    if low > high:
-        raise ValueError("A subset must be large enough to contain both classes.")
-    counts = np.arange(low, high + 1)
-    if len(counts) == 1:
-        probabilities = None
-    else:
-        log_probabilities = hypergeom.logpmf(counts, n, len(positive), size)
-        probabilities = np.exp(log_probabilities - logsumexp(log_probabilities))
-        probabilities /= probabilities.sum()
-    subsets = []
-    for _ in range(M):
-        count = int(counts[0] if probabilities is None else rng.choice(counts, p=probabilities))
-        indices = np.concatenate((rng.choice(positive, count, replace=False),
-                                  rng.choice(negative, size - count, replace=False)))
-        rng.shuffle(indices)
-        subsets.append(indices)
+    if size < 2:
+        raise IneligibleSubsetError("Each base subset must contain at least two observations.")
+    if M * size > n:
+        raise IneligibleSubsetError(
+            f"M={M} disjoint subsets of size {size} require {M * size} distinct "
+            f"observations, but only {n} are available.")
+    counts = [int(np.count_nonzero(y_encoded == label)) for label in (0, 1)]
+    if min(counts) < M:
+        raise IneligibleSubsetError(
+            f"M={M} disjoint binary subsets require at least {M} observations "
+            f"from each class; the class counts are {counts}.")
+    permutation = rng.permutation(n)
+    subsets = [block.copy() for block in permutation[:M * size].reshape(M, size)]
+    invalid = [index + 1 for index, rows in enumerate(subsets)
+               if len(np.unique(y_encoded[rows])) != 2]
+    if invalid:
+        raise IneligibleSubsetError(
+            f"The uniform disjoint draw produced single-class base subsets "
+            f"at positions {invalid}. This sampling candidate is ineligible.")
     return subsets
 
 
@@ -121,8 +125,8 @@ def _contains_callable(value):
 class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     """Fit Chang Cheng's binary ensemble kernel DWD procedure.
 
-    Uniformly sample M subsets without replacement, conditional on each having
-    both classes; fit optimized kernel DWD to each; rank all training rows by
+    Split one uniform random permutation into M disjoint subsets; fit optimized
+    kernel DWD to each; rank all training rows by
     the absolute mean of their raw decision scores; fit a final optimized DWD
     to the selected rows. Predictions come from that final model.
 
@@ -131,8 +135,11 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     M : int, default=5
         Number of base learners. A cache miss trains M plus one final model;
         a cache hit reuses the M bases and trains a fresh final model.
+        The M subsets must fit within the available rows, and each must contain
+        both classes. Ineligible draws raise without resampling.
     theta : float in (0, 1], default=0.1
         Subset fraction. Each subset has max(2, floor(theta * n_samples)) rows.
+        M times this size must not exceed n_samples.
     sv_selection_ratio : float in (0, 1], default=0.3
         Retain floor(sv_selection_ratio * n_samples) rows for the final fit.
         The retained rows must contain at least two observations and both classes.
@@ -378,7 +385,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
             for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma", "kernel_kws"):
                 parameters.pop(name)
             parameters["kernel_kws"] = kernel_kws
-            key_data = dict(X=X, y=y, classes=classes, subsets=subsets, parameters=parameters,
+            key_data = dict(sampling=_SAMPLING_SCHEME,
+                            X=X, y=y, classes=classes, subsets=subsets, parameters=parameters,
                             provenance=_runtime_provenance(KernGDWD))
             result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute)
             return result, hit, key, "hit" if hit else "miss"

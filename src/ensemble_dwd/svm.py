@@ -20,6 +20,7 @@ from .estimator import (
     _positive_integer,
     _private_random_state,
     _sample_subsets,
+    _SAMPLING_SCHEME,
 )
 
 
@@ -46,9 +47,10 @@ def _diagnostics(model):
 class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
     """Fit sampled SVCs, select near signed consensus margins, and refit.
 
-    Each of ``M`` subsets contains ``max(2, floor(theta * n))`` rows sampled
-    uniformly without replacement, conditional on including both classes.
-    Subsets may overlap. The base decision values on all supplied training
+    One uniform random permutation supplies ``M`` disjoint subsets, each with
+    ``max(2, floor(theta * n))`` rows. Each subset must contain both classes;
+    an ineligible draw raises without resampling. The base decision values on
+    all supplied training
     rows are averaged without normalization. With labels encoded as -1 for
     ``classes_[0]`` and +1 for ``classes_[1]``, rows are ranked by
     ``abs(y_signed * consensus - 1)``. A fresh SVC is fitted on the first
@@ -65,8 +67,10 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
     ----------
     M : int, default=5
         Number of base models. All base fits run sequentially.
+        Each of the disjoint subsets must contain both classes.
     theta : float in (0, 1], default=0.1
         Fraction of supplied training rows in each base subset.
+        M * max(2, floor(theta * n_samples)) must not exceed n_samples.
     sv_selection_ratio : float in (0, 1], default=0.3
         Fraction selected for the final fit. A selection with fewer than two
         rows or containing only one class raises ``IneligibleSelectionError``.
@@ -272,6 +276,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
                 parameters.pop(name)
             parameters["gamma"] = gamma
             key_data = dict(family="ensemble-kernel-svm-signed-margin-v1",
+                            sampling=_SAMPLING_SCHEME,
                             X=X, y=y, classes=classes, subsets=subsets,
                             parameters=parameters, provenance=_runtime_provenance(SVC))
             result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute)
