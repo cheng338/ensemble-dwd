@@ -54,10 +54,12 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
     ``abs(y_signed * consensus - 1)``. A fresh SVC is fitted on the first
     ``floor(sv_selection_ratio * n)`` ranked rows. Ties retain input order.
 
-    The signed criterion differs from the unsigned ``abs(abs(consensus)-1)``
-    criterion in the original binary comparison script. The final model is
-    a hinge-loss SVC, not the squared-residual refit in Mao's SVI method.
-    The intercept is free in every base and final SVC.
+    Chang Cheng's comparator adapts the support-vector-identification idea of
+    Mao et al. (2016), Fast Kernel SVM Training via Support Vector Identification.
+    It ranks rows by the signed-margin distance above, rather than the
+    dissertation's unsigned ``abs(abs(consensus) - 1)`` score. Its final model
+    is a hinge-loss SVC with a free intercept. See docs/ensemble-svm.md for
+    the differences from Mao's formulation.
 
     Parameters
     ----------
