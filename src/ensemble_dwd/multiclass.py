@@ -34,12 +34,12 @@ def _fit_pair(estimator, X, y, indices, pair):
 
 
 class OvOClassifier(ClassifierMixin, BaseEstimator):
-    """Fit binary estimators for every class pair and predict by majority vote.
+    """Fit one binary estimator per class pair and predict by maximum wins.
 
     This implements the multiclass extension in Chang Cheng's dissertation:
     fit K * (K - 1) / 2 independent binary classifiers, give each pair one vote,
     and predict the class receiving the most votes. Ties choose the first class
-    in sorted ``classes_`` order, matching the original ``multi.py`` script.
+    in sorted ``classes_`` order.
     Decision-score magnitudes do not change this voting rule.
 
     Parameters
@@ -50,7 +50,7 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
         ``EnsembleKernelSVM`` instance for the ensemble SVM comparator. A fresh clone
         is fitted for every pair with the first original class encoded as +1
         and the second as -1. In particular, an exactly zero DWD margin votes
-        for the second original class, as in ``multi.py``.
+        for the second original class.
     n_jobs : nonzero int or None, default=1
         Number of pair-fitting workers, using joblib's usual convention.
         None means one worker unless a joblib parallel context overrides it;

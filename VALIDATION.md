@@ -1,11 +1,10 @@
 # ensemble-dwd 0.3.0 validation
 
-The unpublished 0.3.0 candidate adds the signed-margin ensemble SVM comparator
-and repairs validation of prediction batch sizes changed after fitting. The
-binary tuning examples hold final fitting and held-out scoring when the
-selected regularization or gamma lies at or beyond a coarse search endpoint.
-The generic workflow makes this external review optional; the DWD and SVM
-binary command-line examples both enable it. Neither estimator performs CV.
+This record describes validation of the `v0.3.0` release of ensemble-dwd,
+including its binary and multiclass ensemble DWD interfaces and optional
+SVM comparator. It covers prediction-batch validation and the external
+binary examples' review of regularization and gamma boundary winners.
+Neither estimator performs cross-validation internally.
 
 ## Environment and dependency
 
@@ -22,10 +21,10 @@ The metadata pins these optimized DWD artifacts:
 | `dwd-1.3.5-cp311-abi3-win_amd64.whl` | `f792d5fa251c57526990221c7d573274e50a99da60e5f508f51515f8f622435e` |
 | `dwd-1.3.5-py3-none-any.whl` | `45ec234a373f6080d805089bb24fa869e6de57a1660c3988aeba6ae2c529cb13` |
 
-The DWD dependency and its objective, unregularized intercept, and stopping
-defaults are unchanged by this repair. The shared DWD, cache, multiclass and
-model-selection implementation files are byte-identical to the candidate
-used in the completed three-pair study.
+In the validated `v0.3.0` source, the DWD dependency, objective, unregularized
+intercept, and stopping defaults are unchanged by the prediction-batch repair.
+The DWD estimator, cache, multiclass wrapper, and parameter-grid implementation
+files matched the candidate used for the completed three-pair study.
 
 ## Regression coverage
 
