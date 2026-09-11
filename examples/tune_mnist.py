@@ -320,7 +320,7 @@ def main():
     parser.add_argument('--jobs', type=positive_int, default=1,
                         help='Positive outer-worker count; choose a value that fits available RAM.')
     parser.add_argument('--error-score', choices=('raise', 'nan'), default='nan',
-                        help='nan skips only ineligible selections; raise stops on every fit failure.')
+                        help='nan skips only ineligible subsets or selections; raise stops on every fit failure.')
     parser.add_argument('--output-dir', type=Path,
                         help='New run directory; defaults to a unique results/mnist-* directory.')
     cache = parser.add_mutually_exclusive_group()

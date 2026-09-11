@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--jobs", type=positive_int, default=1,
                         help="Concurrent outer CV workers; pre_dispatch equals this count.")
     parser.add_argument("--error-score", choices=("raise", "nan"), default="nan",
-                        help="nan skips only ineligible selections; unexpected failures stop.")
+                        help="nan skips only ineligible subsets or selections; unexpected failures stop.")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--run", action="store_true")
@@ -51,7 +51,7 @@ def main():
     candidates = len(ParameterGrid(grid))
     print(f"Coarse: {candidates} candidates, {5*candidates} ensemble CV fits, "
           f"up to {6*5*candidates} SVC CV fits before cache reuse.")
-    print("M=5, theta searched over [0.1, 0.2], retention over "
+    print("M=5, theta fixed at 0.1, retention over "
           "[0.1, 0.15, 0.2, 0.25, 0.3]. An interior winner's final refit adds six SVC fits.")
     print("C/gamma boundary winners preserve CV results and hold final fitting/test scoring for review.")
     if not args.run:

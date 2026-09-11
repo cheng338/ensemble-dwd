@@ -13,7 +13,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.exceptions import NotFittedError
 from sklearn.metrics import accuracy_score
 
-from ensemble_dwd import IneligibleSelectionError
+from ensemble_dwd import IneligibleSelectionError, IneligibleSubsetError
 
 
 def json_safe(value):
@@ -126,7 +126,9 @@ def parameter_snapshot(estimator):
 
 
 def exception_details(error):
-    if isinstance(error, IneligibleSelectionError):
+    if isinstance(error, IneligibleSubsetError):
+        category = 'ineligible_subset'
+    elif isinstance(error, IneligibleSelectionError):
         category = 'ineligible_selection'
     elif isinstance(error, MemoryError):
         category = 'memory_error'
@@ -157,9 +159,10 @@ def record_failure(directory, error, *, phase, estimator, training_data):
 
 
 class CandidateEvaluator(ClassifierMixin, BaseEstimator):
-    """Cloneable search adapter with one explicitly recoverable fit failure.
+    """Cloneable search adapter for explicitly ineligible training-row selections.
 
-    Only IneligibleSelectionError may be represented as an ineligible candidate.
+    Only IneligibleSelectionError (including IneligibleSubsetError) may be
+    represented as an ineligible candidate.
     All other fit or prediction exceptions are recorded and propagated.
     """
     def __init__(self, estimator, error_policy='nan', failure_dir=None):
@@ -198,8 +201,11 @@ class CandidateEvaluator(ClassifierMixin, BaseEstimator):
 
     def predict(self, X):
         if not getattr(self, 'eligible_', False) or not hasattr(self, 'estimator_'):
-            if getattr(self, 'failure_', None) and self.failure_['category'] == 'ineligible_selection':
-                raise IneligibleSelectionError(self.failure_['message'])
+            if getattr(self, 'failure_', None):
+                if self.failure_['category'] == 'ineligible_subset':
+                    raise IneligibleSubsetError(self.failure_['message'])
+                if self.failure_['category'] == 'ineligible_selection':
+                    raise IneligibleSelectionError(self.failure_['message'])
             raise NotFittedError('The search candidate did not finish fitting successfully.')
         try:
             return self.estimator_.predict(X)
@@ -210,9 +216,10 @@ class CandidateEvaluator(ClassifierMixin, BaseEstimator):
 
 
 def eligible_accuracy(estimator, X, y):
-    """NaN is reserved for an explicitly recorded ineligible selection."""
+    """NaN is reserved for an explicitly recorded ineligible subset or selection."""
     if not estimator.eligible_:
-        if estimator.failure_ and estimator.failure_['category'] == 'ineligible_selection':
+        if estimator.failure_ and estimator.failure_['category'] in (
+                'ineligible_subset', 'ineligible_selection'):
             return np.nan
         raise RuntimeError('The candidate has no eligible fitted model.')
     predictions = estimator.predict(X)
