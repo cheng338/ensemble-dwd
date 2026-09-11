@@ -2,10 +2,16 @@
 
 ## 0.3.2
 
+- Use one uniform permutation to form disjoint base subsets for both ensemble
+  classifiers. Validate capacity and binary-class eligibility before fitting;
+  report ineligible subsets through `IneligibleSubsetError` without redraws.
+  Existing overlapping-sampling results remain historical comparisons.
 - Added a shared `backend` parameter to `EnsembleKernelDWD`, forwarded to
   every base and final DWD fit, including each multiclass pair. Supported
   choices are `auto`, `spectral`, `cholesky`, and `lbfgs`; `auto` remains the
   default. Different backend choices use separate base-cache entries.
+- Fix the MNIST presets at 10% base sampling, retaining nine regularization
+  values, nine gamma values and five retention fractions (405 candidates).
 - Updated the hash-pinned optimized DWD dependency to cheng338/dwd 1.3.7.
 
 ## 0.3.0

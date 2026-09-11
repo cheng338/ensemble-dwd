@@ -151,18 +151,18 @@ search = GridSearchCV(
 
 This minimal example stops on every fit error, including an expected
 single-class selection. For a broad search, use the checkpointed example
-below: it excludes only `IneligibleSelectionError` and still stops on
-unexpected failures.
+below: it excludes `IneligibleSelectionError` and its `IneligibleSubsetError`
+subclass while still stopping on unexpected failures.
 
 The broad MNIST preset contains:
 
 - `lambd`: `2**e` for `e` in `[-30, -26, -22, -18, -14, -10, -6, -2, 0]`.
 - `gamma`: `10**e` for `e` in `[-8, -7, -6, -5, -4, -3, -2, -1, 0]`.
-- `theta`: `[0.1, 0.2]`.
+- `theta`: `[0.1]` (fixed at 10%).
 - `sv_selection_ratio`: `[0.1, 0.15, 0.2, 0.25, 0.3]`.
 
-This is 810 candidates and 4,050 ensemble fits with five folds. With `M=5`,
-the uncached budget is up to 24,300 DWD fits for cross-validation, plus six for
+This is 405 candidates and 2,025 ensemble fits with five folds. With `M=5`,
+the uncached budget is up to 12,150 DWD fits for cross-validation, plus six for
 the selected candidate's refit. Reusing base fits across retention ratios can
 reduce that work. This is a proposed search space, not a benchmark result.
 The helper returns a parameter grid and does not launch fitting.
@@ -175,8 +175,9 @@ each worker trains its DWD models sequentially with one native BLAS thread.
 `examples/basic_usage.py` demonstrates a single fit on bundled digits.
 
 The broad search example defaults to `--error-score nan` for the expected
-`IneligibleSelectionError`: a requested consensus set may contain too few rows
-or only one class. Such candidates are reported and excluded. Unexpected
+`IneligibleSelectionError`, including `IneligibleSubsetError`: a requested
+base allocation may be infeasible or a base/final set may contain only one
+class or too few rows. Such candidates are reported and excluded. Unexpected
 exceptions, including numerical or input errors, are recorded and stop the
 search. Use `--error-score raise` to stop on ineligible selections as well.
 Only candidates with finite scores in every fold and a finite mean may be
@@ -257,6 +258,10 @@ SVM fitting parameters take effect on the next fit.
 
 ## Results and boundaries
 
+Disjoint sampling applies from version 0.3.2. Earlier validation reports used
+base subsets that could overlap. Those reports retain their original meaning;
+new sampling requires new evaluation and can change selections and predictions.
+
 After fitting, inspect `subset_indices_`, `selected_indices_`,
 `consensus_scores_`, `estimators_`, `final_estimator_`, and `gamma_`.
 `n_iter_` and `converged_` describe the `M` base learners followed by the final
@@ -267,8 +272,11 @@ supplied `kernel_kws`; the top-level gamma is not injected into them.
 
 `EnsembleKernelDWD` accepts exactly two classes. Wrap it in `OvOClassifier`
 for two or more classes. Precomputed kernels are unsupported.
-Base subsets are sampled uniformly without replacement conditional on
-containing both classes. Final selection keeps exactly
+Base subsets follow Mao's disjoint-subset rule: one uniform permutation
+supplies `M` non-overlapping blocks of size `k = max(2, floor(theta * n))`,
+requiring `M * k <= n` within every binary fit. A sampled block containing
+only one class raises `IneligibleSubsetError` before base fitting; it is not
+redrawn. The error subclasses `IneligibleSelectionError`. Final selection keeps exactly
 `floor(sv_selection_ratio * n)` rows in stable order of absolute consensus
 score. It raises an error if that set has fewer than two rows or only one
 class; it does not substitute another classifier or expand the retained set.
@@ -327,7 +335,7 @@ sampled/selected indices are local to that pair; map them through its
 An ineligible binary selection fails that entire multiclass candidate. No
 missing pair or substitute model is silently accepted.
 
-The broad five-fold grid costs up to 1,093,500 binary DWD fits for ten classes
+The broad five-fold grid costs up to 546,750 binary DWD fits for ten classes
 and `M=5`, before base-stage cache reuse. It is not launched automatically.
 The multiclass example supports a compact validation grid and stratified subsets
 from a local MNIST archive with separate training and test arrays:
@@ -356,7 +364,6 @@ grant rights to this separate package. Citation information is in
 
 The SVM comparator is Chang Cheng's adaptation of
 [Mao et al. (2016), *Fast Kernel SVM Training via Support Vector Identification*](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
-It retains the label-aware margin-selection principle, with independently
-sampled, potentially overlapping subsets and a final hinge-loss `SVC` refit
+It retains the label-aware margin-selection principle, with disjoint base subsets and a final hinge-loss `SVC` refit
 in place of Mao's squared-loss kernel-coefficient fit. See the
 [comparator guide](docs/ensemble-svm.md) for details.
