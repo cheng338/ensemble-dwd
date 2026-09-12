@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3
+
+- Pin the validated cheng338/dwd 1.3.8 native and portable builds by hash.
+- Provide smaller initial parameter grids and explicit boundary expansion for
+  regularization and gamma. Keep M=5, 10% disjoint sampling and retention choices fixed.
+- Preserve fold-local selection and shared learner parameters in adaptive CV.
+- Document the justification, tests and limits of each major change in the
+  [release validation](docs/validation-0.3.3.md).
+
+
 ## 0.3.2
 
 - Use one uniform permutation to form disjoint base subsets for both ensemble

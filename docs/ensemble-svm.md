@@ -83,20 +83,18 @@ from this estimator's contract.
 
 | Parameter | Candidates | Count |
 |---|---|---:|
-| C | `10**e`, e = -4, -3, ..., 4 | 9 |
-| gamma | `10**e`, e = -8, -7, ..., 0 | 9 |
+| C | `10**e`, e = -4, -2, 0, 2, 4 | 5 |
+| gamma | `10**e`, e = -8, -6, -4, -2, 0 | 5 |
 | theta | 0.1 (fixed) | 1 |
 | sv_selection_ratio | 0.1, 0.15, 0.2, 0.25, 0.3 | 5 |
 
 M remains fixed at the estimator default 5 unless explicitly changed. Both
-SVM and DWD presets have 405 candidates and 2,025 ensemble fits with fivefold
-CV. The C grid spans eight orders of magnitude, includes C=1, and avoids
-automatically starting at the very large extreme of the dissertation grid.
-It is a coarse starting range for scaled MNIST, not a universal optimum or a
-runtime guarantee. Extend an endpoint or refine between neighboring values
-when training-only CV warrants it. Retuning C and DWD lambda independently
-is necessary for a meaningful comparison; equal grid sizes do not imply
-equivalent regularization or equal wall-clock cost.
+presets have 125 coarse candidates and 625 ensemble fits with five-fold CV.
+`broad=True` restores the historical 405-candidate grid: every integer C
+exponent from -4 through 4 and gamma exponent from -8 through 0, with the
+same fractions and outer endpoints. These are starting grids, not universal
+optima or runtime guarantees. C and DWD lambda need separate tuning; equal
+candidate counts do not imply equal regularization or wall-clock cost.
 
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
@@ -125,20 +123,32 @@ exclude those specific candidates while allowing unexpected errors to stop
 the run. Setting ordinary GridSearchCV's `error_score` to NaN alone would
 also hide unrelated fit errors, so it is not the same policy.
 
-The helper and estimator never run internal CV. See
-`examples/tune_mnist_svm.py` for an explicit, checkpointed search on a local
-MNIST archive. Its default invocation only previews the budget. The DWD
-example's lambda-specific optional refinement is not used for SVM.
+The helper and estimator never run internal CV. The default CLI in
+`examples/tune_mnist_svm.py` uses the shared external adaptive controller,
+with `regularization='C'` and prefix `ensemble__`. It expands C/gamma
+boundaries reached by best or tied-best valid candidates, including new
+cross-combinations, then refines the top three distinct C/gamma pairs through
+logarithmic midpoints within the explored bounds. Each outward step is at most one decade (a factor of 10), or the smaller
+adjacent logarithmic spacing when the explored grid is finer. All stages reuse the same
+five folds and score only new complete candidates. Sampling stays at 10%,
+M stays at five, and the retention grid is unchanged.
 
-Before final fitting or held-out scoring, the example checks the selected C
-and gamma against their coarse search endpoints. A boundary winner preserves the CV
-and selection records, writes `review.json`, and sets `status.json` to
-`needs_review`. Expand the indicated range and compare candidates using
-training-only CV. The example does not automatically expand the grid.
-Sampling and retention fractions keep their specified ranges. The binary DWD
-example applies the corresponding check to lambda and gamma. This review
-policy belongs to the external examples; the estimators never tune or change
-their own parameters.
+The same defaults and limits apply to SVM and DWD: three expansion rounds,
+500 total unique candidates, two nonimproving complete rounds for a plateau,
+zero improvement tolerance, boundary tie tolerance `1e-12`, and refinement
+enabled. Use `--max-expansions`, `--max-candidates`, `--no-refine`, or
+`--broad-grid` explicitly. `--refine` remains accepted. A stage exceeding the
+remaining budget is held whole. Unresolved limits preserve CV/selection
+records and write `needs_review` without final fitting or test scoring.
+A documented plateau can accept a boundary winner, but does not prove global
+optimality. These are external search rules; the estimator never changes its
+own parameters. See the [shared workflow and records](method.md#validation-and-proposed-search-space).
+
+The default invocation previews costs without loading data. `--run` loads a
+local archive while preserving the supplied test split. Final fitting occurs
+once after the search decision is saved; held-out scoring follows only after
+success. `--no-cache` disables optional base-fit reuse. No new data dimensions
+or sample-count defaults are introduced by this policy.
 
 ## Multiclass use
 
@@ -187,7 +197,8 @@ search = GridSearchCV(
 # search.fit(X_train, y_train)  # Keep the final test set held out.
 ```
 
-The full preset has 405 candidates and can be expensive across all class
+The default preset has 125 candidates; `broad=True` restores 405. Either can
+be expensive across all class
 pairs. This minimal example stops on any fit error. As with DWD, an
 ineligible pair selection invalidates the complete multiclass candidate.
 Parameter tuning and any search-boundary review remain external to the

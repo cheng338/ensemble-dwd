@@ -1,11 +1,13 @@
-"""Explicit coarse and optional local search on a local MNIST archive.
+"""Adaptive external search on a local MNIST archive.
 
 Archive keys may be x_train/y_train/x_test/y_test (standard Keras format),
 X_train/y_train/X_test/y_test, or X/y. Images may be flattened or have shape
 (n, 28, 28). With X/y, a stratified 25% test split is made before CV. A supplied
 test split remains held out. Data are never downloaded.
-The CLI holds final fitting and test scoring when the selected lambda/gamma
-is at or beyond a coarse endpoint. No grid is extended automatically.
+The CLI expands lambda/gamma boundaries and refines promising settings on the
+same training folds. Unresolved boundaries or exhausted budgets hold final
+fitting/test scoring. A plateau does not prove global optimality. The legacy
+run_search_workflow helper remains available for reproducibility.
 
 Preview: python examples/tune_mnist.py --refine
 Run: python examples/tune_mnist.py --data mnist.npz --refine --run --jobs 1
@@ -313,7 +315,7 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             'completed': completed, 'selection': selection, 'review': review, 'run_dir': run_dir}
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data', type=Path, help='Local NumPy .npz archive.')
     parser.add_argument('--digits', type=int, nargs=2, default=(7, 9), metavar=('FIRST', 'SECOND'))
@@ -327,26 +329,39 @@ def main():
     cache.add_argument('--cache-dir', type=Path,
                        help='Shared base-stage cache; defaults to the new run directory/base-cache.')
     cache.add_argument('--no-cache', action='store_true', help='Disable base-stage caching.')
-    parser.add_argument('--refine', action='store_true',
-                        help='Search local lambda/gamma neighborhoods of the top 3 valid coarse candidates.')
+    refinement = parser.add_mutually_exclusive_group()
+    refinement.add_argument('--refine', dest='refine', action='store_true',
+                            help='Compatibility option: refinement is enabled by default.')
+    refinement.add_argument('--no-refine', dest='refine', action='store_false')
+    parser.set_defaults(refine=True)
+    parser.add_argument('--max-expansions', type=int, default=3,
+                        help='Maximum complete expansion rounds; default 3, minimum 0.')
+    parser.add_argument('--max-candidates', type=positive_int, default=500,
+                        help='Total unique candidate budget, including coarse CV; default 500.')
+    parser.add_argument('--broad-grid', action='store_true',
+                        help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument('--run', action='store_true', help='Start the requested search stages.')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.max_expansions < 0:
+        parser.error('--max-expansions must be nonnegative.')
     if args.digits[0] == args.digits[1]:
         parser.error('Choose two distinct digits.')
     if any(digit < 0 or digit > 9 for digit in args.digits):
         parser.error('MNIST digit labels must be between 0 and 9.')
 
-    grid = mnist_param_grid(prefix='ensemble__')
+    grid = mnist_param_grid(prefix='ensemble__', broad=args.broad_grid)
     candidates = len(ParameterGrid(grid))
     print(f'Coarse: {candidates} candidates, {5*candidates} ensemble CV fits, '
-          f'up to {6*5*candidates} DWD CV fits.')
-    if args.refine:
-        print('Local: up to 27 deduplicated candidates, 135 ensemble CV fits, '
-              'and 810 DWD CV fits. Coarse results are not refitted.')
-    print('The final selected candidate adds 6 DWD fits for its full-training refit.')
-    print('These are upper bounds before base-stage cache reuse. Completed CV stages '
-          'are saved before final refit; unexpected failures stop the search.')
-    print('Lambda/gamma endpoint winners hold final fitting/test scoring for training-only review.')
+          f'up to {6*5*candidates} DWD CV fits before cache reuse.')
+    print(f'Adaptive budget: {args.max_candidates} unique candidates total; '
+          f'up to {args.max_expansions} complete expansion rounds; refinement={args.refine}.')
+    print('M=5, theta=0.1; retention [0.1, 0.15, 0.2, 0.25, 0.3]. '
+          'All stages share five folds and evaluate only new candidates.')
+    print('Tied lambda/gamma boundaries expand together, including cross-combinations. '
+          'Refinement uses the top three distinct parameter pairs.')
+    print('Two nonimproving full rounds may stop expansion; a plateau does not prove a global optimum. '
+          'Unresolved boundaries or exhausted budgets hold final fitting/test scoring.')
+    print('An accepted final selection adds six DWD fits; test scoring follows that fit.')
     if not args.run:
         print('Prepared only. Supply --data PATH --run to start; no data were loaded.')
         return
@@ -361,23 +376,26 @@ def main():
         args.cache_dir.resolve() if args.cache_dir is not None else run_dir / 'base-cache')
     pipeline = Pipeline([
         ('scale', StandardScaler()),
-        ('ensemble', EnsembleKernelDWD(cache_dir=cache_dir, store_base_estimators=False)),
+        ('ensemble', EnsembleKernelDWD(M=5, theta=0.1, cache_dir=cache_dir, store_base_estimators=False)),
     ])
-    # Materialize these folds once so coarse and local searches use the same rows.
+    # Every adaptive stage uses these same training/validation rows.
     folds = list(StratifiedKFold(5, shuffle=True, random_state=42).split(X_train, y_train))
     print(f'Training rows: {len(X_train)}; held-out test rows: {len(X_test)}.')
     print(f'Run records: {run_dir}')
-    result = run_search_workflow(
+    from adaptive_search import AdaptiveSearchConfig, run_adaptive_search
+    config = AdaptiveSearchConfig(regularization='lambd', prefix='ensemble__',
+        max_expansions=args.max_expansions, max_candidates=args.max_candidates,
+        top_k=3, plateau_rounds=2, improvement_tol=0.0, tie_tol=1e-12, refine=args.refine)
+    result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
-        jobs=args.jobs, error_policy=args.error_score, refine=args.refine,
-        selection_review=lambda parameters: boundary_parameters(parameters, grid),
+        jobs=args.jobs, error_policy=args.error_score, config=config,
         settings={'data_path': str(args.data.resolve()), 'digits': args.digits,
                   'cache_dir': cache_dir, 'store_base_estimators': False},
     )
     if result['model'] is None:
-        print('Review lambda/gamma endpoints using training-only CV: ' + ', '.join(result['review']['reasons']))
+        print('Adaptive search requires training-only review: ' + ', '.join(result['review']['reasons']))
         print(f"Saved selection: {run_dir / 'selection.json'}; review: {run_dir / 'review.json'}")
-        print('Adjust the explicit grid if warranted before running a new search; the test set was not scored.')
+        print('Review the saved search limits and unresolved boundaries; the test set was not scored.')
 
 
 if __name__ == '__main__':

@@ -17,6 +17,7 @@ EXAMPLE_PATH = Path(__file__).resolve().parents[1] / 'examples' / 'tune_mnist_mu
 SPEC = importlib.util.spec_from_file_location('ensemble_multiclass_tuning_example', EXAMPLE_PATH)
 example = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(example)
+import adaptive_search
 
 
 class MulticlassArchiveTests(unittest.TestCase):
@@ -144,7 +145,7 @@ class MulticlassArchiveTests(unittest.TestCase):
         self.write_archive()
         output = Path(self.temporary.name) / 'run'
         sentinel = {'model': object()}
-        with patch.object(example, 'run_search_workflow', return_value=sentinel) as run:
+        with patch.object(adaptive_search, 'run_adaptive_search', return_value=sentinel) as run:
             with contextlib.redirect_stdout(io.StringIO()):
                 result = example.main([
                     '--data', str(self.path), '--train-size', '60', '--test-size', '20',
@@ -158,9 +159,13 @@ class MulticlassArchiveTests(unittest.TestCase):
         self.assertFalse(hasattr(pipeline.named_steps['scale'], 'mean_'))
         self.assertEqual(pipeline.named_steps['ovo'].n_jobs, 1)
         self.assertEqual(pipeline.named_steps['ovo'].estimator.M, 5)
+        self.assertEqual(pipeline.named_steps['ovo'].estimator.theta, .1)
         self.assertFalse(pipeline.named_steps['ovo'].estimator.store_base_estimators)
         self.assertEqual(run.call_args.kwargs['jobs'], 2)
-        self.assertIs(run.call_args.kwargs['refine'], False)
+        config = run.call_args.kwargs['config']
+        self.assertIs(config.refine, False)
+        self.assertEqual((config.max_expansions, config.max_candidates), (0, 4))
+        self.assertEqual((config.regularization, config.prefix), ('lambd', 'ovo__estimator__'))
         self.assertEqual(run.call_args.kwargs['error_policy'], 'nan')
         self.assertEqual(run_dir, output.resolve())
         for train, validation in folds:
@@ -180,7 +185,7 @@ class MulticlassArchiveTests(unittest.TestCase):
     def test_too_few_rows_per_class_stops_before_search_or_output_creation(self):
         self.write_archive()
         output = Path(self.temporary.name) / 'bad-run'
-        with patch.object(example, 'run_search_workflow') as run:
+        with patch.object(adaptive_search, 'run_adaptive_search') as run:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     example.main(['--data', str(self.path), '--train-size', '10',
@@ -191,7 +196,8 @@ class MulticlassArchiveTests(unittest.TestCase):
 
 class MulticlassPreviewTests(unittest.TestCase):
     def test_default_and_smoke_preview_load_no_data_and_report_45_pair_budget(self):
-        for argv, candidates, budget in (([], 405, '546,750'),
+        for argv, candidates, budget in (([], 125, '168,750'),
+                                         (['--broad-grid'], 405, '546,750'),
                                          (['--smoke-grid'], 4, '5,400')):
             with self.subTest(argv=argv):
                 output = io.StringIO()
@@ -204,8 +210,10 @@ class MulticlassPreviewTests(unittest.TestCase):
                 self.assertIn('no data were loaded', output.getvalue())
 
     def test_grid_prefixes_and_smoke_parameter_values(self):
-        broad = example.search_grid()
+        coarse = example.search_grid()
+        broad = example.search_grid(broad=True)
         smoke = example.search_grid(smoke=True)
+        self.assertEqual(len(ParameterGrid(coarse)), 125)
         self.assertEqual(len(ParameterGrid(broad)), 405)
         self.assertEqual(len(ParameterGrid(smoke)), 4)
         self.assertTrue(all(name.startswith('ovo__estimator__') for name in broad))
@@ -213,6 +221,16 @@ class MulticlassPreviewTests(unittest.TestCase):
         self.assertEqual(smoke['ovo__estimator__gamma'], [1e-4, 1e-3])
         self.assertEqual(smoke['ovo__estimator__theta'], [0.1])
         self.assertEqual(smoke['ovo__estimator__sv_selection_ratio'], [0.3])
+
+    def test_smoke_budget_is_explicit_and_incompatible_with_broad(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            example.main(['--smoke-grid', '--max-candidates', '100', '--refine'])
+        self.assertIn('4 unique candidates total', output.getvalue())
+        self.assertIn('refinement=False', output.getvalue())
+        self.assertIn('unresolved winners hold', output.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            example.main(['--smoke-grid', '--broad-grid'])
 
 
 if __name__ == '__main__':

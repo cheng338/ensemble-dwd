@@ -23,6 +23,7 @@ EXAMPLE_PATH = Path(__file__).resolve().parents[1] / 'examples' / 'tune_mnist.py
 SPEC = importlib.util.spec_from_file_location('ensemble_search_workflow_example', EXAMPLE_PATH)
 example = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(example)
+import adaptive_search
 from search_support import (CandidateEvaluator, data_fingerprint, eligible_accuracy,
                             json_safe, new_run_directory, write_json_atomic)
 import search_support
@@ -286,16 +287,19 @@ class SearchWorkflowTests(unittest.TestCase):
         self.assertEqual(example.boundary_parameters(outside, grid),
                          ['ensemble__lambd', 'ensemble__gamma'])
 
-    def test_dwd_cli_wires_same_gate_before_final_fit_and_test(self):
+    def test_dwd_cli_wires_adaptive_policy_before_final_fit_and_test(self):
         directory = Path(self.temporary.name) / 'dwd-cli'
         calls = []
 
         def workflow(pipeline, grid, *args, **kwargs):
             parameters = {name: values[len(values) // 2] for name, values in grid.items()}
             parameters['ensemble__lambd'] = min(grid['ensemble__lambd']) / 4
-            reasons = kwargs['selection_review'](parameters)
-            self.assertEqual(reasons, ['ensemble__lambd'])
-            self.assertTrue(kwargs['refine'])
+            self.assertEqual((pipeline.named_steps['ensemble'].M, pipeline.named_steps['ensemble'].theta), (5, .1))
+            config = kwargs['config']
+            self.assertEqual((config.regularization, config.prefix), ('lambd', 'ensemble__'))
+            self.assertEqual((config.max_expansions, config.max_candidates), (3, 500))
+            self.assertTrue(config.refine)
+            reasons = ['expansion_budget']
             calls.append(parameters)
             return {'model': None, 'completed': None, 'review': {'reasons': reasons}}
 
@@ -304,12 +308,12 @@ class SearchWorkflowTests(unittest.TestCase):
                 '--output-dir', str(directory)]
         with (patch.object(sys, 'argv', argv), patch.object(example, 'load_local_data',
                 return_value=(self.X, self.X_test, self.y, self.y_test)), patch.object(
-                example, 'run_search_workflow', side_effect=workflow),
+                adaptive_search, 'run_adaptive_search', side_effect=workflow),
                 contextlib.redirect_stdout(output)):
             example.main()
         self.assertEqual(len(calls), 1)
         self.assertEqual(ControlledClassifier.events, [])
-        self.assertIn('lambda/gamma endpoints using training-only CV', output.getvalue())
+        self.assertIn('training-only review', output.getvalue())
         self.assertIn('test set was not scored', output.getvalue())
         self.assertFalse((directory / 'completed.json').exists())
 

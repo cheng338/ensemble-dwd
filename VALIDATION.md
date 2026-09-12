@@ -1,3 +1,7 @@
+# Current validation
+
+See the [0.3.3 change-by-change validation](docs/validation-0.3.3.md) for current and historical evidence, including the DWD 1.3.8 dependency checks.
+
 # ensemble-dwd validation
 
 ## 0.3.2: disjoint base subsets and fixed 10% sampling
