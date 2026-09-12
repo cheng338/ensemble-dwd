@@ -1,10 +1,13 @@
 """Pure helper and archive-schema tests for the explicit tuning example."""
 
 import argparse
+import contextlib
+import io
 import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
@@ -152,6 +155,27 @@ class LocalArchiveTests(unittest.TestCase):
         for value in ["0", "-1", "1.5", "many"]:
             with self.subTest(value=value), self.assertRaises(argparse.ArgumentTypeError):
                 example.positive_int(value)
+
+
+class AdaptiveDWDPreviewTests(unittest.TestCase):
+    def test_coarse_and_broad_previews_load_no_data(self):
+        for options, count in (([], 125), (['--broad-grid'], 405)):
+            with self.subTest(options=options), patch.object(example, 'load_local_data') as load:
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    example.main(options + ['--data', 'missing.npz'])
+                load.assert_not_called()
+                self.assertIn(f'{count} candidates', output.getvalue())
+                self.assertIn('500 unique candidates total', output.getvalue())
+                self.assertIn('refinement=True', output.getvalue())
+
+    def test_explicit_budget_and_no_refine_preview(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            example.main(['--max-expansions', '0', '--max-candidates', '125', '--no-refine'])
+        self.assertIn('125 unique candidates total', output.getvalue())
+        self.assertIn('up to 0 complete expansion rounds', output.getvalue())
+        self.assertIn('refinement=False', output.getvalue())
 
 
 if __name__ == "__main__":
