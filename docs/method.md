@@ -191,68 +191,67 @@ subsets, resolves gamma, selects retained rows, and trains its own final model.
 Validation rows are used only for scoring. Scaling each subset independently
 would define a different metric across the base learners.
 
-`mnist_param_grid(prefix='')` returns a dictionary of nine `lambd` values,
-nine `gamma` values, one fixed 10% sampling rate, and five retention fractions
-documented in the README. `GridSearchCV` evaluates their Cartesian product.
-Configure the RBF kernel, `M`, `q`, and stopping controls on the estimator;
-this helper does not set or search them. The provided examples use `M=5`
-and `q=1`. The prefix is the literal scikit-learn parameter prefix, such as
-`'ensemble__'` inside a pipeline. The helper does not tune base models
-independently or launch a search.
+`mnist_param_grid(prefix='')` returns five lambda values, five gamma values,
+one fixed 10% sampling rate and five retention fractions: 125 candidates.
+`broad=True` restores the historical nine-by-nine coefficient grid with the
+same outer endpoints, for 405 candidates. Exact values are listed in the
+[README](../README.md#parameter-search). The prefix is the literal sklearn
+parameter prefix, such as `ensemble__`; configure `M=5`, `q=1`, the RBF kernel
+and stopping controls on the estimator. The helper only returns fresh lists.
 
-Use five-fold stratified cross-validation with accuracy scoring for the
-provided MNIST example. Keep a final test set separate from parameter
-selection. The example wraps the whole pipeline for candidate evaluation. Its
-`--error-score nan` default handles only `IneligibleSelectionError`
-(including `IneligibleSubsetError`), marking an
-ineligible base subset or final selection and reporting it. Unexpected
-exceptions are recorded with their context and propagate to stop the search;
-they are not treated as ordinary parameter choices.
-Only candidates with finite scores on every fold and a finite mean score are
-eligible for ranking and final refitting. A failure is not converted to zero
-accuracy and the estimator does not fall back to another classifier. Select
-`--error-score raise` to stop on ineligible selections as well.
+The command-line example now calls `run_adaptive_search` from
+`examples/adaptive_search.py`. This external controller uses `GridSearchCV`
+with accuracy scoring, `refit=False`, and the same five stratified training
+folds throughout. Only previously unevaluated complete candidates enter a
+new stage. All previously completed scores remain available for selection;
+this is separate from optional reuse of the classifier's cached base fits.
 
-The optional `--refine` stage takes up to three highest-scoring, fully valid
-coarse candidates. Around each one it tries lambda factors `[0.25, 1, 4]`
-and gamma factors `[10**-0.5, 1, 10**0.5]`, retaining that candidate's sampling
-and retention fractions. The union removes duplicate parameter combinations
-and may extend outside the coarse grid. This adds at most 27 candidates.
-Both stages reuse the same five training folds and fit preprocessing within
-each fold. Both GridSearchCV stages disable automatic refitting. Each completed
-stage saves its CV results, exact fold indices, data fingerprint, and selected
-parameters. Before final fitting, the binary example checks whether the selected
-`lambd` or `gamma` is at or beyond a coarse-grid endpoint, including after optional
-local refinement. Such a winner writes `review.json`, sets the run status to
-`needs_review`, and stops before final fitting or test scoring. Expand the
-indicated range using training-only CV. Sampling and retention endpoints do
-not trigger this hold. After the review passes, the selected pipeline is fitted
-on all training rows and the separate test set is scored. This review and search
-remain external to `EnsembleKernelDWD.fit`.
+Best or tied-best lambda/gamma endpoints request outward extensions. When
+both axes extend, the stage includes the new cross-combinations, with the
+same fixed sampling and retention choices. Each outward step is at most one decade (a factor of 10), or the smaller
+adjacent logarithmic spacing when the explored grid is finer. After boundary review, local
+refinement takes the top three distinct lambda/gamma pairs and proposes
+logarithmic midpoints toward neighboring explored values, within the outer
+bounds. These pairs are crossed with all fixed fraction choices. Any newly
+improved boundary is reviewed again. The classifier's objective, stopping
+settings, subset sampler and final-refit rule do not change.
 
-The run directory records `run.json` with input fingerprints, exact folds,
-settings and the grid; `coarse-cv.json` and optional `local-cv.json` contain
-completed stage results. `selection.json` is committed before the explicit
-final fit; `review.json` records a boundary hold when required.
-`refit.json` records fit success or failure, `status.json` records
-the run state, and individual `failures/failure-*.json` files preserve error
-context. `completed.json` includes held-out accuracy only after success.
-An unexpected exception during CV can prevent collection of that stage's full
-results, while the run identity and failure record survive. Retrying the
-selected final fit from saved parameters requires verifying the data hashes,
-folds and settings. The example does not automatically resume or select a
-different candidate after a final-fit failure.
+`AdaptiveSearchConfig` defaults to `max_expansions=3`, `max_candidates=500`,
+`top_k=3`, `plateau_rounds=2`, `improvement_tol=0.0`, `tie_tol=1e-12`, and
+`refine=True`. The CLI exposes `--max-expansions`, `--max-candidates`,
+`--no-refine`, and `--broad-grid`; `--refine` is retained as a compatibility
+option. A full proposed stage must fit the remaining candidate budget.
+An unresolved expansion or refinement budget writes a `needs_review` decision
+and holds final fitting/test scoring. Two complete nonimproving outward
+rounds can satisfy the documented plateau rule, even at a remaining tied
+boundary. A plateau is a finite search stopping rule, not a global-optimum
+certificate or proof that more distant parameters cannot improve accuracy.
 
-The command-line example accepts any positive `--jobs` count. Choose it for
-the available RAM and the dense kernel size; workers are not selected from
-a hardware-specific fixed list. Native BLAS work within each outer worker
-uses one thread. `--run` is required to start either search, and a preview
-reports the coarse and optional refinement budgets without loading data.
-`--output-dir` must name a fresh directory; the default creates a unique
-`results/mnist-*` directory. Its `base-cache` subdirectory is shared by the
-run's candidates. Set `--cache-dir` to use another trusted cache directory or
-`--no-cache` to disable caching. The example stores completed result records,
-not an automatically serialized final predictor.
+The default `--error-score nan` excludes only `IneligibleSelectionError`,
+including `IneligibleSubsetError`. Each candidate must have finite scores on
+every fold and a finite mean to be ranked. Unexpected exceptions are recorded
+and propagated; an all-invalid search stops. `--error-score raise` stops on
+ineligible candidates too. No failed fit receives a zero accuracy or a
+substitute classifier.
+
+`run.json` records the data fingerprints, folds and policy. Completed
+`coarse-cv.json`, `expansion-*-cv.json`, `local-cv.json` when present and
+`accumulated-cv.json` preserve the search evidence. `selection.json` and
+`review.json` are committed before the explicit final fit. `refit.json`,
+`status.json` and `failures/failure-*.json` record later outcomes.
+`completed.json` contains held-out accuracy only after an accepted search and
+successful final fit. An interrupted stage may not have full results, and
+resuming a new process/invocation is not automatic. The legacy
+`run_search_workflow` helper remains available for explicit historical
+coarse/local workflows; these new defaults apply to the CLI.
+
+No data are loaded without `--run`. The preview reports initial-stage costs
+and the total candidate budget separately. `--output-dir` must be fresh;
+its default is a unique `results/mnist-*` directory. `--cache-dir` selects a
+trusted base cache and `--no-cache` disables it. Choose `--jobs` within the
+available RAM; `pre_dispatch` equals that count and each outer worker uses
+one native thread. The example saves result records, not an automatically
+serialized final predictor.
 
 The dissertation uses the symbol theta for both subset sampling and, in its
 OVO experiment, a retained fraction of 0.3. This API deliberately exposes

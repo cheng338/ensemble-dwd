@@ -53,9 +53,10 @@ binary random state is cloned for each pair without using global randomness.
 As in the binary API, `lambda_dissertation = 2 * lambd` under the practical
 mean-loss objective with the dissertation's one-half penalty convention.
 
-The API's broad grid remains available through
-`mnist_param_grid(prefix='ovo__estimator__')`. The compact grid in the example
-is an execution and integration check, not a claim of optimal parameters.
+The default grid is `mnist_param_grid(prefix='ovo__estimator__')`, with
+125 candidates. Passing `broad=True` restores the historical 405 candidates.
+The four-candidate `--smoke-grid` remains an execution and integration check,
+not a claim of optimal parameters.
 The theoretical augmented-norm treatment in the dissertation remains distinct
 from its practical unregularized-intercept implementation; this integration
 does not supply a new justification for applying those bounds.
@@ -75,6 +76,44 @@ and accumulates votes in batches. The supplied tuning example preserves separate
 training and test arrays, limits dispatched work, and saves completed CV selection
 before one explicit final refit. Compare historical dissertation results only
 after matching data, parameter search, selection rules, and stopping settings.
+
+## Adaptive command-line search
+
+`examples/tune_mnist_multiclass.py` uses the same external adaptive controller
+as the binary examples, with prefix `ovo__estimator__` and regularization
+`lambd`. One complete candidate is shared across all 45 pairs. Every stage
+uses the same stratified folds and evaluates only new complete candidates.
+The default remains five folds, a stratified 6,000-row training subset and
+all supplied test rows; the adaptive change does not alter those sizes.
+
+Normal search starts at 125 candidates, expands best/tied-best lambda/gamma
+boundaries with all cross-combinations, and refines the top three distinct
+coefficient pairs within the explored bounds. Each outward step is at most one decade (a factor of 10), or the smaller
+adjacent logarithmic spacing when the explored grid is finer. Sampling stays at 10%, M at
+five, and retention on its five choices. Defaults are three expansion rounds,
+500 unique candidates total, two nonimproving complete rounds for a plateau,
+zero improvement tolerance, tie tolerance `1e-12`, and refinement enabled.
+`--broad-grid` starts at 405, `--no-refine` disables refinement, and
+`--max-expansions`/`--max-candidates` set explicit limits. `--refine` remains
+accepted. A plateau is a finite search decision, not proof of global optimality.
+
+For ten classes and five folds, the initial 125-candidate stage permits up to
+168,750 DWD learner fits before caching; the 405-candidate stage permits up to
+546,750. Adaptive stages are additional work within the total candidate budget.
+The preview prints these separately. Pair fits stay sequential within each
+outer CV worker. No data are loaded without `--run`.
+
+`--smoke-grid` overrides the adaptive budget to four total candidates, zero
+expansions and no refinement, even if other limit/refinement flags were supplied.
+It cannot be combined with `--broad-grid`. All four smoke candidates lie on
+their two-point coefficient axes, so their search will remain unresolved and
+hold final fitting/test scoring. Use it to check CV execution and records;
+it is not a completed accuracy search. Normal searches also hold when a
+complete required stage cannot fit the budget. An accepted interior/plateau
+review is saved before the final refit and separate test evaluation.
+
+See the [shared workflow](method.md#validation-and-proposed-search-space)
+for durable records, failure handling and limits on within-run score reuse.
 
 ## Resource use and diagnostics
 
