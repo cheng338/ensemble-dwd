@@ -13,7 +13,9 @@ parameter setting is shared by every pair; there are no per-pair searches.
 
 Preview: python examples/tune_mnist_multiclass.py
 Run: python examples/tune_mnist_multiclass.py --data mnist.npz --run --jobs 1
-Small validation grid: add --smoke-grid; this is not the broad search.
+The default starts with 125 candidates and bounded adaptive expansion/refinement.
+--smoke-grid limits the whole search to four validation candidates; unresolved
+winners hold final fitting/test scoring. It is not a complete search.
 """
 import argparse
 from pathlib import Path
@@ -30,7 +32,7 @@ from ensemble_dwd import EnsembleKernelDWD, OvOClassifier, mnist_param_grid
 EXAMPLES_DIRECTORY = str(Path(__file__).resolve().parent)
 if EXAMPLES_DIRECTORY not in sys.path:
     sys.path.insert(0, EXAMPLES_DIRECTORY)
-from tune_mnist import positive_int, run_search_workflow
+from tune_mnist import positive_int
 from search_support import data_fingerprint, new_run_directory, write_json_atomic
 
 
@@ -156,10 +158,10 @@ def load_local_multiclass_data(path, train_size=6000, test_size=None, *, random_
             y_train[train_indices], y_test[test_indices], provenance)
 
 
-def search_grid(smoke=False):
-    """Return the broad grid or an explicitly limited four-candidate grid."""
+def search_grid(smoke=False, broad=False):
+    """Return the coarse/broad grid or an explicitly limited four-candidate grid."""
     if not smoke:
-        return mnist_param_grid(prefix=PARAMETER_PREFIX)
+        return mnist_param_grid(prefix=PARAMETER_PREFIX, broad=broad)
     return {
         PARAMETER_PREFIX + 'lambd': [2.0 ** -24, 2.0 ** -18],
         PARAMETER_PREFIX + 'gamma': [1e-4, 1e-3],
@@ -180,7 +182,16 @@ def main(argv=None):
     parser.add_argument('--jobs', type=positive_int, default=1,
                         help='Positive outer CV worker count; pair fitting remains sequential.')
     parser.add_argument('--smoke-grid', action='store_true',
-                        help='Use four explicit validation candidates instead of the broad 405-candidate grid.')
+                        help='Limit the whole search to four validation candidates, without expansion/refinement.')
+    parser.add_argument('--broad-grid', action='store_true',
+                        help='Start from 405 coarse candidates instead of 125.')
+    refinement = parser.add_mutually_exclusive_group()
+    refinement.add_argument('--refine', dest='refine', action='store_true',
+                            help='Compatibility option: refinement is enabled by default.')
+    refinement.add_argument('--no-refine', dest='refine', action='store_false')
+    parser.set_defaults(refine=True)
+    parser.add_argument('--max-expansions', type=int, default=3)
+    parser.add_argument('--max-candidates', type=positive_int, default=500)
     parser.add_argument('--error-score', choices=('raise', 'nan'), default='nan',
                         help='nan skips only ineligible subsets or selections; unexpected failures stop the run.')
     parser.add_argument('--output-dir', type=Path, help='New run directory; an existing directory is rejected.')
@@ -189,13 +200,17 @@ def main(argv=None):
     cache.add_argument('--no-cache', action='store_true', help='Disable base-stage caching.')
     parser.add_argument('--run', action='store_true', help='Load local data and start the search.')
     args = parser.parse_args(argv)
+    if args.max_expansions < 0:
+        parser.error('--max-expansions must be nonnegative.')
+    if args.smoke_grid and args.broad_grid:
+        parser.error('--smoke-grid and --broad-grid are mutually exclusive.')
     if args.folds < 2:
         parser.error('--folds must be at least 2.')
 
-    grid = search_grid(args.smoke_grid)
+    grid = search_grid(args.smoke_grid, broad=args.broad_grid)
     candidates = len(ParameterGrid(grid))
     ovo_fits = args.folds * candidates
-    print(f"{'Validation' if args.smoke_grid else 'Broad'} grid: {candidates} candidates, "
+    print(f"{'Validation' if args.smoke_grid else 'Broad' if args.broad_grid else 'Coarse'} grid: {candidates} candidates, "
           f'{args.folds} folds, {ovo_fits:,} OVO CV fits.')
     print(f'Each OVO fit contains 45 binary ensembles with 5 bases and 1 final DWD: '
           f'up to {candidates} x {args.folds} x 45 x 6 = {ovo_fits * 45 * 6:,} DWD CV fits.')
@@ -203,6 +218,19 @@ def main(argv=None):
           'Counts are upper bounds before cache reuse; there is no automatic CV refit.')
     print(f'Outer workers: {args.jobs}; pair workers: 1; native threads per worker: 1. '
           'Completed CV results and selection are saved before the final fit.')
+    max_expansions = 0 if args.smoke_grid else args.max_expansions
+    max_candidates = 4 if args.smoke_grid else args.max_candidates
+    refine = False if args.smoke_grid else args.refine
+    print(f'Adaptive budget: {max_candidates} unique candidates total; '
+          f'up to {max_expansions} complete expansion rounds; refinement={refine}.')
+    if args.smoke_grid:
+        print('Smoke preview budget overrides adaptive limits to four candidates with no expansion/refinement. '
+              'This is an integration check; unresolved winners hold final fitting/test scoring.')
+    else:
+        print('Only new candidates are evaluated on the same folds. Tied lambda/gamma boundaries expand '
+              'with cross-combinations; local refinement uses the top three distinct pairs.')
+        print('Two nonimproving full rounds may stop expansion; a plateau does not prove a global optimum. '
+              'Unresolved boundaries or exhausted budgets hold final fitting/test scoring.')
     if not args.run:
         print('Prepared only. Supply --data PATH --run to start; no data were loaded.')
         return
@@ -225,12 +253,12 @@ def main(argv=None):
     pipeline = Pipeline([
         ('scale', StandardScaler()),
         ('ovo', OvOClassifier(EnsembleKernelDWD(
-            M=5, random_state=RANDOM_STATE, cache_dir=cache_dir,
+            M=5, theta=0.1, random_state=RANDOM_STATE, cache_dir=cache_dir,
             store_base_estimators=False), n_jobs=1, prediction_batch_size=1024)),
     ])
     settings = {
         **provenance, 'digits': DIGITS, 'n_pairs': 45, 'fold_count': args.folds,
-        'cv_random_state': RANDOM_STATE, 'grid_kind': 'smoke' if args.smoke_grid else 'broad',
+        'cv_random_state': RANDOM_STATE, 'grid_kind': 'smoke' if args.smoke_grid else 'broad' if args.broad_grid else 'coarse',
         'pair_jobs': 1, 'M': 5, 'cache_dir': cache_dir, 'store_base_estimators': False,
     }
     write_json_atomic(run_dir / 'data-selection.json', settings)
@@ -238,9 +266,17 @@ def main(argv=None):
     print(f'Run records: {run_dir}')
     # Load BLAS's deferred OpenMP runtime before the workflow limits threads.
     np.dot(np.ones((2, 2)), np.ones((2, 2)))
-    return run_search_workflow(
+    from adaptive_search import AdaptiveSearchConfig, run_adaptive_search
+    config = AdaptiveSearchConfig(regularization='lambd', prefix=PARAMETER_PREFIX,
+        max_expansions=max_expansions, max_candidates=max_candidates, top_k=3,
+        plateau_rounds=2, improvement_tol=0.0, tie_tol=1e-12, refine=refine)
+    result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
-        jobs=args.jobs, error_policy=args.error_score, refine=False, settings=settings)
+        jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings)
+    if result['model'] is None:
+        print('Adaptive search requires training-only review: ' + ', '.join(result['review']['reasons']))
+        print('The test set was not scored. See selection.json and review.json in the run directory.')
+    return result
 
 
 if __name__ == '__main__':
