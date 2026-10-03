@@ -1,26 +1,30 @@
 # Overview
 
-`ensemble-dwd` provides reusable Python estimators for ensemble kernel
-Distance Weighted Discrimination (DWD), with binary and multiclass support.
+`ensemble-dwd` implements ensemble kernel Distance Weighted Discrimination
+(DWD) for binary and multiclass classification.
 It is based on Chang Cheng's earlier ensemble DWD scripts accompanying his
 dissertation.
 
 The package implements:
 
-- **Binary ensemble kernel DWD** (`EnsembleKernelDWD`): the four-stage
-  Chapter 5 method fits kernel DWD models on disjoint subsets, averages their
-  raw signed decision scores, selects rows by the smallest absolute consensus
-  scores, and fits a final DWD model on those rows.
+- **Binary ensemble kernel DWD** (`EnsembleKernelDWD`): fits kernel DWD models
+  on disjoint subsets, averages their raw signed decision scores, selects rows
+  by the smallest absolute consensus scores, and fits a final DWD model on
+  those rows.
 - **Multiclass ensemble kernel DWD**
   (`OvOClassifier(EnsembleKernelDWD(...))`): fits one binary ensemble per class
   pair and predicts by the dissertation's one-versus-one maximum-wins vote.
-- **Ensemble kernel SVM comparator** (`EnsembleKernelSVM`): uses disjoint base
-  subsets, label-aware consensus-margin selection, and a final SVC refit.
+- **Ensemble kernel SVM comparator** (`EnsembleKernelSVM`): averages scores
+  from SVMs fitted on disjoint subsets, selects rows whose signed margins are
+  closest to one, and fits a final SVC model.
 
-The ensemble DWD method is described in Chang Cheng's dissertation,
-*Overcoming the Curses of Dimensionality and Kernelization: Scalable DWD and
-Supervised NMF* (Purdue University, August 2026), Chapter 5. See
-[CITATION.cff](CITATION.cff) for citation details.
+The four-stage ensemble DWD method is described in Chapter 5 of:
+
+> Cheng, Chang (2026). *Overcoming the Curses of Dimensionality and
+> Kernelization: Scalable DWD and Supervised NMF*. Doctoral dissertation
+> manuscript, Purdue University.
+
+See [CITATION.cff](CITATION.cff) for citation details.
 
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
@@ -142,7 +146,7 @@ of raw decision values, without normalizing individual learners' scores.
 # Parameter search
 
 Put preprocessing inside the cross-validation pipeline. Search the complete
-ensemble and score its final refit's predictions:
+ensemble and score predictions from its final refitted model:
 
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
@@ -166,7 +170,7 @@ search = GridSearchCV(
 # search.fit(X_train, y_train)
 ```
 
-This minimal example stops on every fit error, including an expected
+This example stops on every fit error, including an expected
 single-class selection. For a broad search, use the checkpointed example
 below: it excludes `IneligibleSelectionError` and its `IneligibleSubsetError`
 subclass while still stopping on unexpected failures.
@@ -192,7 +196,7 @@ budgets, not measured runtimes or the total cost of adaptive search.
 `examples/tune_mnist.py` runs bounded adaptive search through the external
 `CheckpointedCV` runner. Every stage uses the same saved stratified five-fold
 split, fits preprocessing inside each training fold, and scores accuracy
-without an automatic refit. Only new complete parameter combinations are
+without an automatic refit. Only new parameter combinations are
 proposed; verified completed fold records are reused. Earlier candidates
 remain eligible for selection. Changing only retention can also reuse the
 package's separate base-stage cache.
@@ -258,7 +262,7 @@ Without `--run`, the example previews its budget and does not load data.
 It accepts local NumPy archives with Keras keys `x_train/y_train/x_test/y_test`,
 capitalized `X_train/X_test` equivalents, or `X/y`; it never downloads data.
 A supplied test split is preserved. `X/y` creates a separate stratified 25%
-test split before CV. No dataset dimensions or sample-count defaults change.
+test split before CV.
 
 Choose a positive `--jobs` count for the available RAM. Dispatched work is
 bounded by that count, each worker uses one native thread, and base models fit
@@ -306,10 +310,11 @@ Cache provenance hashes package-owned source/native files, loaded BLAS/OpenMP
 libraries, loaded NumPy/SciPy/scikit-learn native extensions, and an already
 loaded AOCL bridge's source, manifests and libraries. File contents are hashed
 once per process; observed file or native-inventory changes disable reuse until
-restart. Cold base results are checked again before publication. This requires
-an installation that remains unchanged from import and identifies disk artifacts,
-not previously mapped machine code. Same-version edits to external scientific
-Python source and unobserved transitive libraries remain outside this identity.
+restart. The runtime identity is checked again before a new cache entry is
+saved. The installation must remain unchanged from import. The identity
+describes files on disk; it does not verify code already loaded into the
+process. Same-version edits to external scientific Python source and
+unobserved transitive libraries remain outside this identity.
 
 With `store_base_estimators=False`, `estimators_` is `None` after fitting.
 Consensus scores, sampled and selected indices, iteration counts, convergence
@@ -318,12 +323,13 @@ retained memory without changing selection or prediction. The default keeps
 the base models for inspection.
 
 Cache entries use pickle-based local serialization. Use a private directory
-and load entries only from trusted sources. Lean entries do not directly store
-the training feature matrix, but they still contain scores and index
-diagnostics. Entries that retain base models also contain their training rows.
+and load entries only from trusted sources. Entries without retained base
+models do not directly store the training feature matrix, but they still
+contain scores and index diagnostics. Entries that retain base models also
+contain their training rows.
 
 Training still requires dense kernel matrices. Limiting workers and prediction
-batches controls some allocations; it is not an automatic RAM guarantee.
+batches controls some allocations but does not guarantee a fixed memory limit.
 Choose `--jobs` for the available memory. Changes to DWD constructor parameters,
 including `prediction_batch_size`, take effect on the next fit. For
 `EnsembleKernelSVM`, `prediction_batch_size` can also be changed after fitting:
@@ -331,10 +337,6 @@ every prediction call validates it as `None` or a positive integer. Other
 SVM fitting parameters take effect on the next fit.
 
 # Results and boundaries
-
-The package provides a reusable estimator API,
-with subsequent implementation changes documented in the changelog and
-validation notes.
 
 See the [0.3.4 release changes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) for the justification, tests and
@@ -370,8 +372,7 @@ See [the method and parameter conventions](docs/method.md) for details.
 `OvOClassifier(EnsembleKernelDWD(...))` fits 45 binary ensembles for ten classes.
 
 The following example tunes multiclass ensemble DWD. Each candidate uses
-one parameter configuration across all
-class pairs.
+one parameter configuration across all class pairs.
 
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
@@ -395,7 +396,7 @@ search = GridSearchCV(
 # search.fit(X_train, y_train)
 ```
 
-Each class pair trains the same binary selection-and-refit procedure. Only
+Each class pair uses the same binary procedure for selection and refitting. Only
 its final classifier votes. Ties select the smallest sorted original label;
 decision-score magnitudes do not break ties. Labels retain
 their input dtype, including strings and large integers. `vote_counts(X)`
@@ -433,23 +434,22 @@ python examples/tune_mnist_multiclass.py --data mnist.npz --train-size 6000 --jo
 
 The normal multiclass example uses the same adaptive policy and keeps
 preprocessing inside each CV fold. `--smoke-grid` overrides the adaptive
-budget to exactly four candidates, zero expansions and no refinement;
-unresolved winners remain held from final fitting/test scoring. This is an
-integration check, not an adequate search for comparative accuracy. See [the multiclass method guide](docs/multiclass.md).
+budget to exactly four candidates, zero expansions and no refinement. If the
+search cannot accept a candidate, it does not fit a final model or score the
+test set. This checks that the workflow runs; it is not an adequate search
+for comparing accuracy. See [the multiclass method guide](docs/multiclass.md).
 
-For comparison experiments, the package also includes `EnsembleKernelSVM`,
-with binary and multiclass usage documented in [the comparator guide](docs/ensemble-svm.md).
+For binary and multiclass examples of `EnsembleKernelSVM`, see
+[the comparator guide](docs/ensemble-svm.md).
 
 # Attribution
 
-Chang Cheng developed the ensemble kernel DWD method and its multiclass
-extension. Kernel DWD fitting is provided by
-the separately installed `cheng338/dwd` dependency, derived from
+Kernel DWD fitting is provided by the separately installed `cheng338/dwd`
+dependency, derived from
 [slicersalt/dwd](https://github.com/slicersalt/dwd), originally authored by Iain
 Carmichael with upstream maintenance by David Allemang / Kitware. The
 dependency retains its own MIT license and attribution. Its license does not
-grant rights to this separate package. Citation information is in
-[CITATION.cff](CITATION.cff).
+grant rights to this separate package.
 
 The SVM comparator is Chang Cheng's adaptation of
 [Mao et al. (2016), *Fast Kernel SVM Training via Support Vector Identification*](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
