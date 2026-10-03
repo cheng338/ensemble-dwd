@@ -23,15 +23,24 @@ For ten classes, it fits 45 binary ensembles.
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
 
-See the [release validation](docs/validation-0.3.3.md) for the justification,
-tests and limitations of major implementation changes.
+See the [0.3.4 release changes](docs/candidate_changes.md) and
+[validation history](VALIDATION.md) for the justification, tests and
+limitations of major implementation changes.
 
 ## Installation
 
-Python 3.11 or later is required. This unpublished candidate requires the
-validated DWD 1.3.9.dev20261001 wheels supplied with the local distribution.
-Place those wheels in a `wheels` directory beside this source directory's
-`pyproject.toml`, then install DWD with hash verification before this package:
+Python 3.11 or later is required. Version 0.3.4 requires DWD 1.3.9 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.9).
+From the extracted ensemble-dwd source directory, install that dependency with
+hash verification before this package:
+
+```shell
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.9 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install .
+```
+
+For a local installation, place the released DWD wheels in a `wheels`
+directory beside `pyproject.toml`, then use:
 
 ```shell
 python -m pip install --no-index --find-links wheels --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
@@ -43,27 +52,26 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.4.dev20261001-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.4-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
 pins the SHA-256 hashes of both validated wheel variants. The lock installation
-uses only the supplied local wheels and reinstalls DWD so an existing copy does
-not bypass hash verification. Installing `dwd` by name from an index instead can
-retrieve another implementation. A public release must make the validated
-dependency artifacts available before distribution.
-See [candidate changes](docs/candidate_changes.md).
+uses only the specified release assets or local wheels and reinstalls DWD so an
+existing copy does not bypass hash verification. Other numerical dependencies
+must already be installed or available from an index. Installing `dwd` by name
+from an index instead can retrieve another implementation.
 
 Pip selects a compatible wheel from `wheels`. The Windows AMD64 `abi3` wheel
 contains the compiled helper; the portable wheel contains the optimized Python
 implementation. To require the portable build, put only that wheel in `wheels`
-when installing the dependency. Runtime validation covers conventional Windows
-CPython 3.12; free-threaded Python and other platforms have not been exercised.
+when installing the dependency. The bounded numerical comparisons used
+conventional Windows CPython 3.12. Their results do not establish numerical
+equivalence on other platforms or free-threaded Python.
 
-The CI workflow requires the same locked wheels. Configure the repository
-variable `DWD_WHEELHOUSE_URL` with a wheel-link page containing those artifacts,
-or provision a local `wheels` directory before its installation step. The
-unpublished candidate has no public wheel source configured.
+The CI workflow uses the same lock and the explicit DWD 1.3.9 release asset
+page. This keeps its dependency source fixed independently of repository
+variables used by older release branches.
 
 ## Basic use
 

@@ -3,7 +3,14 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
-## [Unreleased]
+## 0.3.4 — 2026-10-03
+
+- Release the validated development changes as version 0.3.4, paired with
+  DWD 1.3.9. Retain the ensemble method and the unchanged estimator defaults.
+- Correct the cache-verification callback test and canonicalize fixture paths
+  so cache-identity tests exercise the intended conditions on Windows and Linux.
+- Clarify the introduction's origin in the earlier dissertation scripts and
+  use a release-specific, hash-locked DWD wheel source in CI.
 
 - Add the native-aware `base-stage-v2` cache identity, including package source
   and native artifact hashes, actual accelerator availability and numerical

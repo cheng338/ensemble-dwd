@@ -1,6 +1,11 @@
 # Current validation
 
-See the [0.3.3 change-by-change validation](docs/validation-0.3.3.md) for current and historical evidence, including the DWD 1.3.8 dependency checks.
+Version 0.3.4 is paired with DWD 1.3.9. See the
+[0.3.4 release changes](docs/candidate_changes.md) for its cache identity,
+diagnostics, search and recovery changes and their limitations. The
+[0.3.3 change-by-change validation](docs/validation-0.3.3.md) remains historical
+evidence, including the earlier DWD 1.3.8 dependency checks; its numerical
+results should not be relabeled as a new full MNIST run for version 0.3.4.
 
 # ensemble-dwd validation
 

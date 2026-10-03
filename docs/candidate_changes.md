@@ -1,7 +1,7 @@
-# Ensemble DWD candidate changes
+# Ensemble DWD 0.3.4 release changes
 
-This unpublished candidate fixes persistent base-cache identity and retains small
-base-fit diagnostic records. It also forwards the optional DWD residual ordering
+Version 0.3.4, released on October 3, 2026, fixes persistent base-cache identity
+and retains small base-fit diagnostic records. It also forwards the optional DWD residual ordering
 setting. The statistical ensemble procedure is unchanged: one uniform permutation
 provides mutually disjoint base subsets; raw signed decision scores are averaged;
 rows with the smallest absolute consensus scores are selected; a final DWD is
@@ -66,8 +66,8 @@ coarse/local helper remains nonresumable; it now preserves all parent
 parameters and a better coarse incumbent and reports final-stage flags and
 interruptions accurately. Binary data helpers reject complex arrays.
 
-The candidate requires DWD 1.3.9.dev20261001. Its dependency lock records the
+This release requires DWD 1.3.9. Its dependency lock records the
 SHA-256 hashes of the validated native and portable wheels through relocatable
-artifact references. Install the locked local dependency before installing
-this unpublished package. A public release requires available dependency
-artifacts. See the README installation instructions.
+artifact references. Install the locked dependency from the DWD 1.3.9 GitHub
+release assets or downloaded local wheels before installing this package.
+See the README installation instructions.
