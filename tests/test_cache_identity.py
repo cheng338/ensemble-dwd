@@ -27,7 +27,8 @@ def fixture_roots(folder):
         root.mkdir(parents=True)
         (root / "__init__.py").write_text('__version__ = "same-version"\n')
     (roots["dwd"] / "_residual_accel.pyd").write_bytes(b"native-build-one")
-    return roots
+    # Match the canonical paths returned by the production _package_roots.
+    return {name: root.resolve() for name, root in roots.items()}
 
 
 def artifact_process_worker(folder, cache, available):
