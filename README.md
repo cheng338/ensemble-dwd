@@ -1,33 +1,31 @@
-# ensemble-dwd
+# Overview
 
-`ensemble-dwd` is based on Chang Cheng's earlier ensemble DWD scripts
-accompanying his dissertation. It implements ensemble kernel Distance Weighted
-Discrimination for binary and multiclass classification. Use
-`EnsembleKernelDWD` for two classes and
-`OvOClassifier(EnsembleKernelDWD(...))` for multiclass classification.
+`ensemble-dwd` provides reusable Python estimators for ensemble kernel
+Distance Weighted Discrimination (DWD), with binary and multiclass support.
+It is based on Chang Cheng's earlier ensemble DWD scripts accompanying his
+dissertation.
 
-`EnsembleKernelDWD` is a binary classifier that uses several kernel DWD models
-to select a smaller training set, then fits one final kernel DWD classifier.
-It implements the four-stage method in Chapter 5 of Chang Cheng's dissertation,
+The package implements:
+
+- **Binary ensemble kernel DWD** (`EnsembleKernelDWD`): the four-stage
+  Chapter 5 method fits kernel DWD models on disjoint subsets, averages their
+  raw signed decision scores, selects rows by the smallest absolute consensus
+  scores, and fits a final DWD model on those rows.
+- **Multiclass ensemble kernel DWD**
+  (`OvOClassifier(EnsembleKernelDWD(...))`): fits one binary ensemble per class
+  pair and predicts by the dissertation's one-versus-one maximum-wins vote.
+- **Ensemble kernel SVM comparator** (`EnsembleKernelSVM`): uses disjoint base
+  subsets, label-aware consensus-margin selection, and a final SVC refit.
+
+The ensemble DWD method is described in Chang Cheng's dissertation,
 *Overcoming the Curses of Dimensionality and Kernelization: Scalable DWD and
-Supervised NMF* (Purdue University, August 2026).
-
-The package provides a reusable estimator API,
-with subsequent implementation changes documented in the changelog and
-validation notes.
-
-`OvOClassifier(EnsembleKernelDWD(...))` extends this procedure to multiclass
-classification using the dissertation's one-versus-one maximum-wins vote.
-For ten classes, it fits 45 binary ensembles.
+Supervised NMF* (Purdue University, August 2026), Chapter 5. See
+[CITATION.cff](CITATION.cff) for citation details.
 
 This is private research software. Copyright 2026 Chang Cheng. All rights
 reserved. A software license has not yet been selected or granted.
 
-See the [0.3.4 release changes](docs/candidate_changes.md) and
-[validation history](VALIDATION.md) for the justification, tests and
-limitations of major implementation changes.
-
-## Installation
+# Installation
 
 Python 3.11 or later is required. Version 0.3.4 requires DWD 1.3.9 from the
 [DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.9).
@@ -73,7 +71,7 @@ The CI workflow uses the same lock and the explicit DWD 1.3.9 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
-## Basic use
+# Basic use
 
 This example demonstrates binary DWD. See [Multiclass use](#multiclass-use)
 for classification with more than two classes.
@@ -101,7 +99,7 @@ The bundled digits dataset requires no download. The classifier preserves the
 two input class labels. Its `decision_function` and `predict` use the final
 refitted model; the average base-model scores are used during selection.
 
-## Defaults
+# Defaults
 
 The following defaults apply to `EnsembleKernelDWD`, including each pairwise
 DWD ensemble inside `OvOClassifier`.
@@ -141,7 +139,7 @@ These are starting settings, not universal optima. `theta` and
 `sv_selection_ratio` have separate roles. The method uses the arithmetic mean
 of raw decision values, without normalizing individual learners' scores.
 
-## Parameter search
+# Parameter search
 
 Put preprocessing inside the cross-validation pipeline. Search the complete
 ensemble and score its final refit's predictions:
@@ -290,7 +288,7 @@ that receipt is committed, a verified resume returns the saved result without
 fitting or scoring again. The Python result then has `model=None` and
 `resumed_completed=True`; it does not restore a predictor.
 
-## Reusing work and storing models
+# Reusing work and storing models
 
 Set `cache_dir` to reuse the base stage when only the retention fraction
 changes. The key includes the current training data and row order, labels,
@@ -332,7 +330,15 @@ including `prediction_batch_size`, take effect on the next fit. For
 every prediction call validates it as `None` or a positive integer. Other
 SVM fitting parameters take effect on the next fit.
 
-## Results and boundaries
+# Results and boundaries
+
+The package provides a reusable estimator API,
+with subsequent implementation changes documented in the changelog and
+validation notes.
+
+See the [0.3.4 release changes](docs/candidate_changes.md) and
+[validation history](VALIDATION.md) for the justification, tests and
+limitations of major implementation changes.
 
 Disjoint sampling applies from version 0.3.2. Earlier validation reports used
 base subsets that could overlap. Those reports retain their original meaning;
@@ -359,7 +365,9 @@ class; it does not substitute another classifier or expand the retained set.
 
 See [the method and parameter conventions](docs/method.md) for details.
 
-## Multiclass use
+# Multiclass use
+
+`OvOClassifier(EnsembleKernelDWD(...))` fits 45 binary ensembles for ten classes.
 
 The following example tunes multiclass ensemble DWD. Each candidate uses
 one parameter configuration across all
@@ -432,7 +440,7 @@ integration check, not an adequate search for comparative accuracy. See [the mul
 For comparison experiments, the package also includes `EnsembleKernelSVM`,
 with binary and multiclass usage documented in [the comparator guide](docs/ensemble-svm.md).
 
-## Attribution
+# Attribution
 
 Chang Cheng developed the ensemble kernel DWD method and its multiclass
 extension. Kernel DWD fitting is provided by
