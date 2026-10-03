@@ -41,8 +41,8 @@ from the unsigned implementation must retain that label. DWD continues to
 select by `abs(g)`; its method is unchanged.
 
 Neither rule is an exact detector of the full-data SVM's support vectors.
-Accuracy and time advantages require measurement. The matched architecture
-is base classifiers, selection, and a final classifier of the same family.
+Accuracy and time advantages require measurement. Both ensemble methods
+fit base classifiers, select rows, and fit a final classifier of the same family.
 
 ## Defaults and regularization
 
@@ -117,7 +117,7 @@ search = GridSearchCV(
 # search.fit(X_train, y_train)
 ```
 
-This minimal snippet stops on all fit errors. A broad grid may contain
+This example stops on all fit errors. A broad grid may contain
 ineligible single-class selections; the checkpointed example below can
 exclude those specific candidates while allowing unexpected errors to stop
 the run. Setting ordinary GridSearchCV's `error_score` to NaN alone would
@@ -145,10 +145,11 @@ Improvement tolerance remains zero and boundary tie tolerance `1e-12`.
 
 Use `--max-expansions`, `--max-candidates`, or `--broad-grid` explicitly.
 `--no-refine` skips local rounds and factor-two tightening but still requires
-valid conditional neighbors; `--refine` remains accepted. A stage exceeding
-the remaining budget is held whole. Unresolved limits write `needs_review`
-and preserve CV evidence without final fitting or test scoring. These rules
-do not change SVC's objective or its numerical controls.
+valid conditional neighbors; `--refine` remains accepted. If a complete
+proposed stage exceeds the remaining budget, none of that stage is evaluated.
+An unresolved search records `needs_review` and preserves CV evidence without
+final fitting or test scoring. These rules do not change SVC's objective
+or its numerical controls.
 
 The default invocation previews costs without loading data. `--run` loads a
 local archive while preserving a supplied test split. Final fitting follows
@@ -156,10 +157,11 @@ an accepted saved review, then held-out scoring. Each completed fold fit and
 the final refit save compact diagnostics. Use `--resume --run` with the same
 output directory, settings (including policy, budgets and jobs), data, folds
 and immutable numerical runtime to reuse completed folds. Unfinished fits,
-including an interrupted final fit, restart. A committed completed resume
-performs no fit or score and returns `model=None`; a crash before completion
-commits can repeat the final fit and scoring. `--no-cache` disables base-fit
-reuse, not fold checkpoints. See the
+including an interrupted final fit, restart. If the completion receipt has
+already been committed, a verified resume performs no fitting or scoring and
+returns `model=None`. A crash before that receipt is committed can require
+the final fit and scoring again. `--no-cache` disables base-fit reuse, not
+fold checkpoints. See the
 [shared workflow and records](method.md#validation-and-proposed-search-space).
 
 ## Multiclass use
@@ -210,9 +212,9 @@ search = GridSearchCV(
 ```
 
 The default preset has 125 candidates; `broad=True` restores 405. Either can
-be expensive across all class
-pairs. This minimal example stops on any fit error. As with DWD, an
-ineligible pair selection invalidates the complete multiclass candidate.
+be expensive across all class pairs. This example stops on any fit error.
+As with DWD, an ineligible pair selection invalidates the complete multiclass
+candidate.
 Parameter tuning and any search-boundary review remain external to the
 estimators. The checkpointed multiclass command-line example currently
 demonstrates DWD; the code above shows the SVM composition.

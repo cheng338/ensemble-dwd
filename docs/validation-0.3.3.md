@@ -1,6 +1,6 @@
 # ensemble-dwd 0.3.3: validation and justification of major changes
 
-This document covers the package's evolution from the original binary experiment, its multiclass extension, and the current adaptive cross-validation workflow. Ensemble DWD remains the primary method. The SVM implementation is a comparator with explicitly documented methodological differences.
+This historical record covers the package's evolution from the original binary experiment through its multiclass extension and the adaptive cross-validation workflow in version 0.3.3. Here, 'current' and 'latest' refer to that release and its validation. Ensemble DWD remains the primary method. The SVM implementation is a comparator with explicitly documented methodological differences.
 
 Evidence is labeled as **current suite** (tests rerun on the latest source with the repaired DWD dependency), **audit** (focused independent comparisons or ablations), or **historical** (earlier experiments retained with their original scope). A historical result using overlapping draws is not presented as a result for the current disjoint sampling method.
 
@@ -8,7 +8,7 @@ The selected requirements \(M=5\), sampling fraction \(\theta=0.10\), and disjoi
 
 ## Method preserved by the package
 
-Each binary ensemble fits base learners on disjoint, uniformly selected subsets, averages their raw decision scores on the training observations, selects a fixed fraction of observations by the method's criterion, and fits a fresh final classifier on those selected rows. For ensemble DWD, ranking uses absolute consensus score. A missing class in a drawn or final selected set is reported explicitly; it is not repaired by changing the requested algorithm.
+Each binary ensemble fits base learners on disjoint, uniformly selected subsets, averages their raw decision scores on the training observations, selects a fixed fraction of observations by the method's criterion, and fits a fresh final classifier on those selected rows. For ensemble DWD, ranking uses absolute consensus score. A missing class in a drawn or final selected set is reported explicitly; it is not repaired by changing the requested procedure.
 
 Base and final DWD learners use the optimized **cheng338/dwd** implementation. The numerical kernel coefficient is resolved once within the current binary fit and shared across its base/final learners, along with lambda, \(q\), and stopping settings. Preprocessing belongs inside the CV pipeline so each fold learns it from training rows only. The mean-loss DWD lambda convention does not require an extra subset-size rescaling.
 
@@ -59,10 +59,20 @@ All stages use external GridSearchCV on the same five stratified training folds,
 - Local refinement adds logarithmic midpoints around the top three distinct regularization/gamma pairs, evaluated across all five selection ratios.
 - Defaults allow three expansion rounds, 500 unique candidates, and two completed non-improving rounds for plateau acceptance; improvement tolerance is zero and tie tolerance is \(10^{-12}\).
 - A budget that cannot accommodate the next complete required stage holds the search and saves its results. No final refit or test scoring occurs.
-- A plateau can accept a boundary winner but is not proof of a global optimum. Invalid new outer candidates do not establish a plateau. A candidate is eligible only if every fold has a finite valid score.
+- A plateau can accept a boundary winner but is not proof of a global optimum. A candidate is eligible only if every fold has a finite valid score.
 - Accepted selection is recorded before one explicit final training fit; test scoring follows only a successful final fit.
 
 The estimator, cache, multiclass and SVM core modules were unchanged by the adaptive-search addition. Its changes concern model selection, examples, documentation and tests.
+
+Later review of the 0.3.3 controller found that attempted global coordinates
+could make a valid boundary candidate appear interior even when outer
+candidates were invalid or neighbors at the same values of the other
+parameters were missing. It also performed only one local-refinement stage,
+leaving further improvements between tested points unchecked. Version 0.3.4
+adds valid conditional-neighbor checks and repeated local refinement. The
+eight execution checks below did not expose these cases; their recorded
+outcomes remain unchanged. Their success does not establish that every
+search accepted by 0.3.3 had adequate boundary or local coverage.
 
 ### Actual MNIST execution checks
 
@@ -102,4 +112,4 @@ Earlier controlled cache studies found roughly 2.2× improvement when sharing fi
 
 Run **python -m unittest discover -s tests -v** from a checkout with test dependencies. Test native and portable DWD installations separately, confirming the imported build. The linked tests exercise estimator correctness, mathematical integration, failure behavior, voting, cache ownership and CV policy; they are complementary to classification experiments.
 
-This release does not claim that all repairs improve accuracy, that every finite-budget prediction matches the original experiment, that no valid extreme DWD fit can fail, or that the adaptive preset is optimal. The current evidence supports the implemented methodology and its stated failure behavior. Broad-versus-adaptive search effectiveness, globally optimal numerical dispatch, and build-complete persistent-cache provenance remain distinct limitations rather than completed validation claims.
+This release does not claim that all repairs improve accuracy, that every finite-budget prediction matches the original experiment, that no valid extreme DWD fit can fail, or that the adaptive preset is optimal. The current evidence supports the implemented methodology and its stated failure behavior. This validation did not establish the effectiveness of broad versus adaptive search, a numerical dispatch policy that is always optimal, or identification of every build artifact relevant to persistent-cache reuse.

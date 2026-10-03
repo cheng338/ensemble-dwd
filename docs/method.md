@@ -2,9 +2,9 @@
 
 The estimator implements the four stages in Section 5.1.1 of Chang Cheng's
 dissertation, *Overcoming the Curses of Dimensionality and Kernelization:
-Scalable DWD and Supervised NMF* (Purdue University, August 2026, pp. 46–47).
-`EnsembleKernelDWD` supports binary classification. `OvOClassifier` composes
-it into the multiclass procedure described in [the multiclass method](multiclass.md).
+Scalable DWD and Supervised NMF* (Purdue University, 2026).
+`EnsembleKernelDWD` supports binary classification. `OvOClassifier` uses it
+for each class pair, as described in [the multiclass method](multiclass.md).
 
 ## Fit and prediction
 
@@ -42,7 +42,7 @@ The final selected set is drawn from that fit's complete training set.
 
 The permutation does not use the labels. There is no class conditioning,
 stratification, redraw, or replacement of rows after sampling. Both binary
-classes must appear in every realized block. `IneligibleSubsetError` is raised
+classes must appear in every sampled block. `IneligibleSubsetError` is raised
 before any learner fit or base-cache lookup when the capacity is insufficient,
 a class has fewer than `M` observations, or a sampled block has only one class.
 It subclasses `IneligibleSelectionError`, so existing handlers continue to
@@ -139,6 +139,15 @@ forms part of the base-cache key. Runtime depends on the data and parameters;
 no backend is uniformly faster. Finite-budget scores and selected rows can
 differ, so validate an explicit backend through the complete estimator.
 
+The explicit option `residual_check_order='adaptive'` changes the order of
+existing residual checks in unaccelerated optimized Cholesky MM. It requires
+`backend='auto'` or `'cholesky'` and `acceleration=None`; the default remains
+`'refinement_first'`. Automatic spectral recovery uses the original check
+order, and anchor recovery retains its original checks. The option does not
+loosen tolerances or recovery limits, but a different accepted coefficient
+state can change finite-iteration scores, selected rows and predictions.
+Validate it through the complete ensemble before relying on its results.
+
 Prediction is evaluated in batches to limit query-kernel allocations.
 Training still uses dense kernel matrices. At `M=5`, an uncached successful fit
 consists of six DWD fits; the wrapper trains them sequentially. Parallelize
@@ -173,14 +182,14 @@ False, `estimators_` is None, while the final estimator, consensus scores,
 subset/selection indices, update counts and convergence flags remain available.
 Dropping the base models after scoring reduces retained feature copies and
 serialized model size. It does not alter the selected rows or the final model.
-The tuning example uses this lean option and a shared cache within its separate
-run output directory.
+The tuning example discards these base models and uses a shared cache within
+its separate run output directory.
 
 Cache entries use trusted local pickle-based serialization. Keep the directory
-private; loading a modified or untrusted entry is unsafe. Lean cache entries do
-not directly serialize the source feature matrix, but their scores and index
-diagnostics may still be sensitive. Entries retaining models include those
-models' training feature rows. Constructor parameter changes take effect on a
+private; loading a modified or untrusted entry is unsafe. Entries without
+retained base models do not directly serialize the source feature matrix, but
+their scores and index diagnostics may still be sensitive. Entries retaining
+models include those models' training feature rows. Constructor parameter changes take effect on a
 subsequent fit; they do not modify already fitted child models.
 
 ## Validation and proposed search space
@@ -202,7 +211,7 @@ and stopping controls on the estimator. The helper only returns fresh lists.
 The command-line examples call `run_adaptive_search` from
 `examples/adaptive_search.py`. Its external `CheckpointedCV` runner scores
 accuracy on fixed stratified training folds, with fold-local preprocessing
-and no automatic refit. Only previously unevaluated complete candidates are
+and no automatic refit. Only parameter combinations not yet evaluated are
 proposed. Earlier candidates remain eligible, and verified completed fold
 records can be reused across an explicit resume. This is separate from
 optional reuse of the classifier's cached base fits.
@@ -219,8 +228,8 @@ Repeated local refinement proposes joint logarithmic midpoints around the
 top three distinct lambda/gamma pairs, within the explored bounds, crossed
 with all fixed fraction choices. With refinement enabled, the selected
 candidate must have a valid lower and upper conditional neighbor in each
-axis, each within a factor of two. Two actually completed local-refinement
-rounds must then show no improvement or change of winning region. Repairs at
+axis, each within a factor of two. Two completed local-refinement rounds
+must then show no improvement or change of winning region. Repairs at
 existing coordinates do not earn this credit. Improvement, changed prior
 evidence or departure from the established region reopens review. These are
 external search rules: the objective, subset sampler and final-refit method
@@ -239,9 +248,9 @@ final fitting and test scoring.
 The enabled full-strip plateau rule can waive a distant tied outer edge
 only after two completed nonimproving outward levels with valid same-slice
 evidence. It never waives the selected candidate's own bracket or uses
-invalid/missing neighbors as plateau evidence. This empirical tested-range
-stopping rule does not prove global optimality or exclude improvement farther
-away.
+invalid/missing neighbors as plateau evidence. This stopping rule is based
+on the evaluated range; it does not prove global optimality or exclude
+improvement farther away.
 
 The default `--error-score nan` excludes only `IneligibleSelectionError`,
 including `IneligibleSubsetError`. A candidate needs finite scores on every
@@ -260,6 +269,13 @@ are saved before the explicit final fit; `refit.json`, `status.json` and
 `failures/failure-*.json` record later outcomes. An accepted search fits all
 training rows, then scores the separate held-out set.
 
+No data are loaded without `--run`. The preview reports initial costs and
+total candidate budget separately. The default output is a unique
+`results/mnist-*` directory. `--cache-dir` selects a trusted base cache and
+`--no-cache` disables that cache, not completed-fold checkpoints. Choose
+`--jobs` for the available RAM; dispatched work is bounded by that count and
+each outer worker uses one native thread.
+
 New runs require a fresh `--output-dir`. Explicit `--resume --run` reuses
 checksummed completed folds only when data, folds, estimator parameters,
 policy and budgets, job count, and numerical runtime match. The installation
@@ -273,16 +289,9 @@ candidate.
 No fitted predictor or partial optimizer state is serialized. An interrupted
 final refit starts again. A crash after held-out prediction but before the
 authoritative completion receipt commits can repeat the fit and scoring.
-Once committed, a verified completed resume restores saved summaries without
-fitting or scoring and returns `model=None`, `resumed_completed=True`.
+Once that receipt is committed, a verified resume restores saved summaries
+without fitting or scoring. Its result has `model=None`, `resumed_completed=True`.
 `completed.json` is the public mirror of that saved outcome.
-
-No data are loaded without `--run`. The preview reports initial costs and
-total candidate budget separately. The default output is a unique
-`results/mnist-*` directory. `--cache-dir` selects a trusted base cache and
-`--no-cache` disables that cache, not completed-fold checkpoints. Choose
-`--jobs` for the available RAM; dispatched work is bounded by that count and
-each outer worker uses one native thread.
 
 The dissertation uses the symbol theta for both subset sampling and, in its
 OVO experiment, a retained fraction of 0.3. This API deliberately exposes

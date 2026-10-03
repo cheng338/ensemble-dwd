@@ -2,8 +2,9 @@
 
 The multiclass extension of Chang Cheng's ensemble kernel DWD was tested with
 Anaconda CPython 3.12 in `py12_df`, using the optimized `cheng338/dwd` 1.3.4
-compiled Windows wheel. The wrapper composes the binary estimator; the binary
-estimator, cache implementation, and parameter-grid helper matched version 0.1.1.
+compiled Windows wheel. The wrapper uses one binary estimator per class
+pair; the binary estimator, cache implementation, and parameter-grid helper
+matched version 0.1.1.
 
 ## Changes and audit
 
@@ -14,7 +15,8 @@ estimator, cache implementation, and parameter-grid helper matched version 0.1.1
 - Corrected multiclass sklearn integration, retained original label dtypes,
   bounded pair dispatch, batched vote accumulation, and cleared failed fits.
 - Reused the binary package's reproducible sampling, valid M=1 handling,
-  optional cached base stage, lean storage and explicit ineligible selections.
+  optional cached base stage, storage without base models and explicit
+  ineligible selections.
 - Added a local-archive MNIST example with fold-local preprocessing and
   external GridSearchCV, shared pair parameters and durable result records.
 - Updated dependency metadata from an older fork commit to hash-pinned

@@ -251,13 +251,6 @@ The legacy `run_search_workflow` helper remains a nonresumable coarse/local
 workflow. It preserves all parent parameters during local refinement and
 retains a better coarse candidate when local results do not improve it.
 
-```shell
-python examples/tune_mnist.py
-python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run
-python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run --resume
-python examples/tune_mnist.py --broad-grid --max-candidates 1000 --no-refine
-```
-
 Without `--run`, the example previews its budget and does not load data.
 It accepts local NumPy archives with Keras keys `x_train/y_train/x_test/y_test`,
 capitalized `X_train/X_test` equivalents, or `X/y`; it never downloads data.
@@ -270,6 +263,13 @@ sequentially. New runs require a fresh `--output-dir`; the default creates a
 unique `results/mnist-*` directory. `--cache-dir` selects a trusted base cache
 and `--no-cache` disables it. The examples discard base models after retaining
 their diagnostics, scores and indices.
+
+```shell
+python examples/tune_mnist.py
+python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run
+python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run --resume
+python examples/tune_mnist.py --broad-grid --max-candidates 1000 --no-refine
+```
 
 To resume, pass `--resume --run` with the original output directory and the
 same data, folds, estimator parameters, policy and budgets, job count, and
@@ -335,37 +335,6 @@ including `prediction_batch_size`, take effect on the next fit. For
 `EnsembleKernelSVM`, `prediction_batch_size` can also be changed after fitting:
 every prediction call validates it as `None` or a positive integer. Other
 SVM fitting parameters take effect on the next fit.
-
-# Results and boundaries
-
-See the [0.3.4 release changes](docs/candidate_changes.md) and
-[validation history](VALIDATION.md) for the justification, tests and
-limitations of major implementation changes.
-
-Disjoint sampling applies from version 0.3.2. Earlier validation reports used
-base subsets that could overlap. Those reports retain their original meaning;
-new sampling requires new evaluation and can change selections and predictions.
-
-After fitting, inspect `subset_indices_`, `selected_indices_`,
-`consensus_scores_`, `estimators_`, `final_estimator_`, and `gamma_`.
-`n_iter_` and `converged_` describe the `M` base learners followed by the final
-learner. An objective stopping event does not itself certify optimality.
-`gamma_` is `None` for kernels that do not consume top-level gamma, including
-linear and callable kernels. Callable kernels receive only their explicitly
-supplied `kernel_kws`; the top-level gamma is not injected into them.
-
-`EnsembleKernelDWD` accepts exactly two classes. Wrap it in `OvOClassifier`
-for two or more classes. Precomputed kernels are unsupported.
-Base subsets follow Mao's disjoint-subset rule: one uniform permutation
-supplies `M` non-overlapping blocks of size `k = max(2, floor(theta * n))`,
-requiring `M * k <= n` within every binary fit. A sampled block containing
-only one class raises `IneligibleSubsetError` before base fitting; it is not
-redrawn. The error subclasses `IneligibleSelectionError`. Final selection keeps exactly
-`floor(sv_selection_ratio * n)` rows in stable order of absolute consensus
-score. It raises an error if that set has fewer than two rows or only one
-class; it does not substitute another classifier or expand the retained set.
-
-See [the method and parameter conventions](docs/method.md) for details.
 
 # Multiclass use
 
@@ -441,6 +410,37 @@ for comparing accuracy. See [the multiclass method guide](docs/multiclass.md).
 
 For binary and multiclass examples of `EnsembleKernelSVM`, see
 [the comparator guide](docs/ensemble-svm.md).
+
+# Results and boundaries
+
+See the [0.3.4 release changes](docs/candidate_changes.md) and
+[validation history](VALIDATION.md) for the justification, tests and
+limitations of major implementation changes.
+
+Disjoint sampling applies from version 0.3.2. Earlier validation reports used
+base subsets that could overlap. Those reports retain their original meaning;
+new sampling requires new evaluation and can change selections and predictions.
+
+After fitting, inspect `subset_indices_`, `selected_indices_`,
+`consensus_scores_`, `estimators_`, `final_estimator_`, and `gamma_`.
+`n_iter_` and `converged_` describe the `M` base learners followed by the final
+learner. An objective stopping event does not itself certify optimality.
+`gamma_` is `None` for kernels that do not consume top-level gamma, including
+linear and callable kernels. Callable kernels receive only their explicitly
+supplied `kernel_kws`; the top-level gamma is not injected into them.
+
+`EnsembleKernelDWD` accepts exactly two classes. Wrap it in `OvOClassifier`
+for two or more classes. Precomputed kernels are unsupported.
+Base subsets follow Mao's disjoint-subset rule: one uniform permutation
+supplies `M` non-overlapping blocks of size `k = max(2, floor(theta * n))`,
+requiring `M * k <= n` within every binary fit. A sampled block containing
+only one class raises `IneligibleSubsetError` before base fitting; it is not
+redrawn. The error subclasses `IneligibleSelectionError`. Final selection keeps exactly
+`floor(sv_selection_ratio * n)` rows in stable order of absolute consensus
+score. It raises an error if that set has fewer than two rows or only one
+class; it does not substitute another classifier or expand the retained set.
+
+See [the method and parameter conventions](docs/method.md) for details.
 
 # Attribution
 

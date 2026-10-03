@@ -12,7 +12,7 @@ accompanying his dissertation.
 - Clarify the introduction's origin in the earlier dissertation scripts and
   use a release-specific, hash-locked DWD wheel source in CI.
 
-- Add the native-aware `base-stage-v2` cache identity, including package source
+- Add the `base-stage-v2` cache identity, including package source
   and native artifact hashes, actual accelerator availability and numerical
   runtime provenance. Keep old cache entries separate and bypass reuse when
   identity is unavailable or observably changed.
@@ -37,9 +37,9 @@ accompanying his dissertation.
   locks, including atomic temporary files.
 - Clear partial learned state after `KeyboardInterrupt` and `SystemExit` in
   binary and one-versus-one fits, then propagate the original interruption.
-- Preserve all parent parameters and a better coarse incumbent in the legacy
-  nonresumable coarse/local helper. Keep review flags consistent with final
-  fitting and scoring, and record graceful interruption separately from failure.
+- Preserve all parent parameters and any better candidate from the coarse stage
+  in the legacy nonresumable coarse/local helper. Keep review flags consistent
+  with final fitting and scoring, and record interruption separately from failure.
 - Reject complex feature and label arrays, nonfinite features and empty feature
   dimensions in binary MNIST data helpers before CV, including supplied test splits.
 - Use an exact DWD version requirement

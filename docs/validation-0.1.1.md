@@ -15,7 +15,7 @@ The original 0.1.0 release artifacts remain unchanged. Validation preceded publi
   Checksums and atomic writes prevent incomplete entries from becoming hits.
   Tiny BLAS initialization stabilizes fingerprints in fresh MKL workers;
   a fresh-process regression covers the lazy-runtime-loading case.
-- Optional lean storage removes saved base models while retaining the final
+- Optional storage without base models retains the final
   predictor, consensus, sampled/selected rows and convergence diagnostics.
 - Both external GridSearchCV stages use refit=False and save completed CV
   results, exact folds and selected parameters before the explicit final refit.
@@ -80,10 +80,11 @@ implementations. Accuracy was unchanged on these checks; no accuracy increase
 or universal speedup is claimed. A five-ratio cold group requires 10 DWD fits
 instead of 30; a fully warm group requires five fresh final fits.
 
-Lean models were about 62.3% smaller when serialized (approximately 15.13 MB
-to 5.70 MB at final ratio 0.3). Their prediction roundtrip matched exactly.
-Lean base cache entries were about 49 KB. These are storage measurements,
-not promises about peak training RAM.
+Models stored without base learners were about 62.3% smaller when serialized
+(approximately 15.13 MB to 5.70 MB at final ratio 0.3). Predictions after
+saving and loading matched exactly. Base cache entries without retained
+models were about 49 KB. These are storage measurements, not promises about
+peak training RAM.
 
 ## Parallel CV and failure handling
 
@@ -96,9 +97,8 @@ uncached 2.049 s; cold shared cache 1.148 s;
 warm shared cache 0.848 s. Exactly five base-stage entries
 were produced per cold search, one for each fold. This compares 0.1.1 with
 and without caching; the four-pair table separately uses the 0.1.0 wheel.
-The first parallel cold-cache run took
-2.277 s;
-these medians do not imply that every small run is faster.
+The first parallel cold-cache run took 2.277 s; these medians do not imply
+that every small run is faster.
 
 The basic example passed. The real two-stage example completed with two
 workers, one coarse and nine refined candidates over five folds on 60 synthetic

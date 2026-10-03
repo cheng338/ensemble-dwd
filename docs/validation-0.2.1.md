@@ -65,8 +65,8 @@ Multiclass checks cover all 45 class pairs, pair-only training data, label
 orientation, maximum-wins voting, exact ties, string and large integer labels,
 serial/parallel parity, nested GridSearchCV tuning and fold-local scaling.
 Cache tests verify reuse across retention ratios, distinct data/fold keys,
-checksum handling and lean retained models. Search-workflow tests preserve
-completed selection records if final fitting fails.
+checksum handling and storage without base models. Search-workflow tests
+preserve completed selection records if final fitting fails.
 
 Normal upgrades produce fresh source-based cache keys. No old cache or
 checkpoint is silently treated as belonging to the new release. The estimator

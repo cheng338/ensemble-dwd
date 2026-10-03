@@ -2,7 +2,6 @@
 
 `OvOClassifier(EnsembleKernelDWD(...))` provides one-versus-one multiclass
 classification using the binary ensemble DWD estimator for each class pair.
-The package therefore supports both binary and multiclass classification.
 
 ## Method
 
@@ -14,9 +13,9 @@ with smallest absolute mean raw score, and fit one final kernel DWD.
 The final classifier of each pair casts one vote. The class with the most
 votes is predicted. There is no vote among the base learners at test time.
 
-`OvOClassifier(EnsembleKernelDWD(...))` implements this composition. It
-preserves the binary estimator's objective, including its unregularized
-intercept, sampling distribution, selection rule and stopping controls.
+`OvOClassifier(EnsembleKernelDWD(...))` preserves the binary estimator's
+objective, including its unregularized intercept, sampling distribution,
+selection rule and stopping controls.
 The wrapper does not change or reimplement the DWD solver. For `M=5`, a
 successful uncached ten-class fit comprises 45 ensembles and 270 DWD fits.
 
@@ -46,9 +45,9 @@ Each CV training fold then fits one scaler on that fold's multiclass rows.
 All pairs within the fold share that feature transformation. Validation and
 test rows do not participate in fitting the scaler or choosing subsets.
 
-Use a numeric `gamma` for a common RBF coefficient across pairs. With the
-convenience setting `gamma='scale'`, the binary estimator resolves it on
-each pair's transformed rows, then shares it within that pair. The configured
+Use a numeric `gamma` for a common RBF coefficient across pairs. With
+`gamma='scale'`, the binary estimator resolves it on each pair's transformed
+rows, then shares it within that pair. The configured
 binary random state is cloned for each pair without using global randomness.
 As in the binary API, `lambda_dissertation = 2 * lambd` under the practical
 mean-loss objective with the dissertation's one-half penalty convention.
@@ -83,8 +82,8 @@ after matching data, parameter search, selection rules, and stopping settings.
 as the binary examples, with prefix `ovo__estimator__` and regularization
 `lambd`. One complete candidate is shared across all 45 pairs. Every stage
 uses the same stratified folds and evaluates only new complete candidates.
-The default remains five folds, a stratified 6,000-row training subset and
-all supplied test rows; the adaptive change does not alter those sizes.
+The defaults are five folds, a stratified 6,000-row training subset and
+all supplied test rows.
 
 Normal search starts at 125 candidates, expands best/tied-best lambda/gamma
 boundaries with all cross-combinations, and repeatedly refines joint
@@ -114,21 +113,23 @@ outer CV worker. No data are loaded without `--run`.
 
 `--smoke-grid` overrides the adaptive budget to four total candidates, zero
 expansions and no refinement, even if other limit/refinement flags were supplied.
-It cannot be combined with `--broad-grid`. All four smoke candidates lie on
-their two-point coefficient axes, so their search will remain unresolved and
-hold final fitting/test scoring. Use it to check CV execution and records;
-it is not a completed accuracy search. Normal searches also hold when a
-complete required stage cannot fit the budget. An accepted review meeting the
-neighbor and configured refinement requirements is saved before the final
-refit and separate test evaluation.
+It cannot be combined with `--broad-grid`. All four smoke candidates lie at
+endpoints of their two-point coefficient axes, so the search remains
+unresolved and does not proceed to final fitting or test scoring. Use it to
+check CV execution and records; it is not a completed accuracy search. Normal
+searches also hold when a complete required stage cannot fit the budget. The
+review decision is saved before the final refit and separate test evaluation,
+which proceed only when the neighbor and configured refinement requirements
+are met.
 
 Completed fold fits and the final refit save compact diagnostics. To resume,
 use `--resume --run` with the original output directory and identical data,
 folds, estimator settings, policy/budgets, jobs and immutable numerical
 runtime. Verified completed folds are reused; unfinished fits restart. An
-interrupted final fit has no optimizer checkpoint. A committed completed
-resume performs no fit or score and returns `model=None`; a crash before
-completion commits can repeat final fitting and scoring. See the
+interrupted final fit has no optimizer checkpoint. If the completion receipt
+has already been committed, a verified resume performs no fitting or scoring
+and returns `model=None`. A crash before that
+receipt is committed can require final fitting and scoring again. See the
 [shared workflow](method.md#validation-and-proposed-search-space) for records,
 ownership checks and failure handling.
 
@@ -143,9 +144,9 @@ worker, rather than constructing all pair matrices before dispatch.
 
 `predict` accumulates votes in batches. `vote_counts` returns all class vote
 counts when requested. These counts are not probabilities or decision margins.
-For lean retained models, set the binary estimator's
+To discard fitted base models, set the binary estimator's
 `store_base_estimators=False`. Training still uses dense kernel matrices;
-these controls do not constitute an automatic out-of-memory guarantee.
+these controls do not guarantee that a fit will stay within available memory.
 
 After fitting, `pairs_` identifies each child in `estimators_`. To locate a
 child's selected rows in the original multiclass training input, use

@@ -1,4 +1,6 @@
-# Current validation
+# ensemble-dwd validation
+
+## Current validation
 
 Version 0.3.4 is paired with DWD 1.3.9. See the
 [0.3.4 release changes](docs/candidate_changes.md) for its cache identity,
@@ -6,8 +8,6 @@ diagnostics, search and recovery changes and their limitations. The
 [0.3.3 change-by-change validation](docs/validation-0.3.3.md) remains historical
 evidence, including the earlier DWD 1.3.8 dependency checks; its numerical
 results should not be relabeled as a new full MNIST run for version 0.3.4.
-
-# ensemble-dwd validation
 
 ## 0.3.2: disjoint base subsets and fixed 10% sampling
 
@@ -41,7 +41,7 @@ not disjoint-sampling accuracy or timing results.
 
 ---
 
-# ensemble-dwd 0.3.0 validation
+## ensemble-dwd 0.3.0 validation
 
 This record describes validation of the `v0.3.0` release of ensemble-dwd,
 including its binary and multiclass ensemble DWD interfaces and optional
@@ -49,7 +49,7 @@ SVM comparator. It covers prediction-batch validation and the external
 binary examples' review of regularization and gamma boundary winners.
 Neither estimator performs cross-validation internally.
 
-## Environment and dependency
+### Environment and dependency
 
 Local validation uses Windows, Anaconda CPython 3.12.14 in `py12_df`, NumPy
 2.5.2, SciPy 1.18.0, scikit-learn 1.9.0, joblib 1.5.3, and the published
@@ -69,7 +69,7 @@ intercept, and stopping defaults are unchanged by the prediction-batch repair.
 The DWD estimator, cache, multiclass wrapper, and parameter-grid implementation
 files matched the candidate used for the completed three-pair study.
 
-## Regression coverage
+### Regression coverage
 
 All **159 source tests passed** in 38.747 seconds, with no failures or skips.
 The three-pair source prediction check also passed, preserving all labels
@@ -93,7 +93,7 @@ Workflow checks verify that a boundary hold saves CV/selection records and
 performs neither final fitting nor held-out scoring; valid review and default
 workflow paths still complete. Unexpected failures remain explicit.
 
-## Completed MNIST study and prediction checks
+### Completed MNIST study and prediction checks
 
 The five-classifier study used 20% of each pair's official MNIST training
 partition, fivefold training-only CV and the full corresponding official test
@@ -114,7 +114,7 @@ historical results are not interchangeable. All final SVC fits completed;
 the study's DWD fits reached their configured 100-iteration cap and did not
 claim numerical convergence.
 
-## Performance review and distribution
+### Performance review and distribution
 
 A bounded profile on the three saved models' training rows found roughly
 1–2 ms of prediction-wrapper overhead. Removing batching saved less than
