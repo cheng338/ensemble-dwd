@@ -79,8 +79,8 @@ No missing pair, numerical rejection or ineligible selection occurred in
 these runs. This does not establish that every possible grid input is eligible.
 
 All 270 DWD fits in the selected model reached 100 updates and reported
-`converged_=False`. The agreed stopping defaults were preserved. These results
-validate classification and integration, not convergence or optimality of the
+`converged_=False`. The configured stopping defaults were preserved. These
+results validate classification and integration, not convergence or optimality of the
 underlying DWD fits. They also do not establish a speed or accuracy improvement
 over the historical dissertation table or earlier implementations under identical
 conditions; no such paired comparison was performed here.

@@ -13,8 +13,7 @@ dependencies = [
     "scipy",
     "scikit-learn>=1.6",
     "joblib>=1.3",
-    "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.8/dwd-1.3.8-cp311-abi3-win_amd64.whl#sha256=125f3e46e52ceaa786266162b141791e0016f558265231db6cc898740d2999ee ; platform_system == 'Windows' and platform_machine == 'AMD64' and platform_python_implementation == 'CPython'",
-    "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.8/dwd-1.3.8-py3-none-any.whl#sha256=27eaa3f12e9b980e27f2113b0abf1b5376d53e717beb48303a2a669194c7b212 ; platform_system != 'Windows' or platform_machine != 'AMD64' or platform_python_implementation != 'CPython'",
+    "dwd==1.3.9.dev20261001",
 ]
 classifiers = [
     "Private :: Do Not Upload",
@@ -32,5 +31,5 @@ classifiers = [
 name = "ensemble_dwd"
 
 [tool.flit.sdist]
-include = ["docs/", "examples/", "tests/", "CITATION.cff", "CHANGELOG.md", "VALIDATION.md", ".github/", ".gitattributes"]
+include = ["docs/", "examples/", "tests/", "CITATION.cff", "CHANGELOG.md", "VALIDATION.md", "requirements-dwd.txt", ".github/", ".gitattributes"]
 exclude = ["**/__pycache__/**", "**/*.pyc", "build/", "dist/"]

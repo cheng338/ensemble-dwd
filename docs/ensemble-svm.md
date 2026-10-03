@@ -124,31 +124,43 @@ the run. Setting ordinary GridSearchCV's `error_score` to NaN alone would
 also hide unrelated fit errors, so it is not the same policy.
 
 The helper and estimator never run internal CV. The default CLI in
-`examples/tune_mnist_svm.py` uses the shared external adaptive controller,
-with `regularization='C'` and prefix `ensemble__`. It expands C/gamma
-boundaries reached by best or tied-best valid candidates, including new
-cross-combinations, then refines the top three distinct C/gamma pairs through
-logarithmic midpoints within the explored bounds. Each outward step is at most one decade (a factor of 10), or the smaller
-adjacent logarithmic spacing when the explored grid is finer. All stages reuse the same
-five folds and score only new complete candidates. Sampling stays at 10%,
-M stays at five, and the retention grid is unchanged.
+`examples/tune_mnist_svm.py` uses the shared external adaptive controller and
+`CheckpointedCV`, with `regularization='C'` and prefix `ensemble__`. It expands
+best/tied-best C/gamma boundaries, including new cross-combinations. Each
+outward step is at most a factor of 10 or the smaller adjacent logarithmic
+spacing. Repeated joint local refinement targets the top three distinct
+C/gamma pairs within the explored bounds. All stages use the same five folds
+and preserve earlier results. Sampling stays at 10%, M at five, and retention
+on its five choices.
 
-The same defaults and limits apply to SVM and DWD: three expansion rounds,
-500 total unique candidates, two nonimproving complete rounds for a plateau,
-zero improvement tolerance, boundary tie tolerance `1e-12`, and refinement
-enabled. Use `--max-expansions`, `--max-candidates`, `--no-refine`, or
-`--broad-grid` explicitly. `--refine` remains accepted. A stage exceeding the
-remaining budget is held whole. Unresolved limits preserve CV/selection
-records and write `needs_review` without final fitting or test scoring.
-A documented plateau can accept a boundary winner, but does not prove global
-optimality. These are external search rules; the estimator never changes its
-own parameters. See the [shared workflow and records](method.md#validation-and-proposed-search-space).
+The initial grid remains 125 candidates, with three expansion rounds and
+500 total unique candidates by default. Refinement requires valid bilateral
+conditional neighbors within a factor of two and two completed stable local
+rounds. Missing or invalid support cannot establish an interior winner.
+Existing-coordinate repairs earn no stable-round credit. The full-strip
+plateau rule can waive a distant tied outer edge after two complete
+nonimproving outward levels with valid same-slice evidence; it cannot waive
+the selected candidate's own bracket and is not a global-optimum certificate.
+Improvement tolerance remains zero and boundary tie tolerance `1e-12`.
+
+Use `--max-expansions`, `--max-candidates`, or `--broad-grid` explicitly.
+`--no-refine` skips local rounds and factor-two tightening but still requires
+valid conditional neighbors; `--refine` remains accepted. A stage exceeding
+the remaining budget is held whole. Unresolved limits write `needs_review`
+and preserve CV evidence without final fitting or test scoring. These rules
+do not change SVC's objective or its numerical controls.
 
 The default invocation previews costs without loading data. `--run` loads a
-local archive while preserving the supplied test split. Final fitting occurs
-once after the search decision is saved; held-out scoring follows only after
-success. `--no-cache` disables optional base-fit reuse. No new data dimensions
-or sample-count defaults are introduced by this policy.
+local archive while preserving a supplied test split. Final fitting follows
+an accepted saved review, then held-out scoring. Each completed fold fit and
+the final refit save compact diagnostics. Use `--resume --run` with the same
+output directory, settings (including policy, budgets and jobs), data, folds
+and immutable numerical runtime to reuse completed folds. Unfinished fits,
+including an interrupted final fit, restart. A committed completed resume
+performs no fit or score and returns `model=None`; a crash before completion
+commits can repeat the final fit and scoring. `--no-cache` disables base-fit
+reuse, not fold checkpoints. See the
+[shared workflow and records](method.md#validation-and-proposed-search-space).
 
 ## Multiclass use
 

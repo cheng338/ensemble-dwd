@@ -135,7 +135,7 @@ class WindowsCacheLockTests(unittest.TestCase):
         self.assertEqual(sum(row['hit'] for row in rows), 31)
         self.assertEqual(len({row['key'] for row in rows}), 1)
         self.assertTrue(all(row['value'] == {'answer': 37, 'values': [1, 2, 3]} for row in rows))
-        lock_files = list((self.folder / 'cache' / 'base-stage-v1').glob('*.lock'))
+        lock_files = list((self.folder / 'cache' / 'base-stage-v2').glob('*.lock'))
         self.assertEqual(len(lock_files), 1)
         self.assertEqual(lock_files[0].stat().st_size, 0)
 

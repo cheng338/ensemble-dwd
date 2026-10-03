@@ -1,5 +1,6 @@
 """Binary ensemble SVM with signed-margin selection and a final SVC refit."""
 
+from copy import deepcopy
 from numbers import Integral
 from os import PathLike
 import warnings
@@ -11,7 +12,7 @@ from sklearn.svm import SVC
 from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, validate_data
 
-from ._cache import _cached_base_stage, _runtime_provenance
+from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
 from .estimator import (
     IneligibleSelectionError,
     _finite_real,
@@ -127,6 +128,9 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         Retained fitted base SVCs, according to store_base_estimators.
     final_estimator_ : SVC
         Fitted final classifier. Predictions use its native tie convention.
+    base_diagnostics_ : list of dict
+        Iteration counts, fit statuses and support counts from the original
+        base fits, retained in lean storage mode and on a cache hit.
     n_iter_, fit_status_, converged_, support_counts_ : ndarrays of shape (M+1,)
         Base diagnostics followed by the final model; status zero indicates
         convergence and support_counts_ gives the total support-vector count.
@@ -230,7 +234,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         self._clear_fit()
         try:
             return self._fit(X, y)
-        except Exception:
+        except BaseException:
             self._clear_fit()
             raise
 
@@ -258,6 +262,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         return dict(consensus=consensus, distances=distances,
                     order=np.argsort(distances, kind="stable"),
                     models=models if self.store_base_estimators else None,
+                    diagnostics=records,
                     n_iter=np.asarray([item["n_iter"] for item in records], dtype=int),
                     fit_status=np.asarray([item["fit_status"] for item in records], dtype=int),
                     n_support=np.asarray([item["n_support"] for item in records], dtype=int))
@@ -271,6 +276,10 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         elif type(self) is not EnsembleKernelSVM:
             reason = "bypassed: custom estimator subclass"
         else:
+            try:
+                provenance = _runtime_provenance(SVC)
+            except _CacheIdentityError as error:
+                return compute(), False, None, "bypassed: " + str(error)
             parameters = self.get_params(deep=False).copy()
             for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma"):
                 parameters.pop(name)
@@ -278,15 +287,17 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
             key_data = dict(family="ensemble-kernel-svm-signed-margin-v1",
                             sampling=_SAMPLING_SCHEME,
                             X=X, y=y, classes=classes, subsets=subsets,
-                            parameters=parameters, provenance=_runtime_provenance(SVC))
-            result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute)
+                            parameters=parameters, provenance=provenance)
+            verifier = _RuntimeVerifier(lambda: _runtime_provenance(SVC), provenance)
+            result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute, verify=verifier)
             if hit and np.any(result["fit_status"] != 0):
                 count = int(np.count_nonzero(result["fit_status"]))
                 warnings.warn(
                     f"Reusing {count} cached base SVC model(s) that did not converge. "
                     "Increase max_iter or change the parameter candidate.",
                     ConvergenceWarning, stacklevel=3)
-            return result, hit, key, "hit" if hit else "miss"
+            status = "bypassed: " + verifier.failure if verifier.failure else ("hit" if hit else "miss")
+            return result, hit, key, status
         return compute(), False, None, reason
 
     def _fit(self, X, y):
@@ -325,6 +336,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         self.consensus_scores_ = base["consensus"]
         self.selection_distances_ = base["distances"]
         self.estimators_ = base["models"]
+        self.base_diagnostics_ = deepcopy(base["diagnostics"])
         self.n_iter_ = np.append(base["n_iter"], final_diagnostics["n_iter"])
         self.fit_status_ = np.append(base["fit_status"], final_diagnostics["fit_status"])
         self.converged_ = self.fit_status_ == 0

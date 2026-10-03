@@ -1,7 +1,7 @@
-"""Behavioral regression tests for the external adaptive GridSearchCV example.
+"""Behavioral regression tests for adaptive checkpointed external cross-validation.
 
 A deterministic classifier supplies known response surfaces. These tests exercise
-real GridSearchCV fits and scoring without invoking any DWD or SVM solver.
+real checkpointed fits and scoring without invoking any DWD or SVM solver.
 """
 import contextlib
 import io
@@ -15,7 +15,7 @@ import warnings
 
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import GridSearchCV, ParameterGrid
+from sklearn.model_selection import ParameterGrid
 from sklearn.pipeline import Pipeline
 
 from ensemble_dwd import IneligibleSubsetError
@@ -24,6 +24,8 @@ EXAMPLES_DIRECTORY = str(Path(__file__).resolve().parents[1] / 'examples')
 if EXAMPLES_DIRECTORY not in sys.path:
     sys.path.insert(0, EXAMPLES_DIRECTORY)
 import adaptive_search as example
+import cv_checkpoint
+from cv_checkpoint import CheckpointedCV
 from search_support import new_run_directory
 
 
@@ -114,17 +116,18 @@ class ResponseSurfaceClassifier(ClassifierMixin, BaseEstimator):
         return result
 
 
-class RecordedGridSearchCV(GridSearchCV):
-    """Record the real sklearn calls without replacing fitting or scoring."""
+class RecordedCheckpointedCV(CheckpointedCV):
+    """Observe real checkpointed searches without replacing fitting or scoring."""
     calls = []
 
-    def fit(self, X, y=None, **params):
-        call = {'parameters': [bare(p) for p in ParameterGrid(self.param_grid)],
-                'folds': [(np.asarray(t).copy(), np.asarray(v).copy()) for t, v in self.cv],
-                'rows': np.asarray(X)[:, 0].astype(int).copy(),
-                'refit': self.refit, 'search': self}
+    def search(self, candidate_grid, *, stage='cv'):
+        call = {'parameters': [bare(p) for p in ParameterGrid(candidate_grid)],
+                'folds': [(np.asarray(t).copy(), np.asarray(v).copy()) for t, v in self.folds],
+                'rows': np.asarray(self.X)[:, 0].astype(int).copy(),
+                'refit': False, 'stage': stage, 'search': None}
         type(self).calls.append(call)
-        result = super().fit(X, y, **params)
+        result = super().search(candidate_grid, stage=stage)
+        call['search'] = result
         ResponseSurfaceClassifier.events.append(('cv_end', (), ()))
         return result
 
@@ -153,7 +156,7 @@ class AdaptiveSearchTests(unittest.TestCase):
         self.sequence += 1
         self.run_dir = new_run_directory(self.root / str(self.sequence))
         ResponseSurfaceClassifier.events = []
-        RecordedGridSearchCV.calls = []
+        RecordedCheckpointedCV.calls = []
         estimator = ResponseSurfaceClassifier(surface=surface, failure=failure,
                                                regularization=regularization)
         pipeline = Pipeline([(prefix[:-2], estimator)])
@@ -161,8 +164,14 @@ class AdaptiveSearchTests(unittest.TestCase):
             config = example.AdaptiveSearchConfig(prefix=prefix, regularization=regularization,
                                                    refine=False)
         folds = ((t, v) for t, v in self.folds) if generator else self.folds
-        with patch.object(example, 'GridSearchCV', RecordedGridSearchCV), \
-                contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():
+        # Serial response surfaces test policy and real fold transactions; DLL
+        # discovery has dedicated guard tests and real-estimator validation.
+        # The two-worker case retains actual coordinator/worker fingerprints.
+        runtime_scope = (patch.object(cv_checkpoint, 'runtime_fingerprint',
+                                     return_value={'synthetic_runtime': 'adaptive-policy-v1'})
+                         if jobs == 1 else contextlib.nullcontext())
+        with patch.object(example, 'CheckpointedCV', RecordedCheckpointedCV), \
+                runtime_scope, contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
             return example.run_adaptive_search(
                 pipeline, self.grid(prefix=prefix, regularization=regularization) if grid is None else grid,
@@ -170,7 +179,7 @@ class AdaptiveSearchTests(unittest.TestCase):
                 config=config, jobs=jobs, error_policy='nan')
 
     def assert_protocol(self, result, *, final):
-        calls = RecordedGridSearchCV.calls
+        calls = RecordedCheckpointedCV.calls
         all_parameters = [p for call in calls for p in call['parameters']]
         self.assertEqual(len(all_parameters), len({key(p) for p in all_parameters}))
         self.assertEqual({key(p) for p in all_parameters},
@@ -217,14 +226,14 @@ class AdaptiveSearchTests(unittest.TestCase):
         self.assertEqual(result['selection']['mean_cv_accuracy'], 1.)
         self.assertEqual(result['selection']['parameters']['ensemble__lambd'], 4.)
         self.assertEqual(result['completed']['held_out_accuracy'], 1.)
-        self.assertEqual(len(RecordedGridSearchCV.calls), 1)
+        self.assertEqual(len(RecordedCheckpointedCV.calls), 1)
         self.assert_protocol(result, final=True)
 
     def test_expansion_retains_accumulated_winner_and_materializes_generator(self):
         result = self.execute(surface='upper_peak', grid=self.grid(reg=(1., 4.)), generator=True)
         self.assertEqual(stable(result['selection']['parameters']['ensemble__lambd']), 16.)
         self.assertEqual(result['selection']['source_stage'], 'expansion-1')
-        self.assertIs(result['selected_search'], RecordedGridSearchCV.calls[1]['search'])
+        self.assertIs(result['selected_search'], RecordedCheckpointedCV.calls[1]['search'])
         self.assertIsNot(result['selected_search'], result['last_search'])
         self.assertEqual(len(result['cv_results']['params']), 60)
         for reg in (16., 64.):
@@ -237,16 +246,17 @@ class AdaptiveSearchTests(unittest.TestCase):
                                ('tied_cross', [(.25, 4.), (4., 64.), (.25, 64.)])]:
             with self.subTest(surface=surface):
                 result = self.execute(surface=surface)
-                self.assertEqual(len(RecordedGridSearchCV.calls), 2)
+                self.assertEqual(len(RecordedCheckpointedCV.calls), 2)
                 for pair in pairs:
                     self.assert_fraction_plane(result['cv_results']['params'], pair)
                 self.assert_protocol(result, final=True)
 
     def test_two_complete_flat_expansions_record_plateau_without_optimum_claim(self):
         result = self.execute(surface='flat', grid=self.grid(reg=(1., 4.), gamma=(1., 4.)))
-        self.assertEqual(len(RecordedGridSearchCV.calls), 3)
+        self.assertEqual(len(RecordedCheckpointedCV.calls), 3)
         self.assertEqual(result['review']['expansion_rounds'], 2)
-        self.assertEqual(result['review']['stopping_reason'], 'plateau')
+        self.assertIn('empirical boundary plateau', result['review']['stopping_reason'])
+        self.assertIn('not an optimality certificate', result['review']['stopping_reason'])
         self.assertIs(result['review']['plateau_is_optimality_certificate'], False)
         self.assertEqual(len(result['cv_results']['params']), 180)
         self.assert_protocol(result, final=True)
@@ -268,7 +278,7 @@ class AdaptiveSearchTests(unittest.TestCase):
 
     def test_missing_refinement_budget_holds_even_for_interior_winner(self):
         result = self.execute(config=example.AdaptiveSearchConfig(max_candidates=45, refine=True))
-        self.assertIn('local refinement', str(result['review']['reasons']))
+        self.assertIn('refinement', str(result['review']['reasons']))
         self.assert_held(result)
 
     def test_refinement_uses_three_distinct_pairs_and_all_fixed_fractions(self):
@@ -279,7 +289,14 @@ class AdaptiveSearchTests(unittest.TestCase):
         self.assertEqual(stable(result['selection']['parameters']['ensemble__gamma']), 8.)
         for value in (2., 8., 32., 128.):
             self.assert_fraction_plane(result['cv_results']['params'], (value, value))
-        self.assertEqual(len(RecordedGridSearchCV.calls), 2)
+        local_calls = [call for call in RecordedCheckpointedCV.calls
+                       if call['stage'] == 'local' or call['stage'].startswith('local-')]
+        self.assertGreaterEqual(len(local_calls), 3)
+        self.assertEqual(result['review']['refinement_rounds'], len(local_calls))
+        self.assertGreaterEqual(result['review']['stable_refinement_rounds'], 2)
+        self.assertTrue(all(item['lower_valid'] and item['upper_valid'] and item['within_factor']
+                            for item in result['review']['winner_bracket'].values()))
+        self.assertIn('stable completed local rounds', result['review']['stopping_reason'])
         self.assert_protocol(result, final=True)
 
     def test_one_invalid_fold_disqualifies_a_higher_scoring_candidate(self):
@@ -321,7 +338,7 @@ class AdaptiveSearchTests(unittest.TestCase):
         axes = (1., 100., 10000.)
         result = self.execute(surface='flat', grid=self.grid(reg=axes, gamma=axes),
             config=example.AdaptiveSearchConfig(max_expansions=1, max_candidates=150, refine=False))
-        self.assertEqual(len(RecordedGridSearchCV.calls), 2)
+        self.assertEqual(len(RecordedCheckpointedCV.calls), 2)
         parameters = result['cv_results']['params']
         for pair in ((.1, 100.), (100000., 100.), (.1, .1), (100000., 100000.)):
             self.assert_fraction_plane(parameters, pair)
@@ -331,18 +348,27 @@ class AdaptiveSearchTests(unittest.TestCase):
 
     def test_invalid_new_outer_candidates_do_not_certify_a_plateau(self):
         result = self.execute(surface='flat', failure='invalid_expansion',
-            grid=self.grid(reg=(1., 4.), gamma=(1., 4.)))
-        self.assertEqual(result['review']['stopping_reason'], 'interior')
+            grid=self.grid(reg=(1., 4.), gamma=(1., 4.)),
+            config=example.AdaptiveSearchConfig(max_candidates=80, refine=False))
+        self.assertIn('candidate_budget', result['review']['stopping_reason'])
         self.assertIs(result['review']['plateau_is_optimality_certificate'], False)
         self.assertEqual(result['review']['expansion_rounds'], 1)
         invalid = [i for i, p in enumerate(result['cv_results']['params'])
                    if p['ensemble__lambd'] < 1. or p['ensemble__lambd'] > 4.
                    or p['ensemble__gamma'] < 1. or p['ensemble__gamma'] > 4.]
+        self.assertTrue(invalid)
         self.assertTrue(np.isnan(result['cv_results']['mean_test_score'][invalid]).all())
-        self.assert_protocol(result, final=True)
+        self.assertTrue(any(item['issue'] == 'invalid_conditional_neighbor'
+                            for item in result['policy_state']['boundary_issues']))
+        self.assertIs(result['review']['final_refit_performed'], False)
+        self.assertIs(result['review']['held_out_scored'], False)
+        self.assert_held(result)
 
     def test_C_parameter_custom_prefix_and_two_workers_match_serial(self):
         options = dict(prefix='classifier__', regularization='C')
+        grid = self.grid(**options)
+        grid['classifier__sv_selection_ratio'] = [.1]
+        options['grid'] = grid
         serial = self.execute(**options)
         parallel = self.execute(jobs=2, **options)
         self.assertEqual(serial['selection']['parameters'], parallel['selection']['parameters'])
@@ -352,7 +378,7 @@ class AdaptiveSearchTests(unittest.TestCase):
                                       parallel['cv_results']['mean_test_score'])
         self.assertEqual(serial['completed']['held_out_accuracy'], parallel['completed']['held_out_accuracy'])
         self.assertEqual(parallel['selection']['parameters']['classifier__C'], 4.)
-        self.assertEqual(len(RecordedGridSearchCV.calls), 1)
+        self.assertEqual(len(RecordedCheckpointedCV.calls), 1)
 
 
 if __name__ == '__main__':

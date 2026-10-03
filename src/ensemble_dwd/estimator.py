@@ -13,7 +13,7 @@ from sklearn.utils.validation import check_is_fitted, validate_data
 
 from dwd.gen_kern_dwd import KernGDWD
 
-from ._cache import _cached_base_stage, _runtime_provenance
+from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
 
 
 class IneligibleSelectionError(ValueError):
@@ -122,6 +122,20 @@ def _contains_callable(value):
     return False
 
 
+def _base_diagnostics(model):
+    """Copy reported scalar facts, without inferring one stopping flag from another."""
+    names = ("n_iter_", "returned_iteration_", "converged_", "criterion_reached_",
+             "termination_reason_", "backend_", "optimality_met_",
+             "objective_tolerance_met_", "gradient_inf_norm_", "rkhs_gradient_norm_",
+             "dual_gap_", "dual_equality_residual_")
+    result = {}
+    for name in names:
+        if hasattr(model, name):
+            value = getattr(model, name)
+            result[name[:-1]] = value.item() if isinstance(value, np.generic) else deepcopy(value)
+    return result
+
+
 class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     """Fit Chang Cheng's binary ensemble kernel DWD procedure.
 
@@ -190,6 +204,11 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         select MM representations, and 'lbfgs' selects its alternative optimizer.
         Different backends can produce different finite-budget decision scores
         and selected rows. Backend choices have separate base-cache entries.
+    residual_check_order : {'refinement_first', 'adaptive'}, default='refinement_first'
+        Residual-check ordering forwarded to every optimized DWD learner.
+        The default preserves the existing order; 'adaptive' is an opt-in
+        ordering policy with separate base-cache entries. Acceptance criteria
+        are unchanged, but finite-budget outputs need not be bitwise identical.
 
     Attributes
     ----------
@@ -197,6 +216,10 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         The M fitted optimized DWD base learners, or None in lean storage mode.
     final_estimator_ : KernGDWD
         The independently fitted final classifier used for prediction.
+    base_diagnostics_ : list of dict
+        Reported stopping, backend and residual diagnostics of each original
+        base fit, including in lean storage mode and when reusing the cache.
+        A reached stopping criterion does not imply certified convergence.
     subset_indices_ : list of integer arrays
         Base training positions relative to the data passed to this fit.
     selected_indices_ : integer array
@@ -233,7 +256,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                  q=1.0, kernel="rbf", gamma="scale", kernel_kws=None,
                  max_iter=100, obj_tol=1e-5, stopping="objective", tol=1e-6,
                  acceleration=None, random_state=42, prediction_batch_size=1024,
-                 cache_dir=None, store_base_estimators=True, backend="auto"):
+                 cache_dir=None, store_base_estimators=True, backend="auto",
+                 residual_check_order="refinement_first"):
         self.M = M
         self.theta = theta
         self.sv_selection_ratio = sv_selection_ratio
@@ -252,6 +276,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         self.cache_dir = cache_dir
         self.store_base_estimators = store_base_estimators
         self.backend = backend
+        self.residual_check_order = residual_check_order
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -299,6 +324,12 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         if not isinstance(self.backend, str) or self.backend not in (
                 "auto", "spectral", "cholesky", "lbfgs"):
             raise ValueError("backend must be 'auto', 'spectral', 'cholesky', or 'lbfgs'.")
+        if not isinstance(self.residual_check_order, str) or self.residual_check_order not in (
+                "refinement_first", "adaptive"):
+            raise ValueError("residual_check_order must be 'refinement_first' or 'adaptive'.")
+        if self.residual_check_order == "adaptive" and (
+                self.backend not in ("auto", "cholesky") or self.acceleration is not None):
+            raise ValueError("Adaptive residual ordering requires unaccelerated optimized Cholesky MM.")
         if self.prediction_batch_size is not None:
             _positive_integer(self.prediction_batch_size, "prediction_batch_size")
         if self.cache_dir is not None and not isinstance(self.cache_dir, (str, PathLike)):
@@ -338,7 +369,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 obj_tol=self.obj_tol, stopping=self.stopping, tol=self.tol,
                 acceleration=self.acceleration, prediction_batch_size=self.prediction_batch_size,
                 implementation="optimized", solver_mode="schur", backend=self.backend,
-                initialization="zero", random_state=0)
+                initialization="zero", random_state=0,
+                residual_check_order=self.residual_check_order)
         except TypeError as error:
             raise ImportError(
                 "EnsembleKernelDWD requires the optimized cheng338/dwd dependency. "
@@ -349,7 +381,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         self._clear_fit()
         try:
             return self._fit(X, y)
-        except Exception:
+        except BaseException:
             self._clear_fit()
             raise
 
@@ -367,6 +399,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                      else _overflow_safe_consensus(models, X, self.prediction_batch_size))
         return dict(consensus=consensus, order=np.argsort(np.abs(consensus), kind="stable"),
                     models=models if self.store_base_estimators else None,
+                    diagnostics=[_base_diagnostics(model) for model in models],
                     n_iter=np.asarray([model.n_iter_ for model in models], dtype=int),
                     converged=np.asarray([model.converged_ for model in models], dtype=bool))
 
@@ -381,15 +414,21 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         elif type(self) is not EnsembleKernelDWD:
             reason = "bypassed: custom estimator subclass"
         else:
+            try:
+                provenance = _runtime_provenance(KernGDWD)
+            except _CacheIdentityError as error:
+                return compute(), False, None, "bypassed: " + str(error)
             parameters = self.get_params(deep=False).copy()
             for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma", "kernel_kws"):
                 parameters.pop(name)
             parameters["kernel_kws"] = kernel_kws
             key_data = dict(sampling=_SAMPLING_SCHEME,
                             X=X, y=y, classes=classes, subsets=subsets, parameters=parameters,
-                            provenance=_runtime_provenance(KernGDWD))
-            result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute)
-            return result, hit, key, "hit" if hit else "miss"
+                            provenance=provenance)
+            verifier = _RuntimeVerifier(lambda: _runtime_provenance(KernGDWD), provenance)
+            result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute, verify=verifier)
+            status = "bypassed: " + verifier.failure if verifier.failure else ("hit" if hit else "miss")
+            return result, hit, key, status
         return compute(), False, None, reason
 
     def _fit(self, X, y):
@@ -430,6 +469,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         self.selected_indices_ = selected
         self.consensus_scores_ = consensus
         self.estimators_ = base["models"]
+        self.base_diagnostics_ = deepcopy(base["diagnostics"])
         self.n_iter_ = np.append(base["n_iter"], int(final_model.n_iter_))
         self.converged_ = np.append(base["converged"], bool(final_model.converged_))
         self.final_estimator_ = final_model

@@ -29,7 +29,7 @@ different tie behavior.
 
 ## Shared parameters and preprocessing
 
-One external `GridSearchCV` candidate supplies shared binary parameters to
+One external CV candidate supplies shared binary parameters to
 all class pairs. It is scored on the complete multiclass prediction. Individual
 pairs do not run separate searches. Within each pair, all `M` base models
 and the final refit share their DWD parameters. The parameters `theta` and
@@ -87,15 +87,24 @@ The default remains five folds, a stratified 6,000-row training subset and
 all supplied test rows; the adaptive change does not alter those sizes.
 
 Normal search starts at 125 candidates, expands best/tied-best lambda/gamma
-boundaries with all cross-combinations, and refines the top three distinct
-coefficient pairs within the explored bounds. Each outward step is at most one decade (a factor of 10), or the smaller
-adjacent logarithmic spacing when the explored grid is finer. Sampling stays at 10%, M at
-five, and retention on its five choices. Defaults are three expansion rounds,
-500 unique candidates total, two nonimproving complete rounds for a plateau,
-zero improvement tolerance, tie tolerance `1e-12`, and refinement enabled.
-`--broad-grid` starts at 405, `--no-refine` disables refinement, and
-`--max-expansions`/`--max-candidates` set explicit limits. `--refine` remains
-accepted. A plateau is a finite search decision, not proof of global optimality.
+boundaries with all cross-combinations, and repeatedly refines joint
+logarithmic midpoints around the top three distinct coefficient pairs.
+Each outward step is at most a factor of 10 or the smaller adjacent
+logarithmic spacing. Sampling stays at 10%, M at five, and retention on its
+five choices. Defaults remain three expansion rounds and 500 unique
+candidates total, zero improvement tolerance and tie tolerance `1e-12`.
+With refinement enabled, the selected candidate needs valid bilateral
+conditional neighbors within a factor of two and two completed stable local
+rounds. Existing-coordinate repairs do not earn stable-round credit.
+
+The full-strip plateau rule may waive a distant tied outer edge after two
+completed nonimproving outward levels with valid same-slice evidence. It
+cannot waive the selected candidate's bracket or treat invalid/missing
+support as interior; it is empirical evidence, not proof of global optimality.
+`--broad-grid` starts at 405 candidates. `--no-refine` skips local refinement
+and factor-two tightening but still requires valid conditional neighbors.
+`--max-expansions`/`--max-candidates` set explicit limits, and `--refine`
+remains accepted. The DWD objective tolerance and iteration cap do not change.
 
 For ten classes and five folds, the initial 125-candidate stage permits up to
 168,750 DWD learner fits before caching; the 405-candidate stage permits up to
@@ -109,11 +118,19 @@ It cannot be combined with `--broad-grid`. All four smoke candidates lie on
 their two-point coefficient axes, so their search will remain unresolved and
 hold final fitting/test scoring. Use it to check CV execution and records;
 it is not a completed accuracy search. Normal searches also hold when a
-complete required stage cannot fit the budget. An accepted interior/plateau
-review is saved before the final refit and separate test evaluation.
+complete required stage cannot fit the budget. An accepted review meeting the
+neighbor and configured refinement requirements is saved before the final
+refit and separate test evaluation.
 
-See the [shared workflow](method.md#validation-and-proposed-search-space)
-for durable records, failure handling and limits on within-run score reuse.
+Completed fold fits and the final refit save compact diagnostics. To resume,
+use `--resume --run` with the original output directory and identical data,
+folds, estimator settings, policy/budgets, jobs and immutable numerical
+runtime. Verified completed folds are reused; unfinished fits restart. An
+interrupted final fit has no optimizer checkpoint. A committed completed
+resume performs no fit or score and returns `model=None`; a crash before
+completion commits can repeat final fitting and scoring. See the
+[shared workflow](method.md#validation-and-proposed-search-space) for records,
+ownership checks and failure handling.
 
 ## Resource use and diagnostics
 

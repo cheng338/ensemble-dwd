@@ -155,6 +155,46 @@ class BackendTests(unittest.TestCase):
             for learner in [*pair.estimators_, pair.final_estimator_]:
                 self.assertEqual(learner.params['backend'], 'spectral')
 
+    def test_residual_check_order_clones_and_reaches_all_learners(self):
+        self.assertEqual(self.model().get_params()['residual_check_order'], 'refinement_first')
+        for order in ('refinement_first', 'adaptive'):
+            with self.subTest(order=order):
+                original = self.model(residual_check_order=order)
+                model = clone(original)
+                self.assertEqual(model.get_params(), original.get_params())
+                with patch('ensemble_dwd.estimator.KernGDWD', BackendProbeDWD):
+                    model.fit(self.X, self.y)
+                for learner in [*model.estimators_, model.final_estimator_]:
+                    self.assertEqual(learner.params['residual_check_order'], order)
+                real = original._make_estimator({'gamma': .2})
+                self.assertEqual(real.get_params()['residual_check_order'], order)
+
+    def test_invalid_residual_check_order_fails_before_constructing_learners(self):
+        for order in (None, True, 1, '', 'automatic', ['adaptive'], np.array(['adaptive'])):
+            with self.subTest(order=repr(order)), patch('ensemble_dwd.estimator.KernGDWD', BackendProbeDWD):
+                with self.assertRaisesRegex(ValueError, 'residual_check_order must be'):
+                    self.model(residual_check_order=order).fit(self.X, self.y)
+                self.assertEqual(BackendProbeDWD.instances, [])
+        for options in (dict(backend='spectral'), dict(backend='lbfgs'), dict(acceleration='restart')):
+            with self.subTest(options=options), patch('ensemble_dwd.estimator.KernGDWD', BackendProbeDWD):
+                with self.assertRaisesRegex(ValueError, 'unaccelerated optimized Cholesky'):
+                    self.model(residual_check_order='adaptive', **options).fit(self.X, self.y)
+                self.assertEqual(BackendProbeDWD.instances, [])
+
+    def test_check_order_separates_cache_and_retention_still_reuses_bases(self):
+        with tempfile.TemporaryDirectory() as cache_dir, patch(
+                'ensemble_dwd.estimator.KernGDWD', BackendProbeDWD):
+            ordinary = self.model(cache_dir=cache_dir).fit(self.X, self.y)
+            adaptive = self.model(cache_dir=cache_dir, residual_check_order='adaptive').fit(self.X, self.y)
+            repeated = self.model(cache_dir=cache_dir, residual_check_order='adaptive',
+                                  sv_selection_ratio=.75).fit(self.X, self.y)
+        self.assertFalse(ordinary.cache_hit_)
+        self.assertFalse(adaptive.cache_hit_)
+        self.assertNotEqual(ordinary.cache_key_, adaptive.cache_key_)
+        self.assertTrue(repeated.cache_hit_)
+        self.assertEqual(repeated.cache_key_, adaptive.cache_key_)
+        self.assertEqual(len(BackendProbeDWD.fits), 2 * (ordinary.M + 1) + 1)
+
 
 if __name__ == '__main__':
     unittest.main()

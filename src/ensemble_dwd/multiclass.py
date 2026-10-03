@@ -163,7 +163,7 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
             self.pair_indices_ = indices
             self.estimators_ = models
             return self
-        except Exception:
+        except BaseException:
             self._clear_fit()
             raise
 

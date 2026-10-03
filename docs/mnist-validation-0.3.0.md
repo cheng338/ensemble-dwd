@@ -26,8 +26,8 @@ evaluated all new combinations in the enlarged grid. C/gamma expanded by
 a factor of ten; lambda used the adjacent log2 interval. This rule applied
 to all five classifiers. Only ensemble SVM required expansion: C reached
 1e5 in the 2-vs-3 grid and 1e6 in the 3-vs-8 grid. Every final C/lambda/gamma
-winner was interior. Sampling and retention ranges stayed fixed as requested.
-Interior status is not proof of a global optimum between grid points.
+winner was interior. Sampling and retention ranges stayed fixed throughout the
+search. Interior status is not proof of a global optimum between grid points.
 
 Linear SVM used `SVC(kernel='linear')`, with C values `10**e` for e = -6, ..., 2.
 Kernel SVM used `SVC(kernel='rbf')` with the same initial C and gamma grids as

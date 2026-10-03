@@ -29,14 +29,14 @@ The original 0.1.0 release artifacts remain unchanged. Validation preceded publi
   gamma. An exceptional finite-mean recovery handles intermediate score-sum
   overflow; ordinary averaging arithmetic is unchanged.
 
-The sampling/selection method, objective, unregularized intercept and agreed
+The sampling/selection method, objective, unregularized intercept and
 stopping defaults are unchanged: objective stopping, obj_tol=1e-5,
 max_iter=100 and acceleration=None. This release does not change DWD itself.
 
 ## Dependency and artifact identity
 
 Python 3.12.14, NumPy 2.5.2, SciPy 1.18.0, scikit-learn 1.9.0,
-joblib 1.5.3 and MKL 2025.3 were used through the requested py12_df interpreter.
+joblib 1.5.3 and MKL 2025.3 were used through the py12_df interpreter.
 The wheel was installed in an isolated validation directory; the environment's
 installed packages were not modified.
 
@@ -49,9 +49,8 @@ implementation='optimized' and solver_mode='schur'; tests check those settings.
 
 Artifact checksums, every wheel RECORD entry and all 21 source
 files were verified. Rebuilding the source distribution produced an identical
-wheel. Archives contain no interpreter caches, local workspace paths or
-development-session boilerplate. Authorship is Chang Cheng, with dependency
-attribution preserved. Licensing remains undecided and the build is private.
+wheel. Archives contain no interpreter caches or local workspace paths.
+Authorship is Chang Cheng, with dependency attribution preserved. Licensing remains undecided and the build is private.
 
 ## MNIST result preservation and timing
 

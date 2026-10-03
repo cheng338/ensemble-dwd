@@ -1,6 +1,6 @@
 # ensemble-dwd 0.2.1 validation
 
-The release source passed **123 tests** under the requested `py12_df`
+The release source passed **123 tests** under the `py12_df`
 environment using conventional CPython 3.12 and the optimized DWD 1.3.5
 compiled Windows wheel. Native numerical threads were limited to one for
 the test run. The suite completed in 24.189 seconds with no failed or skipped

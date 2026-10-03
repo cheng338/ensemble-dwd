@@ -80,8 +80,19 @@ def write_failure_json(path, payload, *, replace=False):
         return None
 
 
-def new_run_directory(path=None):
-    """Create a fresh run directory; existing runs are never reused."""
+def new_run_directory(path=None, *, resume=False):
+    """Create a fresh directory, or locate an explicitly requested saved run.
+
+    Numerical checkpoint identity and exclusive ownership are checked by the
+    search runner before it reuses or writes any evaluation records.
+    """
+    if resume:
+        if path is None:
+            raise ValueError('Resuming requires an explicit run directory.')
+        path = Path(path).resolve()
+        if not path.is_dir() or not (path / 'failures').is_dir():
+            raise ValueError('The resume directory must contain an existing search run.')
+        return path
     if path is None:
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
         path = Path('results') / ('mnist-' + stamp + '-' + uuid.uuid4().hex[:8])

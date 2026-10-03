@@ -199,59 +199,90 @@ same outer endpoints, for 405 candidates. Exact values are listed in the
 parameter prefix, such as `ensemble__`; configure `M=5`, `q=1`, the RBF kernel
 and stopping controls on the estimator. The helper only returns fresh lists.
 
-The command-line example now calls `run_adaptive_search` from
-`examples/adaptive_search.py`. This external controller uses `GridSearchCV`
-with accuracy scoring, `refit=False`, and the same five stratified training
-folds throughout. Only previously unevaluated complete candidates enter a
-new stage. All previously completed scores remain available for selection;
-this is separate from optional reuse of the classifier's cached base fits.
+The command-line examples call `run_adaptive_search` from
+`examples/adaptive_search.py`. Its external `CheckpointedCV` runner scores
+accuracy on fixed stratified training folds, with fold-local preprocessing
+and no automatic refit. Only previously unevaluated complete candidates are
+proposed. Earlier candidates remain eligible, and verified completed fold
+records can be reused across an explicit resume. This is separate from
+optional reuse of the classifier's cached base fits.
 
 Best or tied-best lambda/gamma endpoints request outward extensions. When
-both axes extend, the stage includes the new cross-combinations, with the
-same fixed sampling and retention choices. Each outward step is at most one decade (a factor of 10), or the smaller
-adjacent logarithmic spacing when the explored grid is finer. After boundary review, local
-refinement takes the top three distinct lambda/gamma pairs and proposes
-logarithmic midpoints toward neighboring explored values, within the outer
-bounds. These pairs are crossed with all fixed fraction choices. Any newly
-improved boundary is reviewed again. The classifier's objective, stopping
-settings, subset sampler and final-refit rule do not change.
+both axes extend, the stage includes new cross-combinations, with the same
+fixed sampling and retention choices. Each outward step is at most one decade
+(a factor of 10), or the smaller adjacent logarithmic spacing. Conditional
+neighbors must have valid scores at the same values of the other parameters;
+invalid or missing neighbors cannot establish an interior optimum. Gaps at
+existing coordinates are repaired before additional outward expansion.
+
+Repeated local refinement proposes joint logarithmic midpoints around the
+top three distinct lambda/gamma pairs, within the explored bounds, crossed
+with all fixed fraction choices. With refinement enabled, the selected
+candidate must have a valid lower and upper conditional neighbor in each
+axis, each within a factor of two. Two actually completed local-refinement
+rounds must then show no improvement or change of winning region. Repairs at
+existing coordinates do not earn this credit. Improvement, changed prior
+evidence or departure from the established region reopens review. These are
+external search rules: the objective, subset sampler and final-refit method
+remain unchanged.
 
 `AdaptiveSearchConfig` defaults to `max_expansions=3`, `max_candidates=500`,
-`top_k=3`, `plateau_rounds=2`, `improvement_tol=0.0`, `tie_tol=1e-12`, and
-`refine=True`. The CLI exposes `--max-expansions`, `--max-candidates`,
-`--no-refine`, and `--broad-grid`; `--refine` is retained as a compatibility
-option. A full proposed stage must fit the remaining candidate budget.
-An unresolved expansion or refinement budget writes a `needs_review` decision
-and holds final fitting/test scoring. Two complete nonimproving outward
-rounds can satisfy the documented plateau rule, even at a remaining tied
-boundary. A plateau is a finite search stopping rule, not a global-optimum
-certificate or proof that more distant parameters cannot improve accuracy.
+`top_k=3`, `plateau_rounds=2`, `improvement_tol=0.0`, `tie_tol=1e-12`,
+`refine=True`, `bracket_factor=2.0`, and `stable_refinement_rounds=2`.
+The CLI exposes `--max-expansions`, `--max-candidates`, `--no-refine`, and
+`--broad-grid`; `--refine` is retained. Disabling refinement skips local
+rounds and factor-two tightening, but still requires valid conditional
+neighbors. A full proposed stage must fit the remaining budget. Unresolved
+expansion, support or refinement limits produce `needs_review` and hold
+final fitting and test scoring.
+
+The enabled full-strip plateau rule can waive a distant tied outer edge
+only after two completed nonimproving outward levels with valid same-slice
+evidence. It never waives the selected candidate's own bracket or uses
+invalid/missing neighbors as plateau evidence. This empirical tested-range
+stopping rule does not prove global optimality or exclude improvement farther
+away.
 
 The default `--error-score nan` excludes only `IneligibleSelectionError`,
-including `IneligibleSubsetError`. Each candidate must have finite scores on
-every fold and a finite mean to be ranked. Unexpected exceptions are recorded
-and propagated; an all-invalid search stops. `--error-score raise` stops on
-ineligible candidates too. No failed fit receives a zero accuracy or a
-substitute classifier.
+including `IneligibleSubsetError`. A candidate needs finite scores on every
+fold and a finite mean to be ranked. Unexpected exceptions are recorded and
+propagated; an all-invalid search stops. `--error-score raise` also stops on
+ineligible candidates. Failed fits receive neither zero accuracy nor a
+substitute classifier. Compact diagnostics accompany each completed fold fit
+and the final refit. Objective stopping, an iteration cap and an optimality
+check are reported separately; default DWD objective tolerance `1e-5` and
+`max_iter=100` are unchanged.
 
-`run.json` records the data fingerprints, folds and policy. Completed
-`coarse-cv.json`, `expansion-*-cv.json`, `local-cv.json` when present and
-`accumulated-cv.json` preserve the search evidence. `selection.json` and
-`review.json` are committed before the explicit final fit. `refit.json`,
-`status.json` and `failures/failure-*.json` record later outcomes.
-`completed.json` contains held-out accuracy only after an accepted search and
-successful final fit. An interrupted stage may not have full results, and
-resuming a new process/invocation is not automatic. The legacy
-`run_search_workflow` helper remains available for explicit historical
-coarse/local workflows; these new defaults apply to the CLI.
+`run.json` records data, folds, estimator settings and policy. Stage CV files,
+including repeated local and conditional-repair stages, and
+`accumulated-cv.json` preserve evidence. `selection.json` and `review.json`
+are saved before the explicit final fit; `refit.json`, `status.json` and
+`failures/failure-*.json` record later outcomes. An accepted search fits all
+training rows, then scores the separate held-out set.
 
-No data are loaded without `--run`. The preview reports initial-stage costs
-and the total candidate budget separately. `--output-dir` must be fresh;
-its default is a unique `results/mnist-*` directory. `--cache-dir` selects a
-trusted base cache and `--no-cache` disables it. Choose `--jobs` within the
-available RAM; `pre_dispatch` equals that count and each outer worker uses
-one native thread. The example saves result records, not an automatically
-serialized final predictor.
+New runs require a fresh `--output-dir`. Explicit `--resume --run` reuses
+checksummed completed folds only when data, folds, estimator parameters,
+policy and budgets, job count, and numerical runtime match. The installation
+must remain immutable; mismatched identity or live ownership blocks reuse.
+Unfinished fits restart. Interruptions retain completed evidence and record
+an interrupted status when possible. The legacy `run_search_workflow` helper
+remains nonresumable and retains its explicit coarse/local procedure. Its
+local stage preserves parent parameters and cannot discard a better coarse
+candidate.
+
+No fitted predictor or partial optimizer state is serialized. An interrupted
+final refit starts again. A crash after held-out prediction but before the
+authoritative completion receipt commits can repeat the fit and scoring.
+Once committed, a verified completed resume restores saved summaries without
+fitting or scoring and returns `model=None`, `resumed_completed=True`.
+`completed.json` is the public mirror of that saved outcome.
+
+No data are loaded without `--run`. The preview reports initial costs and
+total candidate budget separately. The default output is a unique
+`results/mnist-*` directory. `--cache-dir` selects a trusted base cache and
+`--no-cache` disables that cache, not completed-fold checkpoints. Choose
+`--jobs` for the available RAM; dispatched work is bounded by that count and
+each outer worker uses one native thread.
 
 The dissertation uses the symbol theta for both subset sampling and, in its
 OVO experiment, a retained fraction of 0.3. This API deliberately exposes

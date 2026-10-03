@@ -13,7 +13,10 @@ parameter setting is shared by every pair; there are no per-pair searches.
 
 Preview: python examples/tune_mnist_multiclass.py
 Run: python examples/tune_mnist_multiclass.py --data mnist.npz --run --jobs 1
-The default starts with 125 candidates and bounded adaptive expansion/refinement.
+The default starts with 125 candidates, bounded expansion and repeated joint
+local refinement. Explicit --resume --run reuses completed folds from --output-dir
+under identical settings, budgets and runtime. Interrupted final fitting restarts;
+a committed completed result resumes without fitting or scoring and returns model=None.
 --smoke-grid limits the whole search to four validation candidates; unresolved
 winners hold final fitting/test scoring. It is not a complete search.
 """
@@ -188,20 +191,29 @@ def main(argv=None):
     refinement = parser.add_mutually_exclusive_group()
     refinement.add_argument('--refine', dest='refine', action='store_true',
                             help='Compatibility option: refinement is enabled by default.')
-    refinement.add_argument('--no-refine', dest='refine', action='store_false')
+    refinement.add_argument('--no-refine', dest='refine', action='store_false',
+                            help='Skip local rounds and bracket tightening; valid conditional neighbors are still required.')
     parser.set_defaults(refine=True)
     parser.add_argument('--max-expansions', type=int, default=3)
     parser.add_argument('--max-candidates', type=positive_int, default=500)
+    parser.add_argument('--bracket-factor', type=float, default=2.0)
+    parser.add_argument('--stable-refinement-rounds', type=positive_int, default=2)
     parser.add_argument('--error-score', choices=('raise', 'nan'), default='nan',
                         help='nan skips only ineligible subsets or selections; unexpected failures stop the run.')
-    parser.add_argument('--output-dir', type=Path, help='New run directory; an existing directory is rejected.')
+    parser.add_argument('--output-dir', type=Path, help='Fresh directory for a new run, or the original directory with --resume.')
+    parser.add_argument('--resume', action='store_true',
+                        help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
     cache = parser.add_mutually_exclusive_group()
     cache.add_argument('--cache-dir', type=Path, help='Shared trusted base-stage cache directory.')
     cache.add_argument('--no-cache', action='store_true', help='Disable base-stage caching.')
     parser.add_argument('--run', action='store_true', help='Load local data and start the search.')
     args = parser.parse_args(argv)
+    if args.resume and (not args.run or args.output_dir is None):
+        parser.error('--resume requires --run and --output-dir.')
     if args.max_expansions < 0:
         parser.error('--max-expansions must be nonnegative.')
+    if not np.isfinite(args.bracket_factor) or args.bracket_factor <= 1:
+        parser.error('--bracket-factor must be finite and greater than 1.')
     if args.smoke_grid and args.broad_grid:
         parser.error('--smoke-grid and --broad-grid are mutually exclusive.')
     if args.folds < 2:
@@ -223,13 +235,16 @@ def main(argv=None):
     refine = False if args.smoke_grid else args.refine
     print(f'Adaptive budget: {max_candidates} unique candidates total; '
           f'up to {max_expansions} complete expansion rounds; refinement={refine}.')
+    print(f'When refinement is enabled: valid conditional brackets within factor {args.bracket_factor:g}, '
+          f'with {args.stable_refinement_rounds} completed stable local rounds.')
     if args.smoke_grid:
         print('Smoke preview budget overrides adaptive limits to four candidates with no expansion/refinement. '
               'This is an integration check; unresolved winners hold final fitting/test scoring.')
     else:
         print('Only new candidates are evaluated on the same folds. Tied lambda/gamma boundaries expand '
-              'with cross-combinations; local refinement uses the top three distinct pairs.')
-        print('Two nonimproving full rounds may stop expansion; a plateau does not prove a global optimum. '
+              'with cross-combinations; repeated joint refinement uses the top three distinct pairs.')
+        print('Two completed nonimproving outward levels with valid same-slice evidence may waive distant tied edges; '
+              'the selected candidate still needs valid neighbors. A plateau does not prove a global optimum. '
               'Unresolved boundaries or exhausted budgets hold final fitting/test scoring.')
     if not args.run:
         print('Prepared only. Supply --data PATH --run to start; no data were loaded.')
@@ -247,7 +262,7 @@ def main(argv=None):
                      f'for {args.folds}-fold CV; increase --train-size or reduce --folds.')
     folds = list(StratifiedKFold(args.folds, shuffle=True, random_state=RANDOM_STATE)
                  .split(X_train, y_train))
-    run_dir = new_run_directory(args.output_dir)
+    run_dir = new_run_directory(args.output_dir, resume=args.resume)
     cache_dir = None if args.no_cache else str(
         args.cache_dir.resolve() if args.cache_dir is not None else run_dir / 'base-cache')
     pipeline = Pipeline([
@@ -261,7 +276,9 @@ def main(argv=None):
         'cv_random_state': RANDOM_STATE, 'grid_kind': 'smoke' if args.smoke_grid else 'broad' if args.broad_grid else 'coarse',
         'pair_jobs': 1, 'M': 5, 'cache_dir': cache_dir, 'store_base_estimators': False,
     }
-    write_json_atomic(run_dir / 'data-selection.json', settings)
+    # The search manifest validates this same selection before any resumed fit.
+    if not args.resume:
+        write_json_atomic(run_dir / 'data-selection.json', settings)
     print(f'Training rows: {len(y_train)}; held-out test rows: {len(y_test)}; all ten digits present.')
     print(f'Run records: {run_dir}')
     # Load BLAS's deferred OpenMP runtime before the workflow limits threads.
@@ -269,11 +286,14 @@ def main(argv=None):
     from adaptive_search import AdaptiveSearchConfig, run_adaptive_search
     config = AdaptiveSearchConfig(regularization='lambd', prefix=PARAMETER_PREFIX,
         max_expansions=max_expansions, max_candidates=max_candidates, top_k=3,
-        plateau_rounds=2, improvement_tol=0.0, tie_tol=1e-12, refine=refine)
+        plateau_rounds=2, improvement_tol=0.0, tie_tol=1e-12, refine=refine,
+        bracket_factor=args.bracket_factor, stable_refinement_rounds=args.stable_refinement_rounds)
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
-        jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings)
-    if result['model'] is None:
+        jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings, resume=args.resume)
+    if result.get('resumed_completed'):
+        print('This run already completed; saved results were verified and no fits or test scoring were repeated.')
+    elif result['model'] is None:
         print('Adaptive search requires training-only review: ' + ', '.join(result['review']['reasons']))
         print('The test set was not scored. See selection.json and review.json in the run directory.')
     return result

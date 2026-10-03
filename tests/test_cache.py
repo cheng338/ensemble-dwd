@@ -16,7 +16,7 @@ from numpy.testing import assert_array_equal
 from sklearn.base import clone
 
 from ensemble_dwd import EnsembleKernelDWD
-from ensemble_dwd._cache import _cached_base_stage
+from ensemble_dwd._cache import _cached_base_stage, _cache_path
 
 
 class CacheProbeDWD:
@@ -93,7 +93,7 @@ def fresh_real_cache_worker(cache_dir):
         'first_implementation': first.final_estimator_.implementation,
         'second_implementation': second.final_estimator_.implementation,
         'pool_prefixes_after_first': [item['prefix'] for item in pools_after_first],
-        'entry_count': len(list((Path(cache_dir) / 'base-stage-v1').glob('*.joblib'))),
+        'entry_count': len(list((Path(cache_dir) / 'base-stage-v2').glob('*.joblib'))),
     }))
 
 
@@ -138,6 +138,7 @@ class CacheEstimatorTests(unittest.TestCase):
                    dict(gamma=.04), dict(kernel='linear'), dict(max_iter=11),
                    dict(obj_tol=2e-5), dict(stopping='fixed'), dict(tol=2e-6),
                    dict(acceleration='restart'), dict(random_state=19),
+                   dict(residual_check_order='adaptive'),
                    dict(prediction_batch_size=3), dict(store_base_estimators=False)]
         for change in changes:
             with self.subTest(change=change):
@@ -236,6 +237,27 @@ class CacheStorageTests(unittest.TestCase):
         self.calls += 1
         return {'answer': 37, 'values': np.arange(4)}
 
+    def test_long_cache_directory_supports_atomic_miss_and_hit(self):
+        directory = Path(self.directory.name)
+        while len(str(directory)) < 310:
+            directory /= 'nested-cache-directory'
+        self.assertGreater(len(str(directory)), 300)
+        if os.name == 'nt':
+            import shutil
+            self.addCleanup(shutil.rmtree, _cache_path(self.directory.name))
+        first, hit, key = _cached_base_stage(str(directory), {'long': 'path'}, self.compute)
+        self.assertFalse(hit)
+        second, hit, second_key = _cached_base_stage(directory, {'long': 'path'}, self.compute)
+        self.assertTrue(hit)
+        self.assertEqual(second_key, key)
+        self.assertEqual(self.calls, 1)
+        assert_array_equal(first['values'], second['values'])
+        self.assertEqual(second['answer'], 37)
+        stored = _cache_path(directory) / 'base-stage-v2'
+        self.assertTrue((stored / (key + '.joblib')).is_file())
+        self.assertTrue((stored / (key + '.json')).is_file())
+        self.assertEqual(list(stored.glob('*.tmp')), [])
+
     def test_key_changes_when_runtime_identity_changes(self):
         _, first_hit, first_key = _cached_base_stage(
             self.directory.name, {'data': [1, 2], 'runtime': 'first'}, self.compute)
@@ -259,7 +281,7 @@ class CacheStorageTests(unittest.TestCase):
 
     def test_payload_checksum_mismatch_recomputes_then_hits(self):
         _, _, key = _cached_base_stage(self.directory.name, {'corruption': 'payload'}, self.compute)
-        payload = Path(self.directory.name) / 'base-stage-v1' / (key + '.joblib')
+        payload = Path(self.directory.name) / 'base-stage-v2' / (key + '.joblib')
         payload.write_bytes(b'interrupted payload')
         value, hit, second_key = _cached_base_stage(
             self.directory.name, {'corruption': 'payload'}, self.compute)
@@ -276,7 +298,7 @@ class CacheStorageTests(unittest.TestCase):
             with self.subTest(corrupted=corrupted):
                 key_data = {'corruption': corrupted}
                 _, _, key = _cached_base_stage(self.directory.name, key_data, self.compute)
-                metadata = Path(self.directory.name) / 'base-stage-v1' / (key + '.json')
+                metadata = Path(self.directory.name) / 'base-stage-v2' / (key + '.json')
                 metadata.write_text(corrupted, encoding='utf-8')
                 before = self.calls
                 value, hit, _ = _cached_base_stage(self.directory.name, key_data, self.compute)

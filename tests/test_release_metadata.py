@@ -17,30 +17,23 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(example_wheels,
                          [f"ensemble_dwd-{ensemble_dwd.__version__}-py3-none-any.whl"])
 
-    def test_both_dwd_platform_pins_are_hashed_and_documented(self):
+    def test_dwd_version_and_both_wheel_hashes_are_locked(self):
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dependencies = [value for value in metadata["project"]["dependencies"]
-                        if value.startswith("dwd @ ")]
-        self.assertEqual(len(dependencies), 2)
+                        if value.startswith("dwd")]
+        self.assertEqual(dependencies, ["dwd==1.3.9.dev20261001"])
+        lock = (ROOT / "requirements-dwd.txt").read_text(encoding="utf-8")
+        lines = [line.strip() for line in lock.splitlines()
+                 if line.strip() and not line.startswith("#")]
+        self.assertEqual(lines[0].removesuffix("\\").strip(), dependencies[0])
+        hashes = re.findall(r"--hash=sha256:([a-f0-9]{64})", lock)
+        self.assertEqual(len(hashes), 2)
+        self.assertEqual(len(set(hashes)), 2)
+        self.assertIn("requirements-dwd.txt", metadata["tool"]["flit"]["sdist"]["include"])
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        versions, kinds = set(), set()
-        for value in dependencies:
-            match = re.match(
-                r"dwd @ https://github\.com/cheng338/dwd/releases/download/v([^/]+)/"
-                r"dwd-([^/]+)-(cp311-abi3-win_amd64|py3-none-any)\.whl"
-                r"#sha256=([a-f0-9]{64}) ; .+", value)
-            self.assertIsNotNone(match, value)
-            tag_version, wheel_version, kind, digest = match.groups()
-            self.assertEqual(tag_version, wheel_version)
-            versions.add(tag_version)
-            kinds.add(kind)
-            if kind == "py3-none-any":
-                # The documented free-threaded workaround must use the same pin.
-                self.assertIn(value.split(" ; ")[0], readme)
-        self.assertEqual(len(versions), 1)
-        self.assertEqual(kinds, {"cp311-abi3-win_amd64", "py3-none-any"})
-        version = next(iter(versions))
-        self.assertIn(f"https://github.com/cheng338/dwd/releases/tag/v{version}", readme)
+        self.assertIn("--no-index --find-links wheels --no-deps --force-reinstall --require-hashes", readme)
+        self.assertIn("-r requirements-dwd.txt", readme)
+        self.assertIn(dependencies[0].split("==")[1], readme)
 
 
 if __name__ == "__main__":

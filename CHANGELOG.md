@@ -1,5 +1,43 @@
 # Changelog
 
+This package originated in Chang Cheng's ensemble DWD research scripts
+accompanying his dissertation.
+
+## [Unreleased]
+
+- Add the native-aware `base-stage-v2` cache identity, including package source
+  and native artifact hashes, actual accelerator availability and numerical
+  runtime provenance. Keep old cache entries separate and bypass reuse when
+  identity is unavailable or observably changed.
+- Include content identity for loaded BLAS/OpenMP and scientific native
+  extensions, plus an already loaded AOCL bridge. Recheck runtime identity
+  before cache reuse and publication; uncertain results remain uncached.
+- Retain compact `base_diagnostics_` records through cache hits and after base
+  models are discarded, distinguishing reported stopping and optimality facts.
+- Forward opt-in DWD `residual_check_order='adaptive'` to every base and final
+  fit and include it in cache identity. Keep `'refinement_first'` as the default;
+  ensemble sampling, scoring, selection and final-refit rules are unchanged.
+- Require valid conditional neighbors for adaptive boundary review, repeat
+  joint local refinement, and require a factor-two winner bracket plus two
+  completed stable local rounds by default. Scope the empirical full-strip
+  plateau rule to tested evidence; hold final fitting on unresolved budgets.
+- Add explicit completed-fold resume to the tuning CLIs under matching data,
+  folds, settings, policy/budgets and runtime identity. Save compact fold and
+  final-fit diagnostics. Interrupted final fits restart; committed completed
+  results resume without fitting or scoring and do not restore a predictor.
+- Support long Windows paths for internal checkpoint files and locks.
+- Support long Windows paths for reusable base-cache payloads, metadata and
+  locks, including atomic temporary files.
+- Clear partial learned state after `KeyboardInterrupt` and `SystemExit` in
+  binary and one-versus-one fits, then propagate the original interruption.
+- Preserve all parent parameters and a better coarse incumbent in the legacy
+  nonresumable coarse/local helper. Keep review flags consistent with final
+  fitting and scoring, and record graceful interruption separately from failure.
+- Reject complex feature and label arrays, nonfinite features and empty feature
+  dimensions in binary MNIST data helpers before CV, including supplied test splits.
+- Use an exact DWD version requirement
+  and a relocatable SHA-256 lock for the validated native and portable wheels.
+
 ## 0.3.3
 
 - Pin the validated cheng338/dwd 1.3.8 native and portable builds by hash.

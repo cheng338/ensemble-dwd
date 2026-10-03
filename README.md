@@ -11,6 +11,11 @@ It implements the four-stage method in Chapter 5 of Chang Cheng's dissertation,
 *Overcoming the Curses of Dimensionality and Kernelization: Scalable DWD and
 Supervised NMF* (Purdue University, August 2026).
 
+This package was developed from Chang Cheng's original ensemble DWD research
+scripts accompanying his dissertation. It provides a reusable estimator API,
+with subsequent implementation changes documented in the changelog and
+validation notes.
+
 `OvOClassifier(EnsembleKernelDWD(...))` extends this procedure to multiclass
 classification using the dissertation's one-versus-one maximum-wins vote.
 For ten classes, it fits 45 binary ensembles.
@@ -23,39 +28,42 @@ tests and limitations of major implementation changes.
 
 ## Installation
 
-Python 3.11 or later is required. From this source directory:
+Python 3.11 or later is required. This unpublished candidate requires the
+validated DWD 1.3.9.dev20261001 wheels supplied with the local distribution.
+Place those wheels in a `wheels` directory beside this source directory's
+`pyproject.toml`, then install DWD with hash verification before this package:
 
 ```shell
+python -m pip install --no-index --find-links wheels --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
-To build and install a local wheel:
+After installing the locked DWD dependency, build and install a local wheel:
 
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.3-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.4.dev20261001-py3-none-any.whl
 ```
 
-The dependency metadata pins SHA-256-verified wheels from
-[cheng338/dwd 1.3.8](https://github.com/cheng338/dwd/releases/tag/v1.3.8).
-Conventional GIL-enabled CPython on Windows AMD64 uses the wheel with the compiled prediction helper;
-other platforms use the portable wheel. Both contain the optimized DWD
-implementation. Install the package with its declared dependencies; installing
-`dwd` by name separately can retrieve another implementation.
+The package metadata pins the DWD version; `requirements-dwd.txt` additionally
+pins the SHA-256 hashes of both validated wheel variants. The lock installation
+uses only the supplied local wheels and reinstalls DWD so an existing copy does
+not bypass hash verification. Installing `dwd` by name from an index instead can
+retrieve another implementation. A public release must make the validated
+dependency artifacts available before distribution.
+See [candidate changes](docs/candidate_changes.md).
 
-Free-threaded Windows CPython cannot load that `abi3` wheel, and Python's
-dependency markers cannot distinguish it from the conventional build. On
-that interpreter, install the portable DWD wheel and numerical dependencies
-explicitly, then install this package without dependency resolution:
+Pip selects a compatible wheel from `wheels`. The Windows AMD64 `abi3` wheel
+contains the compiled helper; the portable wheel contains the optimized Python
+implementation. To require the portable build, put only that wheel in `wheels`
+when installing the dependency. Runtime validation covers conventional Windows
+CPython 3.12; free-threaded Python and other platforms have not been exercised.
 
-```shell
-python -m pip install numpy scipy "scikit-learn>=1.6" "joblib>=1.3" "dwd @ https://github.com/cheng338/dwd/releases/download/v1.3.8/dwd-1.3.8-py3-none-any.whl#sha256=27eaa3f12e9b980e27f2113b0abf1b5376d53e717beb48303a2a669194c7b212"
-python -m pip install --no-deps .
-```
-
-This installation workaround has not been runtime-tested on free-threaded
-Python. The validated environment uses conventional CPython 3.12.
+The CI workflow requires the same locked wheels. Configure the repository
+variable `DWD_WHEELHOUSE_URL` with a wheel-link page containing those artifacts,
+or provision a local `wheels` directory before its installation step. The
+unpublished candidate has no public wheel source configured.
 
 ## Basic use
 
@@ -175,76 +183,104 @@ or up to 3,750 DWD fits before base-cache reuse. The broad coarse stage has
 2,025 ensemble CV fits, or up to 12,150 DWD fits. These are initial-stage
 budgets, not measured runtimes or the total cost of adaptive search.
 
-`examples/tune_mnist.py` runs bounded adaptive search through external
-`GridSearchCV`. Each stage uses the same saved stratified five-fold split,
-fits preprocessing inside each training fold, and sets `refit=False`.
-Only new complete parameter combinations are evaluated. Results from earlier
-stages in that run remain eligible for selection; changing only retention
-can also reuse the package's base-stage cache.
+`examples/tune_mnist.py` runs bounded adaptive search through the external
+`CheckpointedCV` runner. Every stage uses the same saved stratified five-fold
+split, fits preprocessing inside each training fold, and scores accuracy
+without an automatic refit. Only new complete parameter combinations are
+proposed; verified completed fold records are reused. Earlier candidates
+remain eligible for selection. Changing only retention can also reuse the
+package's separate base-stage cache.
 
 The policy expands lambda/gamma endpoints reached by the best or tied-best
 fully valid candidates, including cross-combinations when both axes expand.
 Each outward step is at most one decade (a factor of 10), or the smaller
-adjacent logarithmic spacing when the explored grid is finer. Sampling stays at 10% and retention stays on the five specified fractions.
-Local refinement is enabled by default: it takes the top three distinct
-lambda/gamma pairs, proposes logarithmic midpoints within the explored bounds,
-and evaluates those pairs with all fixed fraction choices. Duplicate complete
-candidates are removed. `--no-refine` disables this stage; `--refine` remains
-accepted for compatibility.
+adjacent logarithmic spacing when the explored grid is finer. Sampling stays
+at 10% and retention stays on the five specified fractions. Missing conditional
+neighbors are tested at the same values of the other parameters. An invalid
+neighbor does not establish an interior optimum.
 
-Defaults are three complete expansion rounds, 500 unique candidates total,
-a top-three refinement, two nonimproving complete expansion rounds for the
-plateau rule, improvement tolerance 0, and boundary tie tolerance `1e-12`.
-Use `--max-expansions`, `--max-candidates`, and `--broad-grid` to choose an
-explicit budget. A complete proposed stage that does not fit the remaining
-budget is held rather than partially evaluated. Unresolved boundaries or
-exhausted limits produce `review.json` with `needs_review`, without final
-fitting or test scoring. A documented plateau can finish the search even
-while a best or tied-best candidate remains at a boundary. This stopping rule
-does **not** prove a global optimum or rule out improvement farther away.
+Local refinement repeatedly proposes joint logarithmic midpoints around the
+top three distinct lambda/gamma pairs, within the explored bounds, with all
+fixed fraction choices. The default stopping rule requires valid neighbors
+on both sides of the selected candidate in each axis, each within a factor
+of two, and two completed local-refinement rounds with no improvement or
+change of winning region. Filling gaps at existing coordinates does not earn
+stable-refinement credit. An improvement or changed evidence reopens review.
+`--no-refine` skips local refinement and factor-two tightening, but still
+requires valid conditional neighbors. `--refine` remains accepted.
+
+Defaults remain 125 initial candidates, three complete expansion rounds and
+500 unique candidates total (`--broad-grid` starts with 405). Improvement
+tolerance is 0 and boundary tie tolerance is `1e-12`. Use `--max-expansions`
+and `--max-candidates` to choose an explicit budget. A complete proposed stage
+that does not fit the remaining budget is held rather than partly evaluated.
+Unresolved boundaries or exhausted limits produce `review.json` with
+`needs_review`, without final fitting or test scoring.
+
+The full-strip plateau rule can waive further checks at a distant tied outer
+edge after two completed nonimproving outward levels, supported by valid
+results on the same conditional slice. It does not waive the selected
+candidate's own neighbor requirements or treat invalid/missing scores as
+plateau evidence. This is empirical evidence within the tested range, not a
+global-optimum certificate.
 
 Only candidates with finite scores in every fold and a finite mean may win.
 The default `--error-score nan` excludes only `IneligibleSelectionError` and
 its `IneligibleSubsetError` subclass. Unexpected numerical, input or other
-exceptions are recorded and stop the run; they are not silently assigned zero
-accuracy or replaced by fallback classifiers. `--error-score raise` stops on
+exceptions are recorded and stop the run; they are not assigned zero accuracy
+or replaced by fallback classifiers. `--error-score raise` stops on
 ineligible candidates too. An all-invalid search stops.
 
 The selected parameters and review decision are saved before fitting the
-pipeline once on all training rows. The separate test set is scored only
-after the search is accepted and this final fit succeeds. A failed final fit
-leaves the completed CV records available. The existing
-`run_search_workflow` Python helper retains its explicit coarse/local behavior
-for historical reproduction; the CLI now calls `run_adaptive_search`.
+pipeline on all training rows. The separate test set is scored only after
+acceptance and successful final fitting. Compact diagnostics are saved for
+each completed fold fit and the final refit. Reported objective stopping,
+iteration limits and optimality checks are distinct; the search does not
+change the default DWD objective tolerance (`1e-5`) or iteration cap (100).
+The legacy `run_search_workflow` helper remains a nonresumable coarse/local
+workflow. It preserves all parent parameters during local refinement and
+retains a better coarse candidate when local results do not improve it.
 
 ```shell
 python examples/tune_mnist.py
-python examples/tune_mnist.py --data mnist.npz --jobs 2 --run
+python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run
+python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run --resume
 python examples/tune_mnist.py --broad-grid --max-candidates 1000 --no-refine
 ```
 
-Without `--run`, the example only previews its budget and does not load data.
+Without `--run`, the example previews its budget and does not load data.
 It accepts local NumPy archives with Keras keys `x_train/y_train/x_test/y_test`,
 capitalized `X_train/X_test` equivalents, or `X/y`; it never downloads data.
 A supplied test split is preserved. `X/y` creates a separate stratified 25%
-test split before CV. No dataset dimensions or sample-count defaults were
-changed by the adaptive policy.
+test split before CV. No dataset dimensions or sample-count defaults change.
 
-Choose a positive `--jobs` count for the available RAM. `pre_dispatch` equals
-that count, each worker uses one native thread, and base models fit sequentially.
-`--output-dir` must name a fresh directory; the default creates a unique
-`results/mnist-*` directory with a shared base cache. `--cache-dir` selects a
-trusted cache and `--no-cache` disables reuse. The examples discard base models
-after retaining their diagnostics, scores and indices.
+Choose a positive `--jobs` count for the available RAM. Dispatched work is
+bounded by that count, each worker uses one native thread, and base models fit
+sequentially. New runs require a fresh `--output-dir`; the default creates a
+unique `results/mnist-*` directory. `--cache-dir` selects a trusted base cache
+and `--no-cache` disables it. The examples discard base models after retaining
+their diagnostics, scores and indices.
 
-`run.json` records folds, data fingerprints, estimator settings and the search
-policy. `coarse-cv.json`, `expansion-*-cv.json`, `local-cv.json` when present,
-and `accumulated-cv.json` preserve completed stage results. `selection.json`
-and `review.json` record the selection before final fitting; `refit.json`,
-`status.json`, and `failures/failure-*.json` explain success or failure.
-`completed.json` contains the held-out score after success. Reuse of scored
-candidates is within one run; automatic recovery of interrupted stages across
-new invocations is not implemented.
+To resume, pass `--resume --run` with the original output directory and the
+same data, folds, estimator parameters, policy and budgets, job count, and
+numerical runtime. The installation must remain immutable. Identity mismatch
+or live ownership prevents reuse. Checksummed completed fold records survive
+interruption; unfinished fits restart. This checkpoint is separate from the
+optional base-fit cache, so `--no-cache` does not disable completed-fold reuse.
+
+`run.json` records the identity, settings and search policy. Stage CV files,
+including repeated local and conditional-repair stages, and
+`accumulated-cv.json` preserve search evidence. `selection.json` and
+`review.json` record selection before final fitting; `refit.json`,
+`status.json`, and `failures/failure-*.json` describe later outcomes.
+`completed.json` mirrors the committed held-out result.
+
+An interrupted final refit restarts from the beginning; fitted models are not
+serialized. A crash after held-out prediction but before the authoritative
+completion receipt is committed can require refitting and rescoring. Once
+that receipt is committed, a verified resume returns the saved result without
+fitting or scoring again. The Python result then has `model=None` and
+`resumed_completed=True`; it does not restore a predictor.
 
 ## Reusing work and storing models
 
@@ -257,6 +293,17 @@ parallel workers can share the directory. Caching is bypassed for
 `random_state=None`, callable kernels or callable kernel keywords, and custom
 estimator subclasses. Inspect `cache_hit_`, `cache_key_`, and `cache_status_`
 after fitting to see whether the base stage was reused.
+`cache_dir` accepts strings and path-like objects. Internal cache files and
+locks support long Windows paths, including paths beyond the legacy 260-character limit.
+
+Cache provenance hashes package-owned source/native files, loaded BLAS/OpenMP
+libraries, loaded NumPy/SciPy/scikit-learn native extensions, and an already
+loaded AOCL bridge's source, manifests and libraries. File contents are hashed
+once per process; observed file or native-inventory changes disable reuse until
+restart. Cold base results are checked again before publication. This requires
+an installation that remains unchanged from import and identifies disk artifacts,
+not previously mapped machine code. Same-version edits to external scientific
+Python source and unobserved transitive libraries remain outside this identity.
 
 With `store_base_estimators=False`, `estimators_` is `None` after fitting.
 Consensus scores, sampled and selected indices, iteration counts, convergence

@@ -9,7 +9,6 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from types import SimpleNamespace
 
 import numpy as np
 
@@ -106,11 +105,11 @@ class SVMExampleTests(unittest.TestCase):
     def test_accepted_plateau_preserves_boundary_diagnostics(self):
         X = np.tile([[-1., 2.], [1., -2.]], (5, 1))
         y = np.tile([0, 1], 5)
-        estimator = SimpleNamespace(n_iter_=[1], fit_status_=[0], converged_=True,
-            support_counts_=[2], n_support_=[1, 1], gamma_=.01,
-            subset_indices_=[np.array([0, 1])] * 5,
-            selected_indices_=np.array([0, 1]), cache_hit_=False)
-        result = {'model': SimpleNamespace(named_steps={'ensemble': estimator}),
+        refit = {'diagnostics': {'n_iter_': [1], 'fit_status_': [0], 'converged_': True,
+            'support_counts_': [2], 'n_support_': [1, 1], 'gamma_': .01,
+            'subset_sizes': [2] * 5, 'selected_size': 2, 'cache_hit_': False}}
+        # An opaque model proves the mirror uses committed scalar diagnostics.
+        result = {'model': object(), 'refit': refit,
                   'review': {'state': 'accepted', 'reasons': [],
                              'boundary_directions': [('ensemble__C', 'high')],
                              'stopping_reason': 'plateau'}}
@@ -124,6 +123,46 @@ class SVMExampleTests(unittest.TestCase):
             self.assertEqual(diagnostics['boundary_parameters'], ['ensemble__C'])
             self.assertEqual(diagnostics['boundary_directions'], [['ensemble__C', 'high']])
             self.assertEqual(diagnostics['search_stopping_reason'], 'plateau')
+
+
+    def test_completed_resume_restores_missing_or_stale_diagnostics_without_model_or_fit(self):
+        X = np.tile([[-1., 2.], [1., -2.]], (5, 1))
+        y = np.tile([0, 1], 5)
+        refit = {'diagnostics': {'n_iter_': [3] * 6, 'fit_status_': [0] * 6,
+            'converged_': [True] * 6, 'support_counts_': [[1, 1]] * 6,
+            'n_support_': [2, 3], 'gamma_': .001, 'subset_sizes': [4] * 5,
+            'selected_size': 6, 'cache_hit_': True}}
+        saved = {'model': None, 'resumed_completed': True, 'refit': refit,
+                 'completed': {'held_out_accuracy': .75},
+                 'review': {'state': 'accepted', 'reasons': [],
+                            'boundary_directions': [('ensemble__gamma', 'low')],
+                            'stopping_reason': 'stable completed local rounds'}}
+        expected = {'n_iter': [3] * 6, 'fit_status': [0] * 6, 'converged': [True] * 6,
+                    'support_counts': [[1, 1]] * 6, 'n_support': [2, 3], 'gamma': .001,
+                    'subset_sizes': [4] * 5, 'selected_size': 6, 'cache_hit': True,
+                    'boundary_parameters': ['ensemble__gamma'],
+                    'boundary_directions': [['ensemble__gamma', 'low']],
+                    'search_stopping_reason': 'stable completed local rounds'}
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary) / 'run'
+            (run_dir / 'failures').mkdir(parents=True)
+            mirror = run_dir / 'svm-diagnostics.json'
+            for prior in (None, {'stale': True}):
+                with self.subTest(prior=prior):
+                    if prior is not None:
+                        mirror.write_text(json.dumps(prior), encoding='utf-8')
+                    with (patch.object(example, 'load_local_data', return_value=(X, X[:4], y, y[:4])),
+                          patch.object(adaptive_search, 'run_adaptive_search', return_value=saved) as workflow,
+                          patch.object(example.Pipeline, 'fit', side_effect=AssertionError('Resume must not fit')) as fit,
+                          patch.object(example.Pipeline, 'predict', side_effect=AssertionError('Resume must not predict')) as predict,
+                          contextlib.redirect_stdout(io.StringIO())):
+                        returned = example.main(['--data', 'unused.npz', '--run', '--resume',
+                                                 '--output-dir', str(run_dir)])
+                    self.assertTrue(workflow.call_args.kwargs['resume'])
+                    self.assertIs(returned, saved)
+                    fit.assert_not_called()
+                    predict.assert_not_called()
+                    self.assertEqual(json.loads(mirror.read_text(encoding='utf-8')), expected)
 
 
 if __name__ == "__main__":

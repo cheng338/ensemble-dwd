@@ -4,10 +4,13 @@ Archive keys may be x_train/y_train/x_test/y_test (standard Keras format),
 X_train/y_train/X_test/y_test, or X/y. Images may be flattened or have shape
 (n, 28, 28). With X/y, a stratified 25% test split is made before CV. A supplied
 test split remains held out. Data are never downloaded.
-The CLI expands lambda/gamma boundaries and refines promising settings on the
-same training folds. Unresolved boundaries or exhausted budgets hold final
+The CLI expands lambda/gamma boundaries and repeatedly refines joint local
+settings on the same training folds. Unresolved boundaries or exhausted budgets hold final
 fitting/test scoring. A plateau does not prove global optimality. The legacy
-run_search_workflow helper remains available for reproducibility.
+run_search_workflow helper remains available as a nonresumable coarse/local workflow.
+Explicit --resume --run reuses completed folds from --output-dir under identical
+settings, budgets and runtime. Interrupted final fitting restarts; a committed
+completed result resumes without fitting or scoring and returns model=None.
 
 Preview: python examples/tune_mnist.py --refine
 Run: python examples/tune_mnist.py --data mnist.npz --refine --run --jobs 1
@@ -15,12 +18,13 @@ Run: python examples/tune_mnist.py --data mnist.npz --refine --run --jobs 1
 import argparse
 from copy import deepcopy
 from pathlib import Path
+import pickle
 import re
 import sys
 from time import perf_counter
 
 import numpy as np
-from joblib import parallel_config
+from joblib import hash as joblib_hash, parallel_config
 from sklearn.base import clone
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV, ParameterGrid, StratifiedKFold, train_test_split
@@ -44,13 +48,23 @@ def select_pair(X, y, first, second):
     X, y = np.asarray(X), np.asarray(y)
     if X.ndim < 2 or y.ndim != 1 or len(X) != len(y):
         raise ValueError('Expected an image/feature array and one label per row.')
+    if not np.issubdtype(X.dtype, np.number) or np.iscomplexobj(X):
+        raise ValueError('MNIST features must be real numbers.')
+    if not np.isfinite(X).all() or any(size == 0 for size in X.shape[1:]):
+        raise ValueError('MNIST features must be nonempty and finite.')
+    if np.iscomplexobj(y):
+        raise ValueError('MNIST labels must be real integer digit values.')
     labels = np.asarray(y, dtype=np.float64)
     if not np.isfinite(labels).all() or not np.equal(labels, np.floor(labels)).all():
         raise ValueError('MNIST labels must be finite integer digit values.')
     keep = (labels == first) | (labels == second)
     if np.unique(labels[keep]).size != 2:
         raise ValueError('Both requested digits must occur in every supplied split.')
-    return np.asarray(X[keep].reshape(np.count_nonzero(keep), -1), dtype=np.float64), labels[keep].astype(np.int64)
+    with np.errstate(over='ignore', invalid='ignore'):
+        features = np.asarray(X[keep].reshape(np.count_nonzero(keep), -1), dtype=np.float64)
+    if not np.isfinite(features).all():
+        raise ValueError('MNIST features must remain finite when converted to float64.')
+    return features, labels[keep].astype(np.int64)
 
 
 def load_local_data(path, first, second):
@@ -120,10 +134,10 @@ def best_valid_candidate(cv_results):
 def local_refinement_grid(cv_results, prefix='ensemble__', top_k=3):
     """Union local neighborhoods around up to three fully valid coarse results.
 
-    Each parent retains its own theta and retention fraction. No clipping to
-    the coarse grid is applied. Formatting lambda/gamma deduplication keys to
-    15 significant digits merges floating-point variants of the same values;
-    theta/retention match exactly and the first candidate's values are retained.
+    Every parent parameter is retained; only lambda and gamma are varied.
+    No clipping to the coarse grid is applied. Formatting lambda/gamma
+    deduplication keys to 15 significant digits merges floating-point variants
+    of the same values. Other parameter values distinguish neighborhoods.
     """
     if isinstance(top_k, bool) or not isinstance(top_k, (int, np.integer)) or top_k < 1:
         raise ValueError('top_k must be a positive integer.')
@@ -137,15 +151,26 @@ def local_refinement_grid(cv_results, prefix='ensemble__', top_k=3):
         lambd, gamma, theta, ratio = [float(parent[name]) for name in names]
         if not np.isfinite([lambd, gamma, theta, ratio]).all() or min(lambd, gamma) <= 0:
             raise ValueError('Refinement requires finite parameters and positive lambda/gamma.')
+        other_parameters = {name: value for name, value in parent.items()
+                            if name not in names[:2]}
+        try:
+            other_key = joblib_hash(other_parameters)
+        except pickle.PicklingError:
+            # Local callable kernels are valid with serial CV. Keep opaque
+            # parent neighborhoods separate rather than dropping parameters
+            # or adding a requirement that they support standard pickle.
+            other_key = ('opaque-parent', int(index))
         for lambda_factor in (0.25, 1., 4.):
             for gamma_factor in (10.**-0.5, 1., 10.**0.5):
                 values = (lambd*lambda_factor, gamma*gamma_factor, theta, ratio)
                 if not np.isfinite(values).all() or min(values[:2]) <= 0:
                     raise ValueError('Local lambda/gamma values are not representable.')
-                key = (format(values[0], '.15g'), format(values[1], '.15g'), theta, ratio)
+                key = (format(values[0], '.15g'), format(values[1], '.15g'), other_key)
                 if key not in seen:
                     seen.add(key)
-                    grid.append({name: [value] for name, value in zip(names, values)})
+                    candidate = {name: [value] for name, value in deepcopy(parent).items()}
+                    candidate.update({name: [value] for name, value in zip(names[:2], values[:2])})
+                    grid.append(candidate)
     return grid
 
 
@@ -184,7 +209,9 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     An optional selection_review(parameters) callback runs after the selection
     checkpoint and before final fitting. Return a list of review reasons to
     hold both final fitting and held-out scoring, or None/an empty list to
-    continue. The default leaves the DWD workflow unchanged.
+    continue. The default leaves the DWD workflow unchanged. KeyboardInterrupt
+    and SystemExit preserve completed records, mark the run interrupted and
+    propagate; this legacy helper does not support resuming the run.
     """
     run_dir = Path(run_dir).resolve()
     failure_dir = run_dir / 'failures'
@@ -212,7 +239,7 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     phase = 'coarse_cv'
     write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase})
 
-    def stage_search(label, candidate_grid):
+    def stage_search(label, candidate_grid, *, allow_all_ineligible=False):
         evaluator = CandidateEvaluator(pipeline, error_policy=error_policy,
                                        failure_dir=str(failure_dir))
         search = GridSearchCV(
@@ -235,7 +262,10 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 bare_parameters(search.cv_results_['params'][selected]),
         })
         print(f'{label.title()} search wall seconds: {elapsed:.4f}')
-        report_search(label.title(), search)
+        if selected is not None or not allow_all_ineligible:
+            report_search(label.title(), search)
+        else:
+            print(f'{label.title()}: no fully valid candidates; retaining the coarse result.')
         return search
 
     try:
@@ -250,7 +280,14 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                     bare_parameters(params) for params in coarse.cv_results_['params']]}
                 local_grid = local_refinement_grid(bare_results)
                 print(f'Local grid: {len(local_grid)} candidates after deduplication.')
-                search, stage = stage_search('local', local_grid), 'local'
+                local = stage_search('local', local_grid, allow_all_ineligible=True)
+                local_ranked = ranked_valid_indices(local.cv_results_)
+                coarse_best = best_valid_candidate(coarse.cv_results_)
+                # Preserve the existing local-stage preference on exact ties.
+                if (len(local_ranked) and
+                        local.cv_results_['mean_test_score'][local_ranked[0]] >=
+                        coarse.cv_results_['mean_test_score'][coarse_best]):
+                    search, stage = local, 'local'
             selected = best_valid_candidate(search.cv_results_)
             parameters = bare_parameters(search.cv_results_['params'][selected])
             selection = {'source_stage': stage, 'candidate_index': selected,
@@ -293,13 +330,24 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             # This completion record exists even if later test scoring fails.
             write_json_atomic(run_dir / 'refit.json', {
                 'state': 'completed', **selection, 'wall_seconds': refit_seconds})
+            if review is not None:
+                review['final_refit_performed'] = True
+                write_json_atomic(run_dir / 'review.json', review, replace=True)
             phase = 'held_out_scoring'
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
             test_accuracy = float(accuracy_score(y_test, final_model.predict(X_test)))
             completed = {**selection, 'refit_seconds': refit_seconds,
                          'held_out_accuracy': test_accuracy}
             write_json_atomic(run_dir / 'completed.json', completed)
+            if review is not None:
+                review['held_out_scored'] = True
+                write_json_atomic(run_dir / 'review.json', review, replace=True)
             write_json_atomic(run_dir / 'status.json', {'state': 'completed', 'phase': phase}, replace=True)
+    except (KeyboardInterrupt, SystemExit) as error:
+        write_failure_json(run_dir / 'status.json', {
+            'state': 'interrupted', 'phase': phase,
+            'exception_type': type(error).__name__, 'resume_supported': False}, replace=True)
+        raise
     except Exception as error:
         record_failure(failure_dir, error, phase=phase,
                        estimator=locals().get('final_model', pipeline),
@@ -324,7 +372,9 @@ def main(argv=None):
     parser.add_argument('--error-score', choices=('raise', 'nan'), default='nan',
                         help='nan skips only ineligible subsets or selections; raise stops on every fit failure.')
     parser.add_argument('--output-dir', type=Path,
-                        help='New run directory; defaults to a unique results/mnist-* directory.')
+                        help='Fresh directory for a new run, or the original directory with --resume; defaults to results/mnist-*.')
+    parser.add_argument('--resume', action='store_true',
+                        help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
     cache = parser.add_mutually_exclusive_group()
     cache.add_argument('--cache-dir', type=Path,
                        help='Shared base-stage cache; defaults to the new run directory/base-cache.')
@@ -332,18 +382,27 @@ def main(argv=None):
     refinement = parser.add_mutually_exclusive_group()
     refinement.add_argument('--refine', dest='refine', action='store_true',
                             help='Compatibility option: refinement is enabled by default.')
-    refinement.add_argument('--no-refine', dest='refine', action='store_false')
+    refinement.add_argument('--no-refine', dest='refine', action='store_false',
+                            help='Skip local rounds and bracket tightening; valid conditional neighbors are still required.')
     parser.set_defaults(refine=True)
     parser.add_argument('--max-expansions', type=int, default=3,
                         help='Maximum complete expansion rounds; default 3, minimum 0.')
     parser.add_argument('--max-candidates', type=positive_int, default=500,
                         help='Total unique candidate budget, including coarse CV; default 500.')
+    parser.add_argument('--bracket-factor', type=float, default=2.0,
+                        help='Target ratio to valid local neighbors when refining; default 2, greater than 1.')
+    parser.add_argument('--stable-refinement-rounds', type=positive_int, default=2,
+                        help='Completed stable local rounds required when refining; default 2.')
     parser.add_argument('--broad-grid', action='store_true',
                         help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument('--run', action='store_true', help='Start the requested search stages.')
     args = parser.parse_args(argv)
+    if args.resume and (not args.run or args.output_dir is None):
+        parser.error('--resume requires --run and --output-dir.')
     if args.max_expansions < 0:
         parser.error('--max-expansions must be nonnegative.')
+    if not np.isfinite(args.bracket_factor) or args.bracket_factor <= 1:
+        parser.error('--bracket-factor must be finite and greater than 1.')
     if args.digits[0] == args.digits[1]:
         parser.error('Choose two distinct digits.')
     if any(digit < 0 or digit > 9 for digit in args.digits):
@@ -358,8 +417,11 @@ def main(argv=None):
     print('M=5, theta=0.1; retention [0.1, 0.15, 0.2, 0.25, 0.3]. '
           'All stages share five folds and evaluate only new candidates.')
     print('Tied lambda/gamma boundaries expand together, including cross-combinations. '
-          'Refinement uses the top three distinct parameter pairs.')
-    print('Two nonimproving full rounds may stop expansion; a plateau does not prove a global optimum. '
+          'Repeated joint refinement uses the top three distinct parameter pairs.')
+    print(f'When refinement is enabled: valid conditional brackets within factor {args.bracket_factor:g}, '
+          f'with {args.stable_refinement_rounds} completed stable local rounds.')
+    print('Two completed nonimproving outward levels with valid same-slice evidence may waive distant tied edges; '
+          'the selected candidate still needs valid neighbors. A plateau does not prove a global optimum. '
           'Unresolved boundaries or exhausted budgets hold final fitting/test scoring.')
     print('An accepted final selection adds six DWD fits; test scoring follows that fit.')
     if not args.run:
@@ -371,7 +433,7 @@ def main(argv=None):
     X_train, X_test, y_train, y_test = load_local_data(args.data, *args.digits)
     if np.min(np.unique(y_train, return_counts=True)[1]) < 5:
         parser.error('Each training class needs at least five examples for five-fold CV.')
-    run_dir = new_run_directory(args.output_dir)
+    run_dir = new_run_directory(args.output_dir, resume=args.resume)
     cache_dir = None if args.no_cache else str(
         args.cache_dir.resolve() if args.cache_dir is not None else run_dir / 'base-cache')
     pipeline = Pipeline([
@@ -385,14 +447,17 @@ def main(argv=None):
     from adaptive_search import AdaptiveSearchConfig, run_adaptive_search
     config = AdaptiveSearchConfig(regularization='lambd', prefix='ensemble__',
         max_expansions=args.max_expansions, max_candidates=args.max_candidates,
-        top_k=3, plateau_rounds=2, improvement_tol=0.0, tie_tol=1e-12, refine=args.refine)
+        top_k=3, plateau_rounds=2, improvement_tol=0.0, tie_tol=1e-12, refine=args.refine,
+        bracket_factor=args.bracket_factor, stable_refinement_rounds=args.stable_refinement_rounds)
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
-        jobs=args.jobs, error_policy=args.error_score, config=config,
+        jobs=args.jobs, error_policy=args.error_score, config=config, resume=args.resume,
         settings={'data_path': str(args.data.resolve()), 'digits': args.digits,
                   'cache_dir': cache_dir, 'store_base_estimators': False},
     )
-    if result['model'] is None:
+    if result.get('resumed_completed'):
+        print('This run already completed; saved results were verified and no fits or test scoring were repeated.')
+    elif result['model'] is None:
         print('Adaptive search requires training-only review: ' + ', '.join(result['review']['reasons']))
         print(f"Saved selection: {run_dir / 'selection.json'}; review: {run_dir / 'review.json'}")
         print('Review the saved search limits and unresolved boundaries; the test set was not scored.')
