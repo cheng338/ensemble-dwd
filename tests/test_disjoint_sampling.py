@@ -204,7 +204,9 @@ class DisjointEstimatorTests(unittest.TestCase):
                 model = factory(M=2, theta=.25, sv_selection_ratio=1., gamma=.2, cache_dir=directory)
                 captured = {}
 
-                def capture(cache_dir, key_data, compute):
+                def capture(cache_dir, key_data, compute, *, verify=None):
+                    self.assertTrue(callable(verify))
+                    self.assertTrue(verify())
                     captured.update(key_data)
                     return {}, False, 'captured'
 

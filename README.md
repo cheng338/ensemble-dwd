@@ -1,6 +1,7 @@
 # ensemble-dwd
 
-`ensemble-dwd` implements Chang Cheng's ensemble kernel Distance Weighted
+`ensemble-dwd` is based on Chang Cheng's earlier ensemble DWD scripts
+accompanying his dissertation. It implements ensemble kernel Distance Weighted
 Discrimination for binary and multiclass classification. Use
 `EnsembleKernelDWD` for two classes and
 `OvOClassifier(EnsembleKernelDWD(...))` for multiclass classification.
@@ -11,8 +12,7 @@ It implements the four-stage method in Chapter 5 of Chang Cheng's dissertation,
 *Overcoming the Curses of Dimensionality and Kernelization: Scalable DWD and
 Supervised NMF* (Purdue University, August 2026).
 
-This package was developed from Chang Cheng's original ensemble DWD research
-scripts accompanying his dissertation. It provides a reusable estimator API,
+The package provides a reusable estimator API,
 with subsequent implementation changes documented in the changelog and
 validation notes.
 
