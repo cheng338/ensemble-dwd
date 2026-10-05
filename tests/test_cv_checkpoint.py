@@ -213,7 +213,7 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(checkpoint.CheckpointError), self.session(resume=True) as store:
             store.search(self.grid)
         value = json.loads(original)
-        value['payload']['parameters']['model__offset'] = 99.
+        value['payload']['parameters'] = checkpoint._stable({'model__offset': 99.})
         value['sha256'] = checkpoint._digest(value['payload'])
         path.write_text(json.dumps(value))
         with self.assertRaises(checkpoint.CheckpointError), self.session(resume=True) as store:

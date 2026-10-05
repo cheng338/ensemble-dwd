@@ -298,3 +298,290 @@ OVO experiment, a retained fraction of 0.3. This API deliberately exposes
 `theta` and `sv_selection_ratio` separately. The numerical learner count and
 the broader search grid are software settings; they are not claimed to be
 universally optimal or mandated by the dissertation.
+
+### Work and timing summaries
+
+All three adaptive tuning commands write `work-summary.json` automatically;
+there is no additional option or model evaluation. The summary describes the
+current invocation, with separate original-search stages, optional numerical
+confirmation, final refitting and held-out scoring. Numerical confirmation
+itself remains disabled unless requested. Existing timing fields keep their
+names and meanings.
+
+For each completed CV stage, fold-and-seed evaluations fall into three
+separate groups: newly executed evaluations (including recorded ineligible
+results), newly created equivalent-ratio receipts, and previously existing
+receipts read from checkpoints. An equivalent-ratio receipt read on a later
+invocation belongs to checkpoint replay. Reuse preserves the candidate's
+score; it does not show that model training became faster.
+
+CV base-cache outcomes count only observations from newly executed
+evaluations. Multiclass records count the observed binary pairs. The summary
+distinguishes hits, misses, disabled or bypassed caching, and non-hits with
+an unknown reason. A false cache-hit flag alone does not establish a miss.
+Missing cache metadata is unknown; replayed diagnostics do not count as new
+cache activity. These counts describe the base stage and do not count the
+separate final model fitted on the selected rows. Full-training refitting
+reports its own base-cache observations separately.
+
+Current worker fit and score times are sums of measured worker intervals.
+They are neither CPU time nor elapsed parallel-run time. Timings stored in
+replayed receipts are reported separately; they can describe work from an
+earlier invocation. Alias references to source fit and score timings are not
+added to totals. Do not add overlapping worker, stage and whole-invocation
+timers, or interpret reuse as a measured training speedup. Equivalent-ratio
+reuse timing retains the existing convention of excluding atomic receipt
+publication. Invocation elapsed time starts at entry to the adaptive workflow
+and ends at the named report snapshot. It includes checkpoint verification
+and earlier report writes, but excludes command-line data loading and the
+summary's own publication and final context cleanup. Replay verification is
+not a new fit.
+
+Confirmation has its own work summary. Copies of original-search scores kept
+for comparison do not add original work a second time. Final fitting and
+held-out scoring have separate elapsed intervals rather than being folded
+into CV costs.
+
+The authoritative completion artifact preserves `completion_work_summary`,
+a snapshot taken before that artifact is published. The returned result and
+`work-summary.json` describe the latest invocation, using a later snapshot
+after the ordinary result files have been written. A verified replay of an
+already completed result therefore reports zero new CV, final fitting and
+held-out scoring, while still spending time verifying and restoring records.
+Failure to publish this auxiliary report does not replace a fit outcome or
+mask an exception from the workflow.
+
+An interrupted stage may have work that was not measured completely. The
+summary marks that limitation and treats its completed-stage measurements
+as a lower bound, rather than reconstructing exact cumulative work or time
+across crashes and downtime. A missing stage summary also leaves totals
+incomplete; it is not evidence of zero work. The report changes no solver
+mathematics, sampling, candidate selection or numerical defaults, and does
+not establish a speed improvement or zero reporting overhead.
+
+### Selection-ratio refinement
+
+The initial presets and the default adaptive search keep their five retention
+fractions. Enable `--refine-ratio` in any of the three tuning commands to
+search between nearby fractions after the coefficient search meets its
+existing acceptance requirements. Sampling fraction `theta`, learner count
+`M`, the scoring and row-selection rules, and each estimator's numerical
+controls are unchanged.
+
+The extra search targets complete parameter sets among the best valid results,
+using the existing `top_k` limit (three by default). It proposes local joint
+combinations of arithmetic ratio midpoints and logarithmic coefficient
+midpoints. A new ratio is not crossed with every earlier coefficient choice.
+Previously evaluated candidates remain eligible, and only new complete
+parameter sets use the remaining candidate budget. The initial grid is not
+expanded by this option. If a parent lacks a conditional coefficient neighbor,
+the search first tests a nearby coordinate already explored in the same fixed
+parameter context. If none exists on that side, it can extend that coefficient
+by at most a factor of 10, using the earlier search's outward-step rule. These
+local support checks count toward the ratio rounds and total candidate budget;
+`--max-expansions` controls only the preceding coefficient-search stage.
+
+`--ratio-bounds LOW HIGH` declares the permitted range. It must satisfy
+`0 < LOW < HIGH <= 1` and contain every initial ratio. Without explicit
+bounds, the minimum and maximum initial ratios define the range, `[0.1, 0.3]`
+for the MNIST presets. At least two distinct initial ratios are required.
+For this optional policy, initial ratios and bounds must be ordinary Python
+`int` or `float` values, excluding booleans. The resolved bounds are reported
+and saved. If a parent has no ratio neighbor on a required side, the declared
+endpoint is tested before narrowing that gap.
+Refinement stays inside the bounds; it does not claim to find an optimum
+outside that range.
+
+`--max-ratio-rounds` defaults to three complete rounds. `--ratio-tol` defaults
+to `0.01`, an absolute ratio difference of one percentage point. Acceptance
+requires two completed stable rounds and valid conditional neighbors around
+the selected candidate: coefficient neighbors within the existing factor-two
+limit and ratio neighbors within the configured absolute tolerance. A
+candidate exactly at a declared ratio bound needs support only toward the
+interior on that axis; the review records this range restriction. Stable
+rounds must preserve the winning complete parameter set and score, with valid
+results for every proposed candidate. A changed winner or score restarts the
+stability count. Missing or invalid support does not count as evidence of a
+bracket.
+
+All added parameter sets count toward the same `--max-candidates` total as
+the earlier coefficient search. The controller holds a proposed stage when
+it cannot fit the remaining budget; it does not evaluate part of that stage.
+Unresolved support or exhausted round/candidate limits produce `needs_review`,
+with no final fit or held-out score. This is a bounded search procedure, not
+a guarantee of higher accuracy or of a global optimum. Finer search does not
+increase a learner's iteration budget or establish solver convergence.
+
+`--ratio-bounds`, `--max-ratio-rounds` and `--ratio-tol` require
+`--refine-ratio`. Ratio refinement cannot be combined with `--no-refine` or
+multiclass `--smoke-grid`. The Python helper accepts
+`run_adaptive_search(..., ratio_refinement=RatioRefinementConfig(...))`;
+`RatioRefinementConfig` is available from `examples/adaptive_search.py`, with
+`bounds=None`, `max_rounds=3`, `ratio_tol=0.01`, and `stable_rounds=2` by
+default. Omit `ratio_refinement` to preserve the original workflow. The saved
+policy includes these settings, so changing them requires a fresh run.
+
+Every stage uses the same folds and prescribed CV seeds. Each candidate
+keeps its exact ratio; the estimator's existing `int(n * ratio)` retained-row
+count is unchanged. Optional equivalent-fold reuse still requires the same
+seed and all existing identity and selected-row checks. It preserves each
+candidate label rather than rounding ratios together. The selected candidate
+receives a separate fresh fit on all training rows with the declared final
+seed. Completed fold-seed records can be reused on a verified resume;
+unfinished evaluations restart.
+
+### Numerical-budget confirmation
+
+The binary and multiclass DWD tuning commands offer a separate diagnostic
+through `--confirm-max-iter N`. It is disabled by default. Supply a positive
+integer greater than the original DWD iteration cap, 100 in the commands.
+`--confirm-top-k K` limits the shortlist to `K` candidates, with a default of
+three and a minimum of two; it requires `--confirm-max-iter`. The SVM tuning
+command does not expose this DWD option.
+
+Confirmation starts only after the coefficient search and any requested
+ratio refinement meet their acceptance rules. It freezes the original winner
+and the highest-ranked eligible competitors, up to the shortlist limit, from
+the completed search. At least two eligible candidates are required. Every
+shortlisted candidate is then evaluated at the declared larger cap on the
+same training folds and prescribed sampling seeds. Preprocessing remains
+fold-local. The held-out test set plays no role in this diagnostic.
+
+Only the iteration cap changes. The objective, stopping mode, tolerances,
+backend, subset sampler, row-selection rule and predictions are computed by
+the same estimator. Allowing more updates can change fitted scores and the
+selected training rows, so mathematical equality between the two budgets is
+not assumed. In particular, an objective-tolerance stop before the original
+cap may leave no additional updates to run. The report retains learner
+stopping diagnostics so this case is distinguished from use of the larger
+budget. Stable CV scores do not establish solver convergence or optimality.
+
+The original and confirmation scores remain separate. Confirmation compares
+the relative ranking and exact score ties among the frozen candidates, matching
+the original candidate-ranking rule. The search's boundary tie tolerance does
+not merge ranking ties. An altered ranking or exact tie requires review before
+any final fit or held-out scoring. An invalid confirmation result or fewer than two eligible
+candidates also produces `needs_review`. Unexpected fit errors continue to
+stop the run. There is no automatic replacement of the original winner by a
+confirmation winner, and this bounded shortlist does not repeat the original
+search or certify its parameter brackets at the larger budget.
+
+When the ranking is unchanged and every confirmation result is valid, final
+fitting uses the original selected parameter set, original solver cap and
+prescribed final seed. The larger cap is confined to the diagnostic. Both
+the default search and ordinary estimator fits remain unchanged when the
+option is omitted.
+
+The shortlist has a separate, explicit cost. With `K` shortlisted candidates,
+`F` folds and `S` CV seeds, confirmation requires `K * F * S` complete ensemble
+fits before reuse. Each binary fit has `M` base learners and one final learner;
+multiclass confirmation repeats that work for every class pair. The original
+`--max-candidates` limit still bounds the search's distinct parameter sets;
+these declared confirmation repetitions are additional work. No runtime or
+accuracy improvement is implied.
+
+Confirmation settings are part of the saved run identity and must remain
+unchanged on resume. `numerical-confirmation.json` preserves the shortlist,
+original and confirmation scores, ranking changes, timing and stopping
+diagnostics, including multiclass pair details. A separate checkpoint context
+under `numerical-confirmation/` stores its completed fold-seed evaluations. Verified completed work can be reused after interruption;
+unfinished fits restart. Original-budget records cannot substitute for
+larger-budget evaluations. Optional equivalent-ratio reuse still requires all
+existing identity and row-equivalence checks within the confirmation context.
+
+The Python example API accepts
+`run_adaptive_search(..., numerical_confirmation=NumericalConfirmationConfig(max_iter=300, top_k=3))`.
+`NumericalConfirmationConfig` is available from `examples/adaptive_search.py`.
+Its `max_iter` is required; `top_k` defaults to three. Omit
+`numerical_confirmation` to retain the workflow without this diagnostic.
+
+### Multiple CV seeds
+
+The tuning examples use one ensemble sampling seed by default. To compare
+candidates over several prescribed draws, pass `--cv-seeds 42 43 44` to any
+of the three commands. The folds stay fixed, and every candidate uses the
+same ordered seed list and numerical budgets. Seeds must be distinct integers
+from 0 through 4294967295. Average the seed accuracies
+within each fold, then average those fold scores for candidate selection.
+Seeds are repetitions of a candidate, not hyperparameters to select. A
+candidate is eligible only when every required seed and fold has a finite
+score. Unexpected failures still stop the run.
+
+`--max-candidates` continues to count parameter sets. With `S` seeds and `F`
+folds, each candidate requires `S * F` ensemble fits before reuse. Seeds
+change the ensemble's sampling, not the folds or the number of base learners.
+For multiclass DWD, each seed evaluates a complete OvO model, and the existing
+pairwise sampling and voting rules remain unchanged. Repeating sampling on
+the same folds does not create independent validation folds; the reported
+fold variation is not a standard error based on `S * F` independent observations.
+
+Each completed fold and seed has its own checkpoint, score and diagnostics.
+Interrupted work resumes at that level; a partial collection cannot enter
+candidate ranking. Equivalent-ratio reuse, when enabled, requires the same
+seed as well as the other existing identity checks. The ordered CV seed list
+and final-refit seed are part of the saved policy. Changing either requires
+a fresh output directory.
+
+After selection, the workflow fits once on all training rows using a
+separately prescribed seed. `--refit-seed` requires `--cv-seeds`; when omitted,
+the final fit retains the estimator's configured seed, 42 in the commands.
+It does not choose the best-performing CV seed or combine the fitted models.
+The effective final seed is recorded before fitting.
+
+The Python example API accepts
+`run_adaptive_search(..., cv_seeds=[42, 43, 44], refit_seed=42)`. It identifies
+the seed parameter from the configured estimator prefix. Direct use of
+`CheckpointedCV` additionally specifies `seed_parameter`, such as
+`'ensemble__random_state'` or `'ovo__estimator__random_state'`. Leave
+`cv_seeds=None` to retain the existing single-seed workflow. With multiple
+seeds, the estimator's configured seed must also be an integer, even when
+an explicit final-refit seed is supplied.
+
+For multiple seeds, candidate fold-fit and score times sum the seed work
+within each fold, then average across folds. Per-seed records preserve their
+individual times, and the stage reports elapsed time separately. These
+quantities differ when work runs in parallel or a completed result is reused.
+
+### Equivalent-fold reuse
+
+All three tuning commands accept `--reuse-equivalent-folds`, disabled by
+default. The example APIs expose the same option as
+`CheckpointedCV(..., reuse_equivalent_folds=True)` and
+`run_adaptive_search(..., reuse_equivalent_folds=True)`. Keep the option
+unchanged when resuming a run.
+
+Two retention ratios can produce the same integer number of selected rows.
+When every other setting and the training fold match, the built-in ensemble
+has the same base fits, deterministic ranking and selected rows. The option
+reuses one completed fold's score and diagnostics for the other ratio. For
+OvO, the retained count must match separately in every original class pair.
+Equal accuracies alone never establish equivalence.
+
+Reuse is restricted to supported built-in ensembles with fixed integer seeds
+and known deterministic preprocessing. Supported Python parameter types are
+required throughout the estimator, including nested kernel and preprocessing
+options. NumPy scalars or arrays and custom estimators or transformers do not
+gain equivalent-fold reuse; they use ordinary fitting when their exact
+checkpoint identity is supported. Custom scalar/container subclasses and
+object, structured, or metadata-bearing array parameters are rejected by the
+checkpoint helper. Schema 2 distinguishes parameter types, and earlier
+checkpoint formats require a new run directory.
+Invalid options still fail validation. A failed or ineligible fold does not
+supply a reusable result. Existing completed-fold identity and integrity checks
+remain required.
+
+Each candidate retains its parameter label, score, rank and place in the
+candidate budget. Reuse records identify the original completed source and
+distinguish its fitting and scoring times from the work performed for reuse.
+`reuse_seconds` includes verification before publishing the record; the atomic
+write is included in the enclosing stage's wall time.
+Interrupted searches retain committed sources; unfinished work is evaluated
+on resume. Full-training fitting remains separate: two ratios with equal CV
+fold counts can retain different numbers of rows on the complete training
+set, so the selected original ratio is always fitted there.
+
+This option complements the base-stage cache, which already reuses base
+models across ratios. It can avoid the remaining duplicate final fold fits
+and validation predictions when supplied ratios are sufficiently close.
+The default MNIST grids keep five well-spaced retention fractions, so this
+option does not imply a speed improvement for their usual training sizes.

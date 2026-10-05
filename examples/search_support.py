@@ -39,23 +39,49 @@ def json_safe(value):
     return {'type': type(value).__module__ + '.' + type(value).__qualname__}
 
 
+def _io_path(path):
+    """Use extended Windows paths for I/O without changing public path spelling."""
+    path = Path(path)
+    if os.name != 'nt':
+        return path
+    absolute = os.path.abspath(os.fspath(path))
+    if not absolute.startswith('\\\\?\\'):
+        absolute = ('\\\\?\\UNC\\' + absolute[2:] if absolute.startswith('\\\\')
+                    else '\\\\?\\' + absolute)
+    return Path(absolute)
+
+
+def _resolved_public_path(path):
+    """Resolve through a long-path-safe name, retaining ordinary caller spelling."""
+    requested = Path(path)
+    resolved = _io_path(requested).resolve()
+    if os.name == 'nt' and not str(requested).startswith('\\\\?\\'):
+        value = str(resolved)
+        if value.startswith('\\\\?\\UNC\\'):
+            return Path('\\\\' + value[8:])
+        if value.startswith('\\\\?\\'):
+            return Path(value[4:])
+    return resolved
+
+
 def write_json_atomic(path, payload, *, replace=False):
     """Write within an existing directory, replacing only when requested."""
     path = Path(path)
-    if path.exists() and not replace:
+    io_path = _io_path(path)
+    if io_path.exists() and not replace:
         raise FileExistsError(path)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=io_path.parent,
                                          prefix='.record-', suffix='.tmp', delete=False) as stream:
-            temporary = Path(stream.name)
+            temporary = _io_path(stream.name)
             json.dump(json_safe(payload), stream, indent=2, allow_nan=False, sort_keys=True)
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
-        if path.exists() and not replace:
+        if io_path.exists() and not replace:
             raise FileExistsError(path)
-        os.replace(temporary, path)
+        os.replace(temporary, io_path)
         temporary = None
     finally:
         if temporary is not None:
@@ -89,16 +115,18 @@ def new_run_directory(path=None, *, resume=False):
     if resume:
         if path is None:
             raise ValueError('Resuming requires an explicit run directory.')
-        path = Path(path).resolve()
-        if not path.is_dir() or not (path / 'failures').is_dir():
+        path = _resolved_public_path(path)
+        io_path = _io_path(path)
+        if not io_path.is_dir() or not (io_path / 'failures').is_dir():
             raise ValueError('The resume directory must contain an existing search run.')
         return path
     if path is None:
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
         path = Path('results') / ('mnist-' + stamp + '-' + uuid.uuid4().hex[:8])
-    path = Path(path).resolve()
-    path.mkdir(parents=True, exist_ok=False)
-    (path / 'failures').mkdir()
+    path = _resolved_public_path(path)
+    io_path = _io_path(path)
+    io_path.mkdir(parents=True, exist_ok=False)
+    (io_path / 'failures').mkdir()
     return path
 
 

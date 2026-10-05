@@ -38,7 +38,8 @@ from ensemble_dwd import EnsembleKernelDWD, mnist_param_grid
 EXAMPLES_DIRECTORY = str(Path(__file__).resolve().parent)
 if EXAMPLES_DIRECTORY not in sys.path:
     sys.path.insert(0, EXAMPLES_DIRECTORY)
-from search_support import (CandidateEvaluator, bare_parameters, data_fingerprint,
+from search_support import (_io_path, _resolved_public_path, CandidateEvaluator,
+                             bare_parameters, data_fingerprint,
                             eligible_accuracy, exception_details, new_run_directory,
                             parameter_snapshot, prefix_grid, record_failure,
                             write_failure_json, write_json_atomic)
@@ -93,6 +94,121 @@ def positive_int(value):
     if number < 1:
         raise argparse.ArgumentTypeError('Expected a positive integer.')
     return number
+
+
+def seed_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError('Expected an integer seed between 0 and 4294967295.') from exc
+    if not 0 <= number <= 2**32 - 1:
+        raise argparse.ArgumentTypeError('Expected an integer seed between 0 and 4294967295.')
+    return number
+
+
+def add_seed_arguments(parser):
+    parser.add_argument('--cv-seeds', type=seed_int, nargs='+',
+                        help='Optional distinct sampling seeds shared by every candidate; average seeds within each fixed fold. Default: one seed, 42.')
+    parser.add_argument('--refit-seed', type=seed_int,
+                        help='Seed for the separate full-training refit; requires --cv-seeds. Default: 42.')
+
+
+def seed_search_options(parser, args):
+    from cv_checkpoint import validate_cv_seeds
+    try:
+        seeds = validate_cv_seeds(args.cv_seeds)
+    except ValueError as error:
+        parser.error(str(error))
+    if seeds is None:
+        if args.refit_seed is not None:
+            parser.error('--refit-seed requires --cv-seeds.')
+        return {}
+    return {'cv_seeds': seeds, 'refit_seed': 42 if args.refit_seed is None else args.refit_seed}
+
+
+def report_seed_options(options):
+    if options:
+        print(f"Sampling seeds: {list(options['cv_seeds'])}; average seeds within each fold, then folds. "
+              f"Separate final-refit seed: {options['refit_seed']}.")
+        print('Candidate budgets count parameter sets; CV fits also multiply by the number of seeds. '
+              'Every requested fold and seed must be valid; seeds are never selected by validation accuracy.')
+
+
+def add_ratio_arguments(parser):
+    parser.add_argument('--refine-ratio', action='store_true',
+                        help='After coefficient review, refine selection ratios in bounded joint local rounds; disabled by default.')
+    parser.add_argument('--ratio-bounds', type=float, nargs=2, metavar=('LOW', 'HIGH'),
+                        help='Declared ratio search bounds in (0, 1], containing the initial grid; requires --refine-ratio. Default: initial ratio range.')
+    parser.add_argument('--max-ratio-rounds', type=positive_int,
+                        help='Maximum completed ratio refinement rounds; requires --refine-ratio. Default: 3.')
+    parser.add_argument('--ratio-tol', type=float,
+                        help='Target absolute gap to valid ratio neighbors; requires --refine-ratio. Default: 0.01 (one percentage point).')
+
+
+def ratio_search_options(parser, args, grid, *, prefix='ensemble__', regularization='lambd', smoke=False):
+    modified = any(value is not None for value in (args.ratio_bounds, args.max_ratio_rounds, args.ratio_tol))
+    if not args.refine_ratio:
+        if modified:
+            parser.error('Ratio controls require --refine-ratio.')
+        return {}
+    if not args.refine or smoke:
+        parser.error('--refine-ratio requires coefficient refinement and is incompatible with --no-refine or --smoke-grid.')
+    from adaptive_search import AdaptiveSearchConfig
+    from ratio_refinement import RatioRefinementConfig, validate_ratio_grid
+    try:
+        policy = RatioRefinementConfig(
+            bounds=None if args.ratio_bounds is None else tuple(args.ratio_bounds),
+            max_rounds=3 if args.max_ratio_rounds is None else args.max_ratio_rounds,
+            ratio_tol=.01 if args.ratio_tol is None else args.ratio_tol)
+        coefficient_config = AdaptiveSearchConfig(prefix=prefix, regularization=regularization)
+        bounds = validate_ratio_grid(grid, coefficient_config, policy)
+    except (TypeError, ValueError) as error:
+        parser.error(str(error))
+    print(f'Optional ratio refinement: bounds {bounds[0]:g} to {bounds[1]:g}; '
+          f'at most {policy.max_rounds} completed local rounds; absolute ratio gap {policy.ratio_tol:g}.')
+    print('Targeted joint neighborhoods share the total candidate budget and fixed folds/seeds. '
+          'Unresolved follow-up work holds final fitting; local stopping does not establish a global optimum.')
+    return {'ratio_refinement': policy}
+
+
+def add_confirmation_arguments(parser):
+    parser.add_argument('--confirm-max-iter', type=positive_int,
+                        help='Optional DWD iteration cap for a separate shortlist confirmation; must exceed the original cap. Disabled by default.')
+    parser.add_argument('--confirm-top-k', type=positive_int,
+                        help='Maximum ranked candidates in the confirmation shortlist, including the original winner; minimum 2, default 3. Requires --confirm-max-iter.')
+
+
+def confirmation_search_options(parser, args):
+    if args.confirm_max_iter is None:
+        if args.confirm_top_k is not None:
+            parser.error('--confirm-top-k requires --confirm-max-iter.')
+        return {}
+    from numerical_confirmation import NumericalConfirmationConfig
+    try:
+        confirmation = NumericalConfirmationConfig(
+            max_iter=args.confirm_max_iter,
+            top_k=3 if args.confirm_top_k is None else args.confirm_top_k)
+        baseline = EnsembleKernelDWD().max_iter
+        if confirmation.max_iter <= baseline:
+            raise ValueError(f'--confirm-max-iter must exceed the original DWD cap ({baseline}).')
+    except (TypeError, ValueError) as error:
+        parser.error(str(error))
+    return {'numerical_confirmation': confirmation}
+
+
+def report_confirmation_options(options, *, folds, seed_count, pairs=1):
+    if not options:
+        return
+    confirmation = options['numerical_confirmation']
+    fits = confirmation.top_k * folds * seed_count
+    kind = 'ensemble' if pairs == 1 else 'OVO'
+    print(f'Optional numerical confirmation: at most {confirmation.top_k} ranked candidates '
+          f'at max_iter={confirmation.max_iter}; up to {fits} additional {kind} CV fits '
+          f'and {fits * pairs * 6} DWD fits before reuse.')
+    print('Confirmation has a separate evaluation budget and checkpoints, using the same folds and seeds. '
+          'Rank or tie changes hold final fitting; stable ranking retains the original selected parameters and iteration cap.')
+    print('Tolerances and stopping rules are unchanged. A larger cap may leave objective-tolerance exits unchanged; '
+          'stable scores do not establish convergence.')
 
 
 def fully_valid_candidate_mask(cv_results):
@@ -213,8 +329,8 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     and SystemExit preserve completed records, mark the run interrupted and
     propagate; this legacy helper does not support resuming the run.
     """
-    run_dir = Path(run_dir).resolve()
-    failure_dir = run_dir / 'failures'
+    run_dir = _resolved_public_path(run_dir)
+    failure_dir = _io_path(run_dir / 'failures')
     if not failure_dir.is_dir():
         raise ValueError('Create a fresh run directory with new_run_directory first.')
     jobs = positive_int(jobs)
@@ -365,6 +481,9 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_seed_arguments(parser)
+    add_ratio_arguments(parser)
+    add_confirmation_arguments(parser)
     parser.add_argument('--data', type=Path, help='Local NumPy .npz archive.')
     parser.add_argument('--digits', type=int, nargs=2, default=(7, 9), metavar=('FIRST', 'SECOND'))
     parser.add_argument('--jobs', type=positive_int, default=1,
@@ -375,6 +494,8 @@ def main(argv=None):
                         help='Fresh directory for a new run, or the original directory with --resume; defaults to results/mnist-*.')
     parser.add_argument('--resume', action='store_true',
                         help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
+    parser.add_argument('--reuse-equivalent-folds', action='store_true',
+                        help='Reuse completed CV results when selection ratios retain identical rows under the same settings; disabled by default.')
     cache = parser.add_mutually_exclusive_group()
     cache.add_argument('--cache-dir', type=Path,
                        help='Shared base-stage cache; defaults to the new run directory/base-cache.')
@@ -397,6 +518,9 @@ def main(argv=None):
                         help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument('--run', action='store_true', help='Start the requested search stages.')
     args = parser.parse_args(argv)
+    seed_options = seed_search_options(parser, args)
+    confirmation_options = confirmation_search_options(parser, args)
+    seed_count = len(seed_options.get('cv_seeds', (42,)))
     if args.resume and (not args.run or args.output_dir is None):
         parser.error('--resume requires --run and --output-dir.')
     if args.max_expansions < 0:
@@ -409,9 +533,12 @@ def main(argv=None):
         parser.error('MNIST digit labels must be between 0 and 9.')
 
     grid = mnist_param_grid(prefix='ensemble__', broad=args.broad_grid)
+    ratio_options = ratio_search_options(parser, args, grid)
     candidates = len(ParameterGrid(grid))
-    print(f'Coarse: {candidates} candidates, {5*candidates} ensemble CV fits, '
-          f'up to {6*5*candidates} DWD CV fits before cache reuse.')
+    print(f'Coarse: {candidates} candidates, {5*candidates*seed_count} ensemble CV fits, '
+          f'up to {6*5*candidates*seed_count} DWD CV fits before cache reuse.')
+    report_seed_options(seed_options)
+    report_confirmation_options(confirmation_options, folds=5, seed_count=seed_count)
     print(f'Adaptive budget: {args.max_candidates} unique candidates total; '
           f'up to {args.max_expansions} complete expansion rounds; refinement={args.refine}.')
     print('M=5, theta=0.1; retention [0.1, 0.15, 0.2, 0.25, 0.3]. '
@@ -452,8 +579,10 @@ def main(argv=None):
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
         jobs=args.jobs, error_policy=args.error_score, config=config, resume=args.resume,
+        reuse_equivalent_folds=args.reuse_equivalent_folds,
         settings={'data_path': str(args.data.resolve()), 'digits': args.digits,
                   'cache_dir': cache_dir, 'store_base_estimators': False},
+        **seed_options, **ratio_options, **confirmation_options,
     )
     if result.get('resumed_completed'):
         print('This run already completed; saved results were verified and no fits or test scoring were repeated.')

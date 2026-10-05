@@ -89,9 +89,10 @@ Normal search starts at 125 candidates, expands best/tied-best lambda/gamma
 boundaries with all cross-combinations, and repeatedly refines joint
 logarithmic midpoints around the top three distinct coefficient pairs.
 Each outward step is at most a factor of 10 or the smaller adjacent
-logarithmic spacing. Sampling stays at 10%, M at five, and retention on its
-five choices. Defaults remain three expansion rounds and 500 unique
-candidates total, zero improvement tolerance and tie tolerance `1e-12`.
+logarithmic spacing. Sampling stays at 10% and M at five. Retention stays on
+its five choices unless optional ratio refinement is enabled. Defaults remain
+three expansion rounds and 500 unique candidates total, zero improvement
+tolerance and tie tolerance `1e-12`.
 With refinement enabled, the selected candidate needs valid bilateral
 conditional neighbors within a factor of two and two completed stable local
 rounds. Existing-coordinate repairs do not earn stable-round credit.
@@ -105,16 +106,47 @@ and factor-two tightening but still requires valid conditional neighbors.
 `--max-expansions`/`--max-candidates` set explicit limits, and `--refine`
 remains accepted. The DWD objective tolerance and iteration cap do not change.
 
-For ten classes and five folds, the initial 125-candidate stage permits up to
-168,750 DWD learner fits before caching; the 405-candidate stage permits up to
-546,750. Adaptive stages are additional work within the total candidate budget.
+`--refine-ratio` optionally adds bounded local ratio refinement after the
+coefficient search meets its existing acceptance rules. A proposed ratio is
+shared by every class pair in the complete OvO candidate; it is not chosen
+separately for each pair. Defaults are three ratio rounds, two stable rounds,
+an absolute ratio tolerance of `0.01`, and the initial range `[0.1, 0.3]`.
+`--ratio-bounds LOW HIGH`, `--max-ratio-rounds N`, and `--ratio-tol X` require
+this option. All candidates count toward the existing total budget. See
+[selection-ratio refinement](method.md#selection-ratio-refinement) for the
+conditional-neighbor requirements and restricted-range endpoint acceptance.
+The option cannot be combined with `--no-refine` or `--smoke-grid`.
+
+`--confirm-max-iter N` optionally repeats a fixed shortlist of complete OvO
+candidates at a larger DWD iteration cap after search acceptance. It is
+disabled by default; the cap must exceed the original cap, 100 by default.
+`--confirm-top-k K` requires that cap and limits the shortlist to at least two
+candidates, three by default. All pairs share the candidate's declared cap,
+and every repetition uses the original folds and prescribed sampling seeds.
+The shortlist adds work outside `--max-candidates`: up to `K * folds * seeds`
+complete OvO fits, each comprising all class pairs and their base and final
+learners before reuse.
+
+Confirmation records scores and learner diagnostics separately. A changed
+ranking or tie, invalid result, or fewer than two eligible candidates holds
+final fitting and test scoring for review. Otherwise the original winner is
+fitted with its original solver cap and prescribed final seed. A larger cap
+may have no effect when objective-tolerance stopping occurs earlier; stable
+scores do not establish convergence. See
+[numerical-budget confirmation](method.md#numerical-budget-confirmation)
+for shortlist, stopping, checkpoint and resume rules.
+
+With one seed, ten classes and five folds, the initial 125-candidate stage
+permits up to 168,750 DWD learner fits before caching; the 405-candidate stage
+permits up to 546,750. Adaptive stages are additional work within the total
+candidate budget.
 The preview prints these separately. Pair fits stay sequential within each
 outer CV worker. No data are loaded without `--run`.
 
 `--smoke-grid` overrides the adaptive budget to four total candidates, zero
 expansions and no refinement, even if other limit/refinement flags were supplied.
-It cannot be combined with `--broad-grid`. All four smoke candidates lie at
-endpoints of their two-point coefficient axes, so the search remains
+It cannot be combined with `--broad-grid` or `--refine-ratio`. All four smoke
+candidates lie at endpoints of their two-point coefficient axes, so the search remains
 unresolved and does not proceed to final fitting or test scoring. Use it to
 check CV execution and records; it is not a completed accuracy search. Normal
 searches also hold when a complete required stage cannot fit the budget. The
@@ -132,6 +164,29 @@ and returns `model=None`. A crash before that
 receipt is committed can require final fitting and scoring again. See the
 [shared workflow](method.md#validation-and-proposed-search-space) for records,
 ownership checks and failure handling.
+
+`work-summary.json` separates this invocation's new CV evaluations,
+equivalent-ratio reuse and checkpoint replay, optional confirmation, final
+fitting and scoring. Cache observations count reported binary pairs; missing
+metadata is unknown. Worker timing sums, elapsed time and stored receipt
+timings remain distinct. See
+[work and timing summaries](method.md#work-and-timing-summaries) for the
+completed-replay and interruption rules.
+
+`--reuse-equivalent-folds` optionally shares completed CV results between
+retention ratios only when the retained count agrees for every class pair.
+Candidate labels and full-training refitting remain unchanged. See the
+[reuse conditions](method.md#equivalent-fold-reuse).
+
+Use `--cv-seeds 42 43 44` to repeat every complete OvO candidate with the same
+prescribed sampling seeds and fixed folds. Average seed scores within each
+fold, then average folds. Every seed must yield a valid complete multiclass
+result; an ineligible class pair invalidates that candidate. The seed count
+multiplies CV work, while the candidate budget still counts parameter sets.
+Final fitting uses one separate prescribed seed, set by `--refit-seed` or the
+configured default, 42. The default remains a single seed. See
+[multiple CV seeds](method.md#multiple-cv-seeds) for checkpoint, timing and
+resume rules.
 
 ## Resource use and diagnostics
 

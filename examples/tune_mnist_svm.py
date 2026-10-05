@@ -26,7 +26,9 @@ from ensemble_dwd import EnsembleKernelSVM, mnist_svm_param_grid
 EXAMPLES_DIRECTORY = str(Path(__file__).resolve().parent)
 if EXAMPLES_DIRECTORY not in sys.path:
     sys.path.insert(0, EXAMPLES_DIRECTORY)
-from tune_mnist import (load_local_data, positive_int,
+from tune_mnist import (load_local_data, positive_int, add_seed_arguments,
+                        seed_search_options, report_seed_options,
+                        add_ratio_arguments, ratio_search_options,
                         boundary_parameters as _boundary_parameters)
 from search_support import new_run_directory, write_json_atomic
 
@@ -38,6 +40,8 @@ def boundary_parameters(parameters, grid):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_seed_arguments(parser)
+    add_ratio_arguments(parser)
     parser.add_argument("--data", type=Path)
     parser.add_argument("--digits", type=int, nargs=2, default=(7, 9))
     parser.add_argument("--jobs", type=positive_int, default=1,
@@ -48,6 +52,8 @@ def main(argv=None):
                         help="Fresh directory for a new run, or the original directory with --resume.")
     parser.add_argument('--resume', action='store_true',
                         help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
+    parser.add_argument('--reuse-equivalent-folds', action='store_true',
+                        help='Reuse completed CV results when selection ratios retain identical rows under the same settings; disabled by default.')
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument('--no-cache', action='store_true')
     refinement = parser.add_mutually_exclusive_group()
@@ -64,6 +70,8 @@ def main(argv=None):
                         help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
+    seed_options = seed_search_options(parser, args)
+    seed_count = len(seed_options.get('cv_seeds', (42,)))
     if args.resume and (not args.run or args.output_dir is None):
         parser.error('--resume requires --run and --output-dir.')
     if args.max_expansions < 0:
@@ -76,9 +84,11 @@ def main(argv=None):
         parser.error("Choose two distinct MNIST digits between 0 and 9.")
 
     grid = mnist_svm_param_grid("ensemble__", broad=args.broad_grid)
+    ratio_options = ratio_search_options(parser, args, grid, regularization='C')
     candidates = len(ParameterGrid(grid))
-    print(f"Coarse: {candidates} candidates, {5*candidates} ensemble CV fits, "
-          f"up to {6*5*candidates} SVC CV fits before cache reuse.")
+    print(f"Coarse: {candidates} candidates, {5*candidates*seed_count} ensemble CV fits, "
+          f"up to {6*5*candidates*seed_count} SVC CV fits before cache reuse.")
+    report_seed_options(seed_options)
     print("M=5, theta fixed at 0.1, retention over "
           "[0.1, 0.15, 0.2, 0.25, 0.3]. An accepted selection's new final refit adds six SVC fits.")
     print(f"Adaptive budget: {args.max_candidates} unique candidates total; "
@@ -114,9 +124,11 @@ def main(argv=None):
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
         jobs=args.jobs, error_policy=args.error_score, config=config, resume=args.resume,
+        reuse_equivalent_folds=args.reuse_equivalent_folds,
         settings={"classifier": "EnsembleKernelSVM", "selection": "signed_margin",
                   "data_path": str(args.data.resolve()), "digits": args.digits,
                   "cache_dir": cache_dir},
+        **seed_options, **ratio_options,
     )
     if result.get('resumed_completed'):
         print('This run already completed; saved results were verified and no fits or test scoring were repeated.')

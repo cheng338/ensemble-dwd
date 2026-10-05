@@ -59,10 +59,10 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
 
     Chang Cheng's comparator adapts the support-vector-identification idea of
     Mao et al. (2016), Fast Kernel SVM Training via Support Vector Identification.
-    It ranks rows by the signed-margin distance above, rather than the
-    dissertation's unsigned ``abs(abs(consensus) - 1)`` score. Its final model
-    is a hinge-loss SVC with a free intercept. See docs/ensemble-svm.md for
-    the differences from Mao's formulation.
+    Its signed-margin ranking and final hinge-loss SVC with a free intercept
+    match the practical comparator in dissertation Section 5.2.2. Section
+    4.2.1 describes Mao's final squared-loss kernel-coefficient fit, which
+    differs from this SVC refit. See docs/ensemble-svm.md for details.
 
     Parameters
     ----------

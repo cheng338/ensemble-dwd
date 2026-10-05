@@ -34,11 +34,17 @@ an exact reproduction of Mao's algorithm. The paper does not
 specify the retained-fraction grid used here. [Mao et al., *Fast Kernel SVM
 Training via Support Vector Identification*, ICPR 2016, Eqs. 1–9](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
 
-The dissertation's SVM description uses the unsigned score `abs(abs(g) - 1)`. The signed rule is an explicit methodological
-revision for this comparator. Those scores coincide on correctly classified
-observations and can differ on misclassified observations. Existing results
-from the unsigned implementation must retain that label. DWD continues to
-select by `abs(g)`; its method is unchanged.
+The dissertation describes the signed condition `y * g ≈ 1` in
+Section 4.2.1 and uses `abs(y_signed * g - 1)` followed by a new kernel SVM in
+Section 5.2.2. This comparator's selection rule and final SVC fit match that
+practical SVM procedure. Mao's final squared-loss coefficient fit remains a
+different refit, as described above.
+
+Earlier dissertation wording used the unsigned score `abs(abs(g) - 1)`.
+It agrees with the signed score on correctly classified observations and can
+differ on misclassified observations. Historical results obtained with that
+unsigned rule must retain that label. DWD continues to select by `abs(g)`;
+its method is unchanged.
 
 Neither rule is an exact detector of the full-data SVM's support vectors.
 Accuracy and time advantages require measurement. Both ensemble methods
@@ -130,8 +136,8 @@ best/tied-best C/gamma boundaries, including new cross-combinations. Each
 outward step is at most a factor of 10 or the smaller adjacent logarithmic
 spacing. Repeated joint local refinement targets the top three distinct
 C/gamma pairs within the explored bounds. All stages use the same five folds
-and preserve earlier results. Sampling stays at 10%, M at five, and retention
-on its five choices.
+and preserve earlier results. Sampling stays at 10% and M at five. Retention
+stays on its five choices unless optional ratio refinement is enabled.
 
 The initial grid remains 125 candidates, with three expansion rounds and
 500 total unique candidates by default. Refinement requires valid bilateral
@@ -151,6 +157,18 @@ An unresolved search records `needs_review` and preserves CV evidence without
 final fitting or test scoring. These rules do not change SVC's objective
 or its numerical controls.
 
+`--refine-ratio` optionally follows the accepted C/gamma search with bounded
+local retention-ratio refinement. The same complete-candidate, conditional
+neighbor and budget checks apply; the SVM signed-margin selection rule and
+final SVC fit remain unchanged. Defaults are three ratio rounds, two stable
+rounds, an absolute ratio tolerance of `0.01`, and the initial ratio range
+`[0.1, 0.3]`. Use `--ratio-bounds LOW HIGH`, `--max-ratio-rounds N`, and
+`--ratio-tol X` to change those limits. These flags require `--refine-ratio`,
+which is incompatible with `--no-refine`. See
+[selection-ratio refinement](method.md#selection-ratio-refinement) for the
+acceptance and resume rules, including acceptance restricted to the declared
+range when a selected ratio is at an endpoint.
+
 The default invocation previews costs without loading data. `--run` loads a
 local archive while preserving a supplied test split. Final fitting follows
 an accepted saved review, then held-out scoring. Each completed fold fit and
@@ -163,6 +181,27 @@ returns `model=None`. A crash before that receipt is committed can require
 the final fit and scoring again. `--no-cache` disables base-fit reuse, not
 fold checkpoints. See the
 [shared workflow and records](method.md#validation-and-proposed-search-space).
+
+`work-summary.json` separates this invocation's new CV evaluations,
+equivalent-ratio reuse and checkpoint replay, plus final fitting and scoring.
+It reports observed base-cache outcomes separately from missing metadata and
+keeps worker timing sums distinct from elapsed time and stored receipt timings.
+See [work and timing summaries](method.md#work-and-timing-summaries) for the
+completed-replay and interruption rules.
+
+`--reuse-equivalent-folds` optionally shares completed CV results between
+retention ratios that select identical rows. It preserves every candidate
+and the separate full-training refit; see the
+[reuse conditions](method.md#equivalent-fold-reuse).
+
+Use `--cv-seeds 42 43 44` to evaluate each candidate over the same prescribed
+ensemble sampling seeds. Scores are averaged across seeds within each fold,
+then across folds; all required scores must be valid. The single-seed default
+and SVC settings remain unchanged. The seed count multiplies CV work, while
+the candidate budget still counts parameter sets. Final fitting uses one
+separate prescribed seed, set by `--refit-seed` or the configured default, 42.
+See [multiple CV seeds](method.md#multiple-cv-seeds) for checkpoint, timing and
+resume rules.
 
 ## Multiclass use
 

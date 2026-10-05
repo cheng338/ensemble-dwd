@@ -35,7 +35,10 @@ from ensemble_dwd import EnsembleKernelDWD, OvOClassifier, mnist_param_grid
 EXAMPLES_DIRECTORY = str(Path(__file__).resolve().parent)
 if EXAMPLES_DIRECTORY not in sys.path:
     sys.path.insert(0, EXAMPLES_DIRECTORY)
-from tune_mnist import positive_int
+from tune_mnist import (positive_int, add_seed_arguments, seed_search_options,
+                        report_seed_options, add_ratio_arguments, ratio_search_options,
+                        add_confirmation_arguments, confirmation_search_options,
+                        report_confirmation_options)
 from search_support import data_fingerprint, new_run_directory, write_json_atomic
 
 
@@ -175,6 +178,9 @@ def search_grid(smoke=False, broad=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_seed_arguments(parser)
+    add_ratio_arguments(parser)
+    add_confirmation_arguments(parser)
     parser.add_argument('--data', type=Path, help='Local archive with separate training and test arrays.')
     parser.add_argument('--train-size', type=positive_int, default=6000,
                         help='Stratified training subset size; default 6000. Use 60000 for the complete official training set.')
@@ -203,11 +209,16 @@ def main(argv=None):
     parser.add_argument('--output-dir', type=Path, help='Fresh directory for a new run, or the original directory with --resume.')
     parser.add_argument('--resume', action='store_true',
                         help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
+    parser.add_argument('--reuse-equivalent-folds', action='store_true',
+                        help='Reuse completed CV results when selection ratios retain identical rows in every class pair; disabled by default.')
     cache = parser.add_mutually_exclusive_group()
     cache.add_argument('--cache-dir', type=Path, help='Shared trusted base-stage cache directory.')
     cache.add_argument('--no-cache', action='store_true', help='Disable base-stage caching.')
     parser.add_argument('--run', action='store_true', help='Load local data and start the search.')
     args = parser.parse_args(argv)
+    seed_options = seed_search_options(parser, args)
+    confirmation_options = confirmation_search_options(parser, args)
+    seed_count = len(seed_options.get('cv_seeds', (RANDOM_STATE,)))
     if args.resume and (not args.run or args.output_dir is None):
         parser.error('--resume requires --run and --output-dir.')
     if args.max_expansions < 0:
@@ -220,12 +231,17 @@ def main(argv=None):
         parser.error('--folds must be at least 2.')
 
     grid = search_grid(args.smoke_grid, broad=args.broad_grid)
+    ratio_options = ratio_search_options(parser, args, grid, prefix=PARAMETER_PREFIX,
+                                         smoke=args.smoke_grid)
     candidates = len(ParameterGrid(grid))
-    ovo_fits = args.folds * candidates
+    ovo_fits = args.folds * candidates * seed_count
     print(f"{'Validation' if args.smoke_grid else 'Broad' if args.broad_grid else 'Coarse'} grid: {candidates} candidates, "
           f'{args.folds} folds, {ovo_fits:,} OVO CV fits.')
+    seed_factor = '' if not seed_options else f' x {seed_count}'
     print(f'Each OVO fit contains 45 binary ensembles with 5 bases and 1 final DWD: '
-          f'up to {candidates} x {args.folds} x 45 x 6 = {ovo_fits * 45 * 6:,} DWD CV fits.')
+          f'up to {candidates} x {args.folds}{seed_factor} x 45 x 6 = {ovo_fits * 45 * 6:,} DWD CV fits.')
+    report_seed_options(seed_options)
+    report_confirmation_options(confirmation_options, folds=args.folds, seed_count=seed_count, pairs=45)
     print('The selected full-training refit adds 45 x 6 = 270 DWD fits. '
           'Counts are upper bounds before cache reuse; there is no automatic CV refit.')
     print(f'Outer workers: {args.jobs}; pair workers: 1; native threads per worker: 1. '
@@ -290,7 +306,9 @@ def main(argv=None):
         bracket_factor=args.bracket_factor, stable_refinement_rounds=args.stable_refinement_rounds)
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
-        jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings, resume=args.resume)
+        jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings, resume=args.resume,
+        reuse_equivalent_folds=args.reuse_equivalent_folds, **seed_options, **ratio_options,
+        **confirmation_options)
     if result.get('resumed_completed'):
         print('This run already completed; saved results were verified and no fits or test scoring were repeated.')
     elif result['model'] is None:

@@ -1,13 +1,16 @@
 """Bounded, training-only adaptive grids with durable fixed-fold evaluation.
 
-Completed candidates are reused within one run. The estimator and its numerical
-controls are never modified by the search policy. A plateau is a search stopping
-decision, not a certificate of optimal hyperparameters.
+Completed candidates are reused within one run. The original search retains its
+estimator and numerical controls. Optional numerical confirmation uses a separate
+iteration-cap context without replacing original scores or final-fit settings.
+A plateau is a search stopping decision, not a certificate of optimal parameters.
 """
 from dataclasses import asdict, dataclass
 from copy import deepcopy
 import hashlib
 import math
+import uuid
+import warnings
 from numbers import Integral, Real
 from pathlib import Path
 from time import perf_counter
@@ -18,13 +21,19 @@ from sklearn.base import clone
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import ParameterGrid
 from threadpoolctl import threadpool_limits
-from cv_checkpoint import CheckpointedCV
+from cv_checkpoint import (CheckpointedCV, validate_cv_seeds, validate_seed,
+                           validate_seed_parameters)
 
-from search_support import (bare_parameters, data_fingerprint,
+from search_support import (_io_path, _resolved_public_path, bare_parameters, data_fingerprint,
                             exception_details, parameter_snapshot,
                             record_failure, write_failure_json,
                             write_json_atomic)
 from tune_mnist import fully_valid_candidate_mask, ranked_valid_indices
+from ratio_refinement import (RatioRefinementConfig, next_ratio_stage,
+                              validate_ratio_grid)
+from numerical_confirmation import (NumericalConfirmationConfig, validate_confirmation,
+                                    run_numerical_confirmation)
+from work_reporting import (aggregate_work_summaries, summarize_cache_diagnostics)
 
 
 @dataclass(frozen=True)
@@ -559,7 +568,9 @@ def _check_folds(folds, n_rows):
 
 def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         run_dir, *, config=None, jobs=1, error_policy='nan',
-                        settings=None, verbose=0, resume=False):
+                        settings=None, verbose=0, resume=False,
+                        reuse_equivalent_folds=False, cv_seeds=None, refit_seed=None,
+                        ratio_refinement=None, numerical_confirmation=None):
     """Evaluate only new candidates on fixed training folds, then refit once.
 
     The candidate/expansion budgets hold final fitting and held-out scoring if
@@ -567,8 +578,26 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     end outward checks at a tied edge; local bracketing and stability still
     apply. Explicit resume reuses only completed, verified candidate/fold fits
     under the same data, folds, parameters, policy and runtime identity.
+    Optional equivalent-fold reuse also shares completed results between
+    supported selection ratios that retain exactly the same training rows.
+    All candidate labels remain visible, and final fitting uses the selected
+    original ratio on the complete training set.
+    Optional cv_seeds repeat each candidate on the same folds with the specified
+    sampling seeds. Scores are averaged across seeds within each fold, then
+    across folds; every requested fit must be valid. Seeds are not ranked.
+    The final refit uses refit_seed, or the pipeline's original integer seed.
+    These options are recorded in the run identity and cannot change on resume.
+    Optional ratio_refinement adds bounded joint local rounds after the original
+    coefficient policy accepts. It shares the total candidate budget and never
+    widens the initial grid. Unresolved follow-up work holds the final fit.
+    Optional numerical_confirmation repeats a frozen ranked shortlist with a
+    higher iteration cap in a separate CV context. A changed ranking or an
+    invalid confirmation holds final fitting. Original scores, selection and
+    final-fit settings are retained; stability does not certify convergence.
     An interrupted final refit restarts; fitted models are not serialized.
     """
+    invocation_started = perf_counter()
+    invocation_id = uuid.uuid4().hex
     config = AdaptiveSearchConfig() if config is None else config
     if not isinstance(config, AdaptiveSearchConfig):
         raise TypeError('config must be AdaptiveSearchConfig.')
@@ -576,9 +605,38 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
         raise ValueError('jobs must be a positive integer.')
     if error_policy not in ('nan', 'raise'):
         raise ValueError('error_policy must be nan or raise.')
+    if not isinstance(reuse_equivalent_folds, (bool, np.bool_)):
+        raise ValueError('reuse_equivalent_folds must be boolean.')
+    reuse_equivalent_folds = bool(reuse_equivalent_folds)
     grid = _initial_grid(grid, config)
-    run_dir = Path(run_dir).resolve()
-    failure_dir = run_dir / 'failures'
+    ratio_bounds = None
+    if ratio_refinement is not None:
+        if not isinstance(ratio_refinement, RatioRefinementConfig):
+            raise TypeError('ratio_refinement must be RatioRefinementConfig or None.')
+        if not config.refine:
+            raise ValueError('Ratio refinement requires coefficient refinement.')
+        ratio_bounds = validate_ratio_grid(grid, config, ratio_refinement)
+    confirmation_profile = None
+    if numerical_confirmation is not None:
+        if not isinstance(numerical_confirmation, NumericalConfirmationConfig):
+            raise TypeError('numerical_confirmation must be NumericalConfirmationConfig or None.')
+        confirmation_profile = validate_confirmation(
+            pipeline, grid, config, numerical_confirmation)
+    cv_seeds = validate_cv_seeds(cv_seeds)
+    seed_parameter = None
+    if cv_seeds is None:
+        if refit_seed is not None:
+            raise ValueError('refit_seed requires cv_seeds.')
+    else:
+        seed_parameter = config.prefix + 'random_state'
+        parameters = pipeline.get_params(deep=True)
+        if seed_parameter not in parameters:
+            raise ValueError(f'The pipeline must expose {seed_parameter} for multi-seed CV.')
+        original_seed = validate_seed(parameters[seed_parameter], name=seed_parameter)
+        refit_seed = original_seed if refit_seed is None else validate_seed(refit_seed, name='refit_seed')
+        validate_seed_parameters(grid, seed_parameter)
+    run_dir = _resolved_public_path(run_dir)
+    failure_dir = _io_path(run_dir / 'failures')
     if not failure_dir.is_dir():
         raise ValueError('Create a fresh run directory with new_run_directory first.')
     folds = _check_folds(folds, len(y_train))
@@ -595,26 +653,114 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'settings': {'jobs': jobs, 'native_threads': 1, 'scoring': 'accuracy',
                              'error_policy': error_policy, 'parameters': parameter_snapshot(pipeline),
                              'user': {} if settings is None else settings}}
+    if reuse_equivalent_folds:
+        metadata['settings']['reuse_equivalent_folds'] = True
+    if cv_seeds is not None:
+        metadata['settings']['sampling'] = {
+            'cv_seeds': list(cv_seeds), 'seed_parameter': seed_parameter,
+            'refit_seed': refit_seed, 'aggregation': 'mean_seeds_within_fold_then_mean_folds'}
+    if ratio_refinement is not None:
+        metadata['ratio_refinement'] = {
+            'config': asdict(ratio_refinement), 'bounds': list(ratio_bounds),
+            'policy_sha256': hashlib.sha256(Path(__file__).with_name('ratio_refinement.py').read_bytes()).hexdigest()}
+    if numerical_confirmation is not None:
+        metadata['numerical_confirmation'] = {
+            'config': asdict(numerical_confirmation), 'profile': confirmation_profile,
+            'policy_sha256': hashlib.sha256(Path(__file__).with_name('numerical_confirmation.py').read_bytes()).hexdigest()}
     rows, stages, seen = [], [], set()
     searches = {}
     axes = {name: set(grid[name]) for name in config.axes}
     policy_state = {}
+    ratio_policy_state = {}
     phase = 'coarse_cv'
     last_search = None
     review = None
 
+    work_stages = []
+    confirmation_work = {'state': 'not_requested' if numerical_confirmation is None else 'not_started',
+                         'wall_seconds': 0.0, 'work_summary': None}
+    refit_work = {'state': 'not_started', 'attempted': False, 'wall_seconds': 0.0}
+    scoring_work = {'state': 'not_started', 'attempted': False, 'wall_seconds': 0.0}
+    active_work = None
+    historical_work = None
+
+    def work_snapshot(state, *, snapshot_point='before_summary_publication'):
+        now = perf_counter()
+        incomplete = None
+        confirmation = deepcopy(confirmation_work)
+        refit, scoring = deepcopy(refit_work), deepcopy(scoring_work)
+        if active_work is not None:
+            kind = active_work['kind']
+            if kind in ('original_search', 'numerical_confirmation'):
+                incomplete = {key: value for key, value in active_work.items() if key != 'started'}
+                incomplete['elapsed_seconds'] = now - active_work['started']
+                incomplete['unmeasured_evaluations'] = True
+                if kind == 'numerical_confirmation':
+                    confirmation.update(state=state, wall_seconds=incomplete['elapsed_seconds'])
+            elif kind in ('final_refit', 'held_out_scoring'):
+                target = refit if kind == 'final_refit' else scoring
+                target.update(state=state, wall_seconds=now - active_work['started'])
+        known = [stage['work_summary'] for stage in work_stages if stage['work_summary'] is not None]
+        missing = [stage['name'] for stage in work_stages if stage['work_summary'] is None]
+        original = aggregate_work_summaries(known)
+        if confirmation['work_summary'] is not None:
+            known.append(confirmation['work_summary'])
+        elif confirmation['state'] in ('stable', 'needs_review') and confirmation.get('candidate_count', 0) >= 2:
+            missing.append('numerical_confirmation')
+        return {
+            'schema': 1, 'scope': 'current_invocation', 'state': state,
+            'invocation_id': invocation_id, 'elapsed_seconds': now - invocation_started,
+            'snapshot_point': snapshot_point,
+            'elapsed_boundary': 'run_adaptive_search entry through this snapshot; excludes subsequent summary publication and context teardown, and excludes caller data loading',
+            'coverage': 'completed_stages_only' if incomplete is not None or missing else 'complete',
+            'incomplete_phase': incomplete, 'stages_without_work_details': missing,
+            'original_search': {'stages': deepcopy(work_stages), 'work_summary': original},
+            'numerical_confirmation': confirmation, 'cv_totals': aggregate_work_summaries(known),
+            'final_refit': refit, 'held_out_scoring': scoring,
+            'historical_completion_summary_available': historical_work is not None,
+            'interpretation': 'Worker durations are summed elapsed work, not CPU or wall time. Historical receipt times are not current fitting. Incomplete-stage work and cumulative elapsed time across interruptions are not inferred.'}
+
+    def warn_report(error):
+        try:
+            warnings.warn('Could not publish the work summary: ' + str(error), RuntimeWarning)
+        except Exception:
+            pass
+
+    def safe_work_snapshot(state, **kwargs):
+        # Reporting cannot turn a successful fit into a failure or hide the
+        # original exception, including before the authoritative commit.
+        try:
+            return work_snapshot(state, **kwargs)
+        except Exception as error:
+            warn_report(error)
+            return {'schema': 1, 'scope': 'current_invocation', 'state': state,
+                    'reporting_error': str(error), 'coverage': 'unavailable'}
+
+    def publish_work(state):
+        summary = safe_work_snapshot(state)
+        try:
+            write_json_atomic(run_dir / 'work-summary.json', summary, replace=True)
+        except Exception as error:
+            warn_report(error)
+        return summary
+
     def evaluate(label, candidates):
-        nonlocal phase, last_search
+        nonlocal phase, last_search, active_work
         phase = label + '_cv'
         write_json_atomic(run_dir / 'status.json', {
             'state': 'running', 'phase': phase, 'new_candidates': len(candidates),
             'completed_candidates': len(rows)}, replace=True)
         candidate_grid = [{name: [value] for name, value in parameters.items()}
                           for parameters in candidates]
-        print(f'{label}: checking {len(candidates)} candidates on {len(folds)} fixed folds.', flush=True)
+        seed_note = '' if cv_seeds is None else f' and {len(cv_seeds)} sampling seeds'
+        print(f'{label}: checking {len(candidates)} candidates on {len(folds)} fixed folds{seed_note}.', flush=True)
         started = perf_counter()
+        active_work = {'kind': 'original_search', 'name': label, 'started': started}
         search = checkpoint.search(candidate_grid, stage=label)
         elapsed = perf_counter() - started
+        work_stages.append({'name': label, 'wall_seconds': elapsed,
+                            'work_summary': deepcopy(search.checkpoint_summary_.get('work_summary'))})
+        active_work = None
         current = search.cv_results_
         keys = [key for key in _results([], len(folds)) if key != 'params']
         for index, parameters in enumerate(current['params']):
@@ -642,7 +788,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
               f'{elapsed:.3f} seconds.', flush=True)
 
     def execute():
-        nonlocal phase, policy_state, review
+        nonlocal phase, policy_state, ratio_policy_state, review, active_work, historical_work
         with parallel_config(backend='loky', inner_max_num_threads=1), threadpool_limits(limits=1):
             while review is None:
                 results = _results(rows, len(folds))
@@ -652,6 +798,18 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 if review is None:
                     evaluate(proposal['phase'], proposal['candidates'])
 
+            coefficient_review = deepcopy(review)
+            ratio_started = ratio_refinement is not None and review['state'] == 'accepted'
+            if ratio_started:
+                while True:
+                    proposal = next_ratio_stage(_results(rows, len(folds)), grid, config,
+                                                ratio_refinement, ratio_policy_state)
+                    ratio_policy_state = proposal['state']
+                    review = proposal['review']
+                    if review is not None:
+                        break
+                    evaluate(proposal['phase'], proposal['candidates'])
+
             results = _results(rows, len(folds))
             ranked = ranked_valid_indices(results) if rows else []
             index = int(ranked[0]) if len(ranked) else None
@@ -659,6 +817,9 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'candidate_index': index, 'parameters': rows[index]['params'],
                 'source_stage': rows[index]['stage'],
                 'mean_cv_accuracy': rows[index]['mean_test_score']}
+            if selection is not None and cv_seeds is not None:
+                selection.update(cv_seeds=list(cv_seeds), seed_parameter=seed_parameter,
+                                 refit_seed=refit_seed)
             boundary_evidence = (policy_state.get('boundary_issues', [])
                                  + policy_state.get('boundary_plateau_evidence', []))
             review.update({'evaluated_candidates': len(rows),
@@ -670,6 +831,68 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                            'boundary_plateau_evidence': policy_state.get('boundary_plateau_evidence', []),
                            'boundary_directions': sorted({(item['axis'], item['side'])
                                                           for item in boundary_evidence})})
+            ratio_payload = {}
+            if ratio_refinement is not None:
+                review['coefficient_search'] = {'review': coefficient_review,
+                                               'winner_bracket': policy_state.get('winner_bracket'),
+                                               'boundary_plateau_evidence': policy_state.get('boundary_plateau_evidence', [])}
+                review['ratio_refinement'] = {
+                    'config': asdict(ratio_refinement), 'bounds': list(ratio_bounds),
+                    'started': ratio_started, 'completed_rounds': ratio_policy_state.get('rounds', 0),
+                    'stable_rounds': ratio_policy_state.get('stable_rounds', 0)}
+                if ratio_started:
+                    # The earlier coefficient bracket describes its old winner.
+                    # Report the follow-up winner's actual conditional evidence.
+                    review['winner_bracket'] = ratio_policy_state.get('winner_bracket')
+                    review['boundary_directions'] = sorted({(item['axis'], item['side'])
+                        for item in ratio_policy_state.get('boundary_directions', [])})
+                    review['boundary_plateau_evidence'] = []
+                ratio_payload = {'ratio_policy_state': ratio_policy_state}
+                write_json_atomic(run_dir / 'ratio-refinement.json', {
+                    **review['ratio_refinement'], 'state': ratio_policy_state,
+                    'review_state': review['state'], 'stopping_reason': review['stopping_reason']}, replace=resume)
+            confirmation_payload = {}
+            if numerical_confirmation is not None:
+                search_review = deepcopy(review)
+                if review['state'] == 'accepted':
+                    phase = 'numerical_confirmation_cv'
+                    write_json_atomic(run_dir / 'status.json', {
+                        'state': 'running', 'phase': phase,
+                        'max_confirmation_candidates': numerical_confirmation.top_k,
+                        'confirmation_max_iter': numerical_confirmation.max_iter}, replace=True)
+                    active_work = {'kind': 'numerical_confirmation', 'name': 'numerical_confirmation',
+                                   'started': perf_counter()}
+                    confirmation_report = run_numerical_confirmation(
+                        pipeline=checkpoint.estimator, results=results, rows=rows, searches=searches,
+                        folds=folds, X=checkpoint.X, y=checkpoint.y, run_dir=run_dir,
+                        config=numerical_confirmation, search_config=config, jobs=jobs,
+                        error_policy=error_policy, resume=resume, cv_seeds=cv_seeds,
+                        seed_parameter=seed_parameter, reuse_equivalent_folds=reuse_equivalent_folds,
+                        parent_identity=checkpoint.identity_sha256)
+                    confirmation_work.update(
+                        state=confirmation_report['state'], candidate_count=confirmation_report['candidate_count'],
+                        wall_seconds=perf_counter() - active_work['started'],
+                        work_summary=deepcopy(confirmation_report.get('checkpoint_summary', {}).get('work_summary')))
+                    active_work = None
+                    if confirmation_report['state'] not in ('stable', 'needs_review'):
+                        raise ValueError('Unexpected numerical confirmation state.')
+                else:
+                    confirmation_report = {
+                        'state': 'not_started', 'reasons': ['Original parameter search requires review.'],
+                        'stopping_reason': 'original_search_requires_review',
+                        'candidate_count': 0, 'profile': confirmation_profile,
+                        'config': asdict(numerical_confirmation)}
+                if confirmation_report['state'] == 'needs_review':
+                    review.update(state='needs_review', reasons=list(confirmation_report['reasons']),
+                                  stopping_reason='numerical_confirmation: ' + confirmation_report['stopping_reason'])
+                review['search_review'] = search_review
+                review['winner_bracket_context'] = 'original_search_budget'
+                review['numerical_confirmation'] = {
+                    key: confirmation_report[key] for key in
+                    ('state', 'reasons', 'stopping_reason', 'candidate_count', 'profile')}
+                review['numerical_confirmation']['stability_is_convergence_certificate'] = False
+                confirmation_payload = {'numerical_confirmation': confirmation_report}
+                write_json_atomic(run_dir / 'numerical-confirmation.json', confirmation_report, replace=resume)
             write_json_atomic(run_dir / 'selection.json', selection, replace=resume)
             write_json_atomic(run_dir / 'review.json', review, replace=resume)
             result = {'model': None, 'completed': None, 'selection': selection,
@@ -678,16 +901,22 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                       'stages': stages,
                       'coarse_search': searches.get('coarse'),
                       'selected_search': None if selection is None else searches[selection['source_stage']],
-                      'last_search': last_search}
+                      'last_search': last_search, **ratio_payload, **confirmation_payload}
             if review['state'] == 'needs_review':
                 write_json_atomic(run_dir / 'status.json', {**review, 'phase': 'parameter_review'}, replace=True)
                 print('Search held: ' + '; '.join(review['reasons']), flush=True)
+                result['work_summary'] = publish_work('needs_review')
                 return result
             phase = 'final_refit'
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
+            refit_work.update(state='running', attempted=True)
             started = perf_counter()
+            active_work = {'kind': 'final_refit', 'started': started}
+            refit_parameters = dict(selection['parameters'])
+            if cv_seeds is not None:
+                refit_parameters[seed_parameter] = refit_seed
             try:
-                model = clone(checkpoint.estimator).set_params(**selection['parameters'])
+                model = clone(checkpoint.estimator).set_params(**refit_parameters)
                 model.fit(checkpoint.X, checkpoint.y)
             except Exception as error:
                 write_failure_json(run_dir / 'refit.json', {'state': 'failed', **selection,
@@ -696,40 +925,71 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             refit_seconds = perf_counter() - started
             refit = {'state': 'completed', **selection, 'wall_seconds': refit_seconds,
                      'diagnostics': checkpoint.diagnostics(model)}
+            refit_work.update(state='completed', wall_seconds=refit_seconds)
+            try:
+                refit_work['base_cache'] = summarize_cache_diagnostics(refit['diagnostics'])
+            except Exception as error:
+                warn_report(error)
+                refit_work['base_cache'] = {'reporting_error': str(error), 'coverage': 'unavailable'}
+            active_work = None
+            if cv_seeds is not None:
+                refit['refit_parameters'] = refit_parameters
             write_json_atomic(run_dir / 'refit.json', refit, replace=resume)
             review.update(final_refit_performed=True)
             write_json_atomic(run_dir / 'review.json', review, replace=True)
             phase = 'held_out_scoring'
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
             checkpoint.check_runtime()
+            scoring_work.update(state='running', attempted=True)
+            active_work = {'kind': 'held_out_scoring', 'started': perf_counter()}
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
+            scoring_work.update(state='completed', wall_seconds=perf_counter() - active_work['started'])
+            active_work = None
             completed = {**selection, 'refit_seconds': refit_seconds, 'held_out_accuracy': accuracy}
             review.update(final_refit_performed=True, held_out_scored=True)
             # Commit the authoritative completion receipt before public mirrors.
             # A verified completed resume never fits or scores the test set again.
+            completion_work = safe_work_snapshot('completed', snapshot_point='before_completion_receipt')
             checkpoint.write_artifact('completed', {
+                'completion_work_summary': completion_work,
                 'completed': completed, 'review': review, 'selection': selection,
                 'refit': refit, 'cv_results': results, 'policy_state': policy_state,
-                'stages': stages})
+                'stages': stages, **ratio_payload, **confirmation_payload})
             write_json_atomic(run_dir / 'review.json', review, replace=True)
             write_json_atomic(run_dir / 'completed.json', completed, replace=resume)
             write_json_atomic(run_dir / 'status.json', {'state': 'completed', 'phase': phase,
                                                        'stopping_reason': review['stopping_reason']}, replace=True)
-            result.update(model=model, completed=completed, refit=refit)
+            historical_work = completion_work
+            result.update(model=model, completed=completed, refit=refit,
+                          completion_work_summary=completion_work, work_summary=publish_work('completed'))
             return result
     # Acquire exclusive ownership and verify identity before changing run/status
     # files. A mismatch or another live coordinator leaves their state untouched.
     with CheckpointedCV(run_dir, pipeline, X_train, y_train, folds, jobs=jobs,
                         error_policy=error_policy, resume=resume,
-                        provenance=metadata) as checkpoint:
+                        provenance=metadata,
+                        reuse_equivalent_folds=reuse_equivalent_folds,
+                        cv_seeds=cv_seeds, seed_parameter=seed_parameter) as checkpoint:
         saved = checkpoint.read_artifact('completed')
         if saved is not None:
+            historical_work = saved.get('completion_work_summary')
+            refit_work['state'] = scoring_work['state'] = 'not_performed_replay'
+            confirmation_work['state'] = 'not_performed_replay'
             for name in ('selection', 'review', 'refit', 'completed'):
                 write_json_atomic(run_dir / (name + '.json'), saved[name], replace=True)
+            if 'numerical_confirmation' in saved:
+                write_json_atomic(run_dir / 'numerical-confirmation.json',
+                                  saved['numerical_confirmation'], replace=True)
+            if 'ratio_policy_state' in saved:
+                write_json_atomic(run_dir / 'ratio-refinement.json', {
+                    **saved['review']['ratio_refinement'], 'state': saved['ratio_policy_state'],
+                    'review_state': saved['review']['state'],
+                    'stopping_reason': saved['review']['stopping_reason']}, replace=True)
             write_json_atomic(run_dir / 'status.json', {
                 'state': 'completed', 'phase': 'held_out_scoring',
                 'stopping_reason': saved['review']['stopping_reason']}, replace=True)
             return {**saved, 'model': None, 'run_dir': run_dir, 'resumed_completed': True,
+                    'work_summary': publish_work('completed_replay'),
                     'selected_search': None, 'coarse_search': None, 'last_search': None}
         write_json_atomic(run_dir / 'run.json', {
             **metadata, 'checkpoint_identity_sha256': checkpoint.identity_sha256}, replace=resume)
@@ -741,10 +1001,12 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'failure': exception_details(error),
                 'recovery': 'Resume with the same settings and output directory; completed folds are retained.'},
                 replace=True)
+            publish_work('interrupted')
             raise
         except Exception as error:
             record_failure(failure_dir, error, phase=phase, estimator=pipeline,
                            training_data=identity['training'])
             write_failure_json(run_dir / 'status.json', {'state': 'failed', 'phase': phase,
                                                         'failure': exception_details(error)}, replace=True)
+            publish_work('failed')
             raise

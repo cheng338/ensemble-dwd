@@ -160,7 +160,9 @@ class AdaptiveResumeTests(unittest.TestCase):
         self.assertFalse(np.array_equal(changed, original))
         self.assertEqual(self.read('run.json')['data']['held_out'], expected_identity)
         identity = self.read('cv-checkpoints/identity.json')['payload']['identity']
-        self.assertEqual(identity['provenance']['data']['held_out'], expected_identity)
+        provenance = dict(identity['provenance'][1])
+        held_out = dict(provenance['data'][1])['held_out']
+        self.assertEqual(held_out, cv_checkpoint._stable(expected_identity))
 
     def test_heldout_features_are_owned_before_cv_can_mutate_caller_alias(self):
         self.assert_heldout_mutation_isolated('X')

@@ -31,13 +31,13 @@ reserved. A software license has not yet been selected or granted.
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.4 requires DWD 1.3.9 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.9).
+Python 3.11 or later is required. Version 0.3.5 requires DWD 1.3.10 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.10).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.9 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.10 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -54,7 +54,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.4-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.5-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -71,7 +71,7 @@ when installing the dependency. The bounded numerical comparisons used
 conventional Windows CPython 3.12. Their results do not establish numerical
 equivalence on other platforms or free-threaded Python.
 
-The CI workflow uses the same lock and the explicit DWD 1.3.9 release asset
+The CI workflow uses the same lock and the explicit DWD 1.3.10 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
@@ -188,10 +188,10 @@ historical 405-candidate grid: lambda exponents
 from -8 through 0, with the same fractions. Both grids cover the same outer
 range. Neither helper fits models or tunes parameters internally.
 
-With five folds and `M=5`, the default coarse stage has 625 ensemble CV fits,
-or up to 3,750 DWD fits before base-cache reuse. The broad coarse stage has
-2,025 ensemble CV fits, or up to 12,150 DWD fits. These are initial-stage
-budgets, not measured runtimes or the total cost of adaptive search.
+With the default single seed, five folds and `M=5`, the coarse stage has
+625 ensemble CV fits, or up to 3,750 DWD fits before base-cache reuse. The
+broad coarse stage has 2,025 ensemble CV fits, or up to 12,150 DWD fits. These
+are initial-stage budgets, not measured runtimes or the total cost of adaptive search.
 
 `examples/tune_mnist.py` runs bounded adaptive search through the external
 `CheckpointedCV` runner. Every stage uses the same saved stratified five-fold
@@ -201,12 +201,33 @@ proposed; verified completed fold records are reused. Earlier candidates
 remain eligible for selection. Changing only retention can also reuse the
 package's separate base-stage cache.
 
+All three tuning commands optionally accept `--cv-seeds 42 43 44`. Each
+candidate uses the same prescribed seeds and folds. Scores are averaged across
+seeds within each fold, then across folds; seeds are never competing parameter
+choices. Every required seed and fold must have a valid score. This costs one
+CV fit per candidate, fold and seed, while `--max-candidates` still counts
+parameter sets. The default remains one seed, 42.
+
+The selected parameters receive one separate final fit. With `--cv-seeds`,
+`--refit-seed` can prescribe that fit's seed; otherwise it retains the
+estimator's configured seed (42 in the commands). Both seed choices are saved
+and must remain unchanged on resume. See the
+[seed aggregation and records](docs/method.md#multiple-cv-seeds).
+
+The optional `--reuse-equivalent-folds` flag also reuses a completed CV result
+when two retention ratios select exactly the same rows under identical
+settings. Each candidate keeps its original ratio and record. This is useful
+for closely spaced custom ratios; the default MNIST grids may gain nothing.
+The selected ratio still receives a fresh fit on all training rows. See the
+[reuse conditions and records](docs/method.md#equivalent-fold-reuse).
+
 The policy expands lambda/gamma endpoints reached by the best or tied-best
 fully valid candidates, including cross-combinations when both axes expand.
 Each outward step is at most one decade (a factor of 10), or the smaller
 adjacent logarithmic spacing when the explored grid is finer. Sampling stays
-at 10% and retention stays on the five specified fractions. Missing conditional
-neighbors are tested at the same values of the other parameters. An invalid
+at 10%; retention stays on the five specified fractions unless the optional
+ratio refinement below is enabled. Missing conditional neighbors are tested
+at the same values of the other parameters. An invalid
 neighbor does not establish an interior optimum.
 
 Local refinement repeatedly proposes joint logarithmic midpoints around the
@@ -227,6 +248,25 @@ that does not fit the remaining budget is held rather than partly evaluated.
 Unresolved boundaries or exhausted limits produce `review.json` with
 `needs_review`, without final fitting or test scoring.
 
+`--refine-ratio` adds bounded retention-ratio refinement after the coefficient
+search meets its existing acceptance rules. It tests arithmetic ratio
+midpoints together with nearby logarithmic coefficient midpoints around
+promising complete parameter sets. It does not widen the initial grid or
+combine every new ratio with all earlier coefficient choices. Defaults are
+three ratio rounds, two stable rounds, and a maximum conditional ratio gap
+of `0.01` (one percentage point). The initial ratio range supplies the bounds:
+`[0.1, 0.3]` for the MNIST presets.
+
+Use `--ratio-bounds LOW HIGH`, `--max-ratio-rounds N`, and `--ratio-tol X` to
+prescribe the range and limits. Bounds must satisfy `0 < LOW < HIGH <= 1` and
+contain every initial ratio. These settings require `--refine-ratio`, which
+cannot be combined with `--no-refine` or the multiclass `--smoke-grid`.
+All added candidates share the existing total `--max-candidates` budget.
+An unresolved ratio or coefficient bracket holds final fitting and test
+scoring. Acceptance at a ratio endpoint is restricted to the declared range.
+See [selection-ratio refinement](docs/method.md#selection-ratio-refinement)
+for acceptance, checkpoint and reuse rules.
+
 The full-strip plateau rule can waive further checks at a distant tied outer
 edge after two completed nonimproving outward levels, supported by valid
 results on the same conditional slice. It does not waive the selected
@@ -240,6 +280,23 @@ its `IneligibleSubsetError` subclass. Unexpected numerical, input or other
 exceptions are recorded and stop the run; they are not assigned zero accuracy
 or replaced by fallback classifiers. `--error-score raise` stops on
 ineligible candidates too. An all-invalid search stops.
+
+The binary DWD and multiclass DWD commands optionally accept
+`--confirm-max-iter 300` to check a fixed shortlist at a larger iteration cap
+after the search is accepted. The cap must exceed the original cap, 100 by
+default. `--confirm-top-k` sets the shortlist limit, three by default and at
+least two. Confirmation uses the same folds and sampling seeds, with separate
+scores, diagnostics and checkpoints. It is disabled unless a cap is supplied;
+the SVM command does not provide this DWD diagnostic.
+
+A changed ranking or tie, an invalid confirmation result, or fewer than two
+eligible candidates holds final fitting and test scoring for review. An
+unchanged ranking allows the original selected parameters to receive their
+final fit with the original solver cap. Confirmation neither promotes another
+candidate nor certifies convergence. An earlier objective-tolerance stop may
+make the larger cap ineffective. The shortlist adds work outside the search's
+candidate budget; see [numerical-budget confirmation](docs/method.md#numerical-budget-confirmation)
+for cost, records and limits.
 
 The selected parameters and review decision are saved before fitting the
 pipeline on all training rows. The separate test set is scored only after
@@ -269,6 +326,8 @@ python examples/tune_mnist.py
 python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run
 python examples/tune_mnist.py --data mnist.npz --jobs 2 --output-dir results/mnist-search --run --resume
 python examples/tune_mnist.py --broad-grid --max-candidates 1000 --no-refine
+python examples/tune_mnist.py --refine-ratio --max-ratio-rounds 3 --ratio-tol 0.01
+python examples/tune_mnist.py --confirm-max-iter 300 --confirm-top-k 3
 ```
 
 To resume, pass `--resume --run` with the original output directory and the
@@ -278,12 +337,27 @@ or live ownership prevents reuse. Checksummed completed fold records survive
 interruption; unfinished fits restart. This checkpoint is separate from the
 optional base-fit cache, so `--no-cache` does not disable completed-fold reuse.
 
+Checkpoint schema 2 preserves parameter types because numerically equal Python
+and NumPy values can produce different subset sizes. Checkpoints from earlier
+schemas require a new run directory. The checkpoint helper rejects custom
+scalar/container subclasses and object, structured, or metadata-bearing array
+parameters when their identity cannot be verified safely. These restrictions
+apply to checkpointing, not to the estimators' ordinary fit methods.
+
 `run.json` records the identity, settings and search policy. Stage CV files,
 including repeated local and conditional-repair stages, and
 `accumulated-cv.json` preserve search evidence. `selection.json` and
 `review.json` record selection before final fitting; `refit.json`,
 `status.json`, and `failures/failure-*.json` describe later outcomes.
 `completed.json` mirrors the committed held-out result.
+
+The examples also write `work-summary.json` automatically. It separates work
+executed during the current invocation from equivalent-ratio reuse and
+checkpoint replay, with distinct search, optional confirmation, final-fit
+and held-out scoring records. Worker timing sums, stored receipt timings and
+elapsed time are separate quantities. See
+[work and timing summaries](docs/method.md#work-and-timing-summaries), including
+how completed-result replay and interrupted stages are reported.
 
 An interrupted final refit restarts from the beginning; fitted models are not
 serialized. A crash after held-out prediction but before the authoritative
@@ -413,9 +487,10 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.4 release changes](docs/candidate_changes.md) and
-[validation history](VALIDATION.md) for the justification, tests and
-limitations of major implementation changes.
+See the [0.3.5 changelog](CHANGELOG.md#035--2026-10-05) for the current changes.
+The [0.3.4 release notes](docs/candidate_changes.md) and
+[validation history](VALIDATION.md) retain the evidence and limitations
+of earlier implementation changes.
 
 Disjoint sampling applies from version 0.3.2. Earlier validation reports used
 base subsets that could overlap. Those reports retain their original meaning;

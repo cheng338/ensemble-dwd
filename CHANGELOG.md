@@ -3,6 +3,41 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.5 — 2026-10-05
+
+- Pair this release with DWD 1.3.10 and update installation and dependency
+  metadata. Preserve the ensemble method and estimator defaults.
+- Add a current-invocation work summary to the three adaptive tuning examples.
+  Separate executed fold evaluations, equivalent-ratio reuse and checkpoint
+  replay, observed base-cache outcomes, stored receipt timings and elapsed
+  time. Report search, optional numerical confirmation and final fitting
+  separately without changing existing timing fields or fitting behavior.
+- Add optional confirmation at a larger DWD iteration cap to the binary and
+  multiclass tuning examples. Repeat a fixed shortlist on the same folds and
+  seeds, retain separate checkpoints and diagnostics, and hold final fitting
+  if confirmation changes the ranking or is incomplete. Keep the original
+  search and final-fit settings unchanged.
+- Add optional bounded retention-ratio refinement to the three tuning examples.
+  Refine nearby ratios and coefficient combinations in complete rounds, retain
+  the shared candidate budget, and hold final fitting on unresolved searches.
+  Keep the initial grids, default search behavior and estimator methods unchanged.
+- Add optional multi-seed CV to the three tuning examples, averaging seeds
+  within each fold and preserving individual checkpoints and diagnostics.
+  Keep the single-seed default and use one prescribed seed for final fitting.
+- Preserve parameter types in example CV checkpoint identities, including NumPy
+  scalars and list/tuple distinctions, to prevent reuse across different fits.
+  Version the checkpoint format; old run directories require a fresh run.
+- Support long Windows paths for example run directories and public status
+  and result files, including atomic temporary files.
+- Include class-pair labels and each binary estimator's diagnostics in
+  multiclass cross-validation and final-fit records.
+- Add optional reuse of completed example CV folds for retention ratios
+  that select identical rows, preserving candidate records and final refitting.
+- Correct the SVM documentation to reflect the latest dissertation
+  methodology: signed-margin selection followed by a fresh hinge-loss SVC.
+  Distinguish that practical comparator from Mao's squared-loss final fit;
+  the implemented selection rule and refit are unchanged.
+
 ## 0.3.4 — 2026-10-03
 
 - Release the validated development changes as version 0.3.4, paired with
