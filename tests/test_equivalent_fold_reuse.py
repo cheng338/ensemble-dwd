@@ -121,8 +121,9 @@ class FoldEquivalenceProofTests(unittest.TestCase):
     def test_numpy_theta_rounding_cannot_alias_python_float_subset_count(self):
         theta = np.float32(.7)
         plain_theta = float(theta)
-        self.assertEqual(int(10 * theta), 7)
-        self.assertEqual(int(10 * plain_theta), 6)
+        # NumPy scalar promotion differs between supported dependency versions.
+        # The equivalence proof must reject this type even when counts coincide.
+        self.assertNotEqual(checkpoint._stable(theta), checkpoint._stable(plain_theta))
         labels = np.arange(10) % 2
         numpy_model = pipeline().set_params(model__theta=theta, model__sv_selection_ratio=.8)
         plain_model = pipeline().set_params(model__theta=plain_theta, model__sv_selection_ratio=.85)
@@ -322,10 +323,19 @@ class EquivalentFoldReuseTests(unittest.TestCase):
         self.assertEqual(result.checkpoint_summary_['executed_folds'], 4)
         self.assertEqual(result.checkpoint_summary_['equivalent_reused_folds'], 0)
         self.assertTrue(np.isfinite(result.cv_results_['mean_test_score']).all())
-        for candidate in result.checkpoint_summary_['diagnostics']:
-            for fold in candidate:
-                self.assertEqual(fold['subset_sizes'], [7])
-                self.assertEqual(fold['selected_size'], 8)
+        for candidate_index, ratio in enumerate((.8, .85)):
+            for fold_index, (train, validation) in enumerate(folds):
+                direct = clone(model).set_params(model__sv_selection_ratio=ratio).fit(X[train], y[train])
+                direct_model = direct.named_steps['model']
+                self.assertIs(type(direct_model.theta), np.float32)
+                expected_subset_size = max(2, int(len(train) * direct_model.theta))
+                self.assertEqual(len(direct_model.subset_indices_[0]), expected_subset_size)
+                facts = result.checkpoint_summary_['diagnostics'][candidate_index][fold_index]
+                self.assertEqual(facts['subset_sizes'], [expected_subset_size])
+                self.assertEqual(facts['selected_size'], len(direct_model.selected_indices_))
+                self.assertEqual(facts['selected_size'], 8)
+                self.assertEqual(result.cv_results_[f'split{fold_index}_test_score'][candidate_index],
+                                 direct.score(X[validation], y[validation]))
         self.assertTrue(all('equivalent_fold' not in row and 'equivalent_reuse' not in row
                             for _, row in self.receipts()))
 

@@ -170,7 +170,7 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
                           type(theta))
             for fold_index, (train, validation) in enumerate(self.folds):
                 direct = clone(self.model).set_params(theta=theta).fit(self.X[train], self.y[train])
-                expected_subset_size = int(len(train) * theta)
+                expected_subset_size = max(2, int(len(train) * theta))
                 self.assertEqual(len(direct.subset_indices_[0]), expected_subset_size)
                 facts = result.checkpoint_summary_['diagnostics'][candidate_index][fold_index]
                 self.assertEqual(facts['subset_sizes'], [expected_subset_size])
@@ -179,8 +179,10 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
                                  direct.score(self.X[validation], self.y[validation]))
 
     def test_numpy_and_python_theta_fit_separately_in_same_stage(self):
-        self.assertEqual(int(10 * self.numpy_theta), 7)
-        self.assertEqual(int(10 * self.plain_theta), 6)
+        # NumPy scalar promotion can make these counts equal or different.
+        # Parameter types must remain distinct checkpoint identities either way.
+        self.assertNotEqual(checkpoint._stable(self.numpy_theta),
+                            checkpoint._stable(self.plain_theta))
         thetas = [self.numpy_theta, self.plain_theta]
         for reuse in (False, True):
             with self.subTest(equivalent_reuse=reuse):
@@ -237,7 +239,9 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
                 self.assertIs(type(selected), type(theta))
                 fresh = clone(self.model).set_params(theta=selected).fit(self.X, self.y)
                 direct = clone(self.model).set_params(theta=theta).fit(self.X, self.y)
-                self.assertEqual(len(fresh.subset_indices_[0]), 14 if index == 0 else 13)
+                expected_subset_size = max(2, int(len(self.X) * theta))
+                self.assertEqual(len(direct.subset_indices_[0]), expected_subset_size)
+                self.assertEqual(len(fresh.subset_indices_[0]), expected_subset_size)
                 np.testing.assert_array_equal(fresh.subset_indices_[0], direct.subset_indices_[0])
                 np.testing.assert_array_equal(fresh.selected_indices_, direct.selected_indices_)
                 np.testing.assert_array_equal(fresh.decision_function(self.X), direct.decision_function(self.X))

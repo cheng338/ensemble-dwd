@@ -52,7 +52,10 @@ class PublicOutputPathTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(
             prefix='public-output-', dir=support._io_path(tempfile.gettempdir()))
         self.addCleanup(self.temporary.cleanup)
-        self.root = ordinary_path(self.temporary.name)
+        # A temporary root may contain an 8.3 alias such as RUNNER~1. Run
+        # directories resolve those aliases; keep the fixture's expected root
+        # canonical while the write tests still check requested spelling.
+        self.root = ordinary_path(Path(self.temporary.name).resolve())
 
     def read(self, path):
         return json.loads(support._io_path(path).read_text(encoding='utf-8'))
