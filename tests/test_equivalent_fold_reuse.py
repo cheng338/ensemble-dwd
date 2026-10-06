@@ -106,6 +106,8 @@ class FoldEquivalenceProofTests(unittest.TestCase):
                    'model__gamma': .3, 'model__random_state': 43,
                    'model__max_iter': 5, 'model__obj_tol': 1e-7,
                    'model__residual_check_order': 'adaptive',
+                   'model__affine_computation': 'joint',
+                   'model__exact_recovery': 'extended',
                    'scale__with_std': False, 'scale__with_mean': False}
         for name, value in changes.items():
             with self.subTest(parameter=name):

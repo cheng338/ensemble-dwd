@@ -30,6 +30,7 @@ from tune_mnist import (load_local_data, positive_int, add_seed_arguments,
                         seed_search_options, report_seed_options,
                         add_ratio_arguments, ratio_search_options,
                         boundary_parameters as _boundary_parameters)
+from phase_threads import add_final_thread_argument, report_final_threads
 from search_support import new_run_directory, write_json_atomic
 
 
@@ -40,6 +41,7 @@ def boundary_parameters(parameters, grid):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_final_thread_argument(parser)
     add_seed_arguments(parser)
     add_ratio_arguments(parser)
     parser.add_argument("--data", type=Path)
@@ -70,6 +72,7 @@ def main(argv=None):
                         help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
+    report_final_threads(args.final_native_threads)
     seed_options = seed_search_options(parser, args)
     seed_count = len(seed_options.get('cv_seeds', (42,)))
     if args.resume and (not args.run or args.output_dir is None):
@@ -123,6 +126,7 @@ def main(argv=None):
         bracket_factor=args.bracket_factor, stable_refinement_rounds=args.stable_refinement_rounds)
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
+        final_native_threads=args.final_native_threads,
         jobs=args.jobs, error_policy=args.error_score, config=config, resume=args.resume,
         reuse_equivalent_folds=args.reuse_equivalent_folds,
         settings={"classifier": "EnsembleKernelSVM", "selection": "signed_margin",

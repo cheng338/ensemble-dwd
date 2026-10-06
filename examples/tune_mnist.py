@@ -44,6 +44,10 @@ from search_support import (_io_path, _resolved_public_path, CandidateEvaluator,
                             parameter_snapshot, prefix_grid, record_failure,
                             write_failure_json, write_json_atomic)
 
+from phase_threads import (add_final_thread_argument, report_final_threads,
+                           final_fit_threads, final_thread_policy_sha256,
+                           validate_final_native_threads)
+
 
 def select_pair(X, y, first, second):
     X, y = np.asarray(X), np.asarray(y)
@@ -316,7 +320,7 @@ def boundary_parameters(parameters, grid, *, regularization='lambd', prefix='ens
 
 def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         run_dir, *, jobs=1, error_policy='nan', refine=False,
-                        settings=None, verbose=1, selection_review=None):
+                        settings=None, verbose=1, selection_review=None, final_native_threads=1):
     """Checkpoint completed CV stages before fitting the selected bare pipeline.
 
     ``run_dir`` must be newly created by ``new_run_directory``. Fold indices
@@ -328,7 +332,11 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     continue. The default leaves the DWD workflow unchanged. KeyboardInterrupt
     and SystemExit preserve completed records, mark the run interrupted and
     propagate; this legacy helper does not support resuming the run.
+    final_native_threads changes only the selected full-training pipeline
+    fit. CV and held-out prediction remain at one native thread. The default
+    is one; wider budgets require every exposed nested n_jobs to be one.
     """
+    final_native_threads = validate_final_native_threads(final_native_threads, pipeline)
     run_dir = _resolved_public_path(run_dir)
     failure_dir = _io_path(run_dir / 'failures')
     if not failure_dir.is_dir():
@@ -344,14 +352,17 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'held_out': data_fingerprint(X_test, y_test)}
     metadata = {
         'schema_version': 1, 'data': identity,
+        'final_thread_policy_sha256': final_thread_policy_sha256(),
         'folds': [{'train': train, 'validation': test} for train, test in folds],
         'settings': {'jobs': jobs, 'error_policy': error_policy, 'refine': refine,
                      'selection_review_enabled': selection_review is not None,
                      'scoring': 'accuracy', 'native_threads': 1,
+                      'final_native_threads': final_native_threads, 'held_out_native_threads': 1,
                      'parameters': parameter_snapshot(pipeline),
                      'user': {} if settings is None else settings},
     }
     write_json_atomic(run_dir / 'run.json', {**metadata, 'coarse_grid': grid})
+    final_runtime = None
     phase = 'coarse_cv'
     write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase})
 
@@ -436,16 +447,19 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             start = perf_counter()
             try:
                 final_model = clone(pipeline).set_params(**parameters)
-                final_model.fit(X_train, y_train)
+                final_runtime = {}
+                with final_fit_threads(final_native_threads, final_model, final_runtime):
+                    final_model.fit(X_train, y_train)
             except Exception as error:
                 write_failure_json(run_dir / 'refit.json', {
                     'state': 'failed', **selection, 'wall_seconds': perf_counter() - start,
-                    'failure': exception_details(error)})
+                    'failure': exception_details(error), 'native_runtime': final_runtime})
                 raise
             refit_seconds = perf_counter() - start
             # This completion record exists even if later test scoring fails.
             write_json_atomic(run_dir / 'refit.json', {
-                'state': 'completed', **selection, 'wall_seconds': refit_seconds})
+                'state': 'completed', **selection, 'wall_seconds': refit_seconds,
+                'native_runtime': final_runtime})
             if review is not None:
                 review['final_refit_performed'] = True
                 write_json_atomic(run_dir / 'review.json', review, replace=True)
@@ -453,7 +467,7 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
             test_accuracy = float(accuracy_score(y_test, final_model.predict(X_test)))
             completed = {**selection, 'refit_seconds': refit_seconds,
-                         'held_out_accuracy': test_accuracy}
+                         'held_out_accuracy': test_accuracy, 'final_native_threads': final_native_threads}
             write_json_atomic(run_dir / 'completed.json', completed)
             if review is not None:
                 review['held_out_scored'] = True
@@ -462,14 +476,16 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     except (KeyboardInterrupt, SystemExit) as error:
         write_failure_json(run_dir / 'status.json', {
             'state': 'interrupted', 'phase': phase,
-            'exception_type': type(error).__name__, 'resume_supported': False}, replace=True)
+            'exception_type': type(error).__name__, 'resume_supported': False,
+            'final_runtime': final_runtime}, replace=True)
         raise
     except Exception as error:
         record_failure(failure_dir, error, phase=phase,
                        estimator=locals().get('final_model', pipeline),
                        training_data=identity['training'])
         write_failure_json(run_dir / 'status.json', {
-            'state': 'failed', 'phase': phase, 'failure': exception_details(error)}, replace=True)
+            'state': 'failed', 'phase': phase, 'failure': exception_details(error),
+            'final_runtime': final_runtime}, replace=True)
         raise
     print(f"Best CV accuracy: {selection['mean_cv_accuracy']:.4f}")
     print(f'Best parameters: {parameters}')
@@ -481,6 +497,7 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_final_thread_argument(parser)
     add_seed_arguments(parser)
     add_ratio_arguments(parser)
     add_confirmation_arguments(parser)
@@ -518,6 +535,7 @@ def main(argv=None):
                         help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument('--run', action='store_true', help='Start the requested search stages.')
     args = parser.parse_args(argv)
+    report_final_threads(args.final_native_threads)
     seed_options = seed_search_options(parser, args)
     confirmation_options = confirmation_search_options(parser, args)
     seed_count = len(seed_options.get('cv_seeds', (42,)))
@@ -580,6 +598,7 @@ def main(argv=None):
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
         jobs=args.jobs, error_policy=args.error_score, config=config, resume=args.resume,
         reuse_equivalent_folds=args.reuse_equivalent_folds,
+        final_native_threads=args.final_native_threads,
         settings={'data_path': str(args.data.resolve()), 'digits': args.digits,
                   'cache_dir': cache_dir, 'store_base_estimators': False},
         **seed_options, **ratio_options, **confirmation_options,

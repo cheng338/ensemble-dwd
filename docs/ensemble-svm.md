@@ -266,6 +266,15 @@ pair-level parallelism in a standalone multiclass fit. Avoid running both
 levels with unrestricted worker counts. A single LIBSVM SVC does not expose
 an n_jobs setting; additional BLAS threads do not parallelize that solver.
 
+The tuning command shares optional `--final-native-threads N` with the DWD
+examples. It defaults to 1 and applies only to the selected full-training
+pipeline fit; CV workers and held-out prediction retain one native thread.
+`--jobs` separately controls concurrent CV work and defaults to 1. The native
+setting limits each detected BLAS/OpenMP pool, not total CPU use or physical
+core placement, and is not an SVC speedup claim. See
+[native threads by phase](method.md#native-threads-by-phase) for nested-worker,
+runtime identity and resume restrictions.
+
 Changing only the selection ratio can reuse the same base models and margins
 through the process-safe disk cache. The final SVC is always fitted anew.
 Cache identity includes the training rows/labels, sampled rows, SVM settings

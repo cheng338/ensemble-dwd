@@ -34,6 +34,8 @@ from ratio_refinement import (RatioRefinementConfig, next_ratio_stage,
 from numerical_confirmation import (NumericalConfirmationConfig, validate_confirmation,
                                     run_numerical_confirmation)
 from work_reporting import (aggregate_work_summaries, summarize_cache_diagnostics)
+from phase_threads import (final_fit_threads, final_thread_policy_sha256,
+                           validate_final_native_threads)
 
 
 @dataclass(frozen=True)
@@ -570,7 +572,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         run_dir, *, config=None, jobs=1, error_policy='nan',
                         settings=None, verbose=0, resume=False,
                         reuse_equivalent_folds=False, cv_seeds=None, refit_seed=None,
-                        ratio_refinement=None, numerical_confirmation=None):
+                        ratio_refinement=None, numerical_confirmation=None, final_native_threads=1):
     """Evaluate only new candidates on fixed training folds, then refit once.
 
     The candidate/expansion budgets hold final fitting and held-out scoring if
@@ -595,7 +597,12 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     invalid confirmation holds final fitting. Original scores, selection and
     final-fit settings are retained; stability does not certify convergence.
     An interrupted final refit restarts; fitted models are not serialized.
+    final_native_threads changes only that full-training pipeline fit; CV
+    and held-out prediction stay at one native thread. It defaults to one
+    and is frozen on resume. Wider budgets require explicit n_jobs=1 for
+    every exposed nested estimator; runtime observations are recorded.
     """
+    final_native_threads = validate_final_native_threads(final_native_threads, pipeline)
     invocation_started = perf_counter()
     invocation_id = uuid.uuid4().hex
     config = AdaptiveSearchConfig() if config is None else config
@@ -649,8 +656,10 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'held_out': data_fingerprint(X_test, y_test)}
     metadata = {'schema_version': 1, 'policy': asdict(config), 'initial_grid': grid,
                 'workflow_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                'final_thread_policy_sha256': final_thread_policy_sha256(),
                 'data': identity, 'folds': [{'train': t, 'validation': v} for t, v in folds],
                 'settings': {'jobs': jobs, 'native_threads': 1, 'scoring': 'accuracy',
+                             'final_native_threads': final_native_threads, 'held_out_native_threads': 1,
                              'error_policy': error_policy, 'parameters': parameter_snapshot(pipeline),
                              'user': {} if settings is None else settings}}
     if reuse_equivalent_folds:
@@ -672,6 +681,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     axes = {name: set(grid[name]) for name in config.axes}
     policy_state = {}
     ratio_policy_state = {}
+    final_runtime = None
     phase = 'coarse_cv'
     last_search = None
     review = None
@@ -788,7 +798,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
               f'{elapsed:.3f} seconds.', flush=True)
 
     def execute():
-        nonlocal phase, policy_state, ratio_policy_state, review, active_work, historical_work
+        nonlocal phase, policy_state, ratio_policy_state, review, active_work, historical_work, final_runtime
         with parallel_config(backend='loky', inner_max_num_threads=1), threadpool_limits(limits=1):
             while review is None:
                 results = _results(rows, len(folds))
@@ -917,14 +927,18 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 refit_parameters[seed_parameter] = refit_seed
             try:
                 model = clone(checkpoint.estimator).set_params(**refit_parameters)
-                model.fit(checkpoint.X, checkpoint.y)
+                final_runtime = {}
+                with final_fit_threads(final_native_threads, model, final_runtime,
+                                       frozen_runtime=checkpoint.runtime):
+                    model.fit(checkpoint.X, checkpoint.y)
             except Exception as error:
                 write_failure_json(run_dir / 'refit.json', {'state': 'failed', **selection,
-                    'wall_seconds': perf_counter() - started, 'failure': exception_details(error)}, replace=True)
+                    'wall_seconds': perf_counter() - started, 'failure': exception_details(error),
+                    'native_runtime': final_runtime}, replace=True)
                 raise
             refit_seconds = perf_counter() - started
             refit = {'state': 'completed', **selection, 'wall_seconds': refit_seconds,
-                     'diagnostics': checkpoint.diagnostics(model)}
+                     'diagnostics': checkpoint.diagnostics(model), 'native_runtime': final_runtime}
             refit_work.update(state='completed', wall_seconds=refit_seconds)
             try:
                 refit_work['base_cache'] = summarize_cache_diagnostics(refit['diagnostics'])
@@ -945,7 +959,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             scoring_work.update(state='completed', wall_seconds=perf_counter() - active_work['started'])
             active_work = None
-            completed = {**selection, 'refit_seconds': refit_seconds, 'held_out_accuracy': accuracy}
+            completed = {**selection, 'refit_seconds': refit_seconds, 'held_out_accuracy': accuracy,
+                         'final_native_threads': final_native_threads}
             review.update(final_refit_performed=True, held_out_scored=True)
             # Commit the authoritative completion receipt before public mirrors.
             # A verified completed resume never fits or scores the test set again.
@@ -998,7 +1013,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
         except (KeyboardInterrupt, SystemExit) as error:
             write_failure_json(run_dir / 'status.json', {
                 'state': 'interrupted', 'phase': phase,
-                'failure': exception_details(error),
+                'failure': exception_details(error), 'final_runtime': final_runtime,
                 'recovery': 'Resume with the same settings and output directory; completed folds are retained.'},
                 replace=True)
             publish_work('interrupted')

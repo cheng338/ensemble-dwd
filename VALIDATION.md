@@ -1,6 +1,86 @@
 # ensemble-dwd validation
 
-## Current validation
+## Current release and validation history
+
+Version 0.3.5 is paired with DWD 1.3.10. See the
+[0.3.5 changelog](CHANGELOG.md#035--2026-10-05) for its changes.
+DWD's [1.3.10 validation scope and timing follow-up](https://github.com/cheng338/dwd/blob/f6db6e45463554db52385caba8c6c1c1f63fcd8b/docs/validation-1.3.10.md)
+describes the released dependency. Later local DWD fixes listed as Unreleased
+are separate from that published release and its validation evidence.
+
+The records below describe their named releases; they are not new full MNIST
+runs for version 0.3.5.
+
+## Unreleased final-fit native threads
+
+The optional example setting `final_native_threads` defaults to 1 and controls
+the selected full-training pipeline fit. CV and held-out prediction retain
+one native thread; the core estimators and their defaults are unchanged.
+
+The isolated prototype passed 23 focused tests and 99 existing workflow,
+checkpoint, interruption and example tests. Coverage included default behavior,
+scope and caller restoration, failure and interruption, resume and completed
+replay, changed-budget/helper rejection, invalid inputs and all three CLI
+entry points. Actual base-cache checks at 1, 2, 2 and 1 threads produced
+miss, miss, hit and hit, with separate keys and equal state when repeating
+the same budget. A real sequential three-pair OvO fit checked the wider scope
+and restoration. An isolated helper-file replacement verified the live guard.
+
+After adoption, the canonical local source passed the same 23 focused and
+99 existing tests with no failures or skips. Imported DWD and ensemble modules
+came from the canonical source directories; the approved example and test
+files matched the validated candidate, and core estimator source was unchanged.
+
+These were correctness checks conducted alongside other validation work, not
+timing benchmarks or evidence that different thread counts always return the
+same bytes. Native rounding can affect stopping and selected rows. More threads
+can help some fits and slow others; no automatic increase is made. See
+[native threads by phase](docs/method.md#native-threads-by-phase) for scope and
+the distinction between a library-pool limit and total CPU use.
+
+## Unreleased extended exact recovery
+
+The optional `exact_recovery='extended'` profile raises exact-rank and
+integer-bit limits to 32 and 8192 while preserving the standard default,
+entry/operation caps, represented kernel, recovery equations and acceptance
+checks. The dependency's isolated trial recovered three of nine saved difficult
+RBF fits for five and 100 updates; the longer runs reached the iteration cap
+without convergence. The remaining six still reached the rank limit. Separate
+exact witnesses establish that their two stored kernels are indefinite, which
+additional resources cannot turn into exact PSD certificates.
+
+The ensemble integration checks option validation, real base/final and OvO
+forwarding, ordinary-fit parity, cloning, fitted and compact diagnostic
+provenance, old/current serialization, older-dependency compatibility, cache
+separation and equivalent-fold identity. This is local, unreleased recovery
+coverage for small kernels, not evidence of a speed or accuracy improvement.
+See [the method guide](docs/method.md#optional-extended-exact-recovery) for
+the limits and the distinction between successful fitting and convergence.
+
+## Unreleased joint affine scoring
+
+The optional `affine_computation='joint'` route includes the intercept in
+cancellation-aware evaluation of `K @ alpha + b`. Standard scoring remains
+the default. The isolated numerical trial included exact rational checks,
+near-zero fitted decisions, dense and sparse kernel readouts, overflow and
+underflow controls, and explicit validation stopping in DWD. The public
+ensemble integration separately covers base/final propagation, OvO cloning,
+failed-refit cleanup, old serialization, fitted policy retention, dependency
+compatibility, base-cache separation and equivalent-fold identities.
+
+Six paired fresh MNIST ensemble configurations (three digit pairs with
+standard and direct RBF) retained rankings, selected rows, labels and
+accuracies; two had small decision-score differences. This is bounded
+validation on fixed saved data and settings, not a new parameter search.
+The two-row linear fitted example demonstrates a corrected near-zero label.
+Ten paired prediction observations on the difficult saved MNIST ensemble
+showed about 9% additional time; background CPU activity flagged two pairs,
+and the other eight retained that conclusion. Constructed exact ties cost
+substantially more. See [the method guide](docs/method.md#optional-joint-affine-scoring)
+for scope and limitations. The changes are local and unreleased and require
+the updated DWD source dependency.
+
+## 0.3.4 validation scope
 
 Version 0.3.4 is paired with DWD 1.3.9. See the
 [0.3.4 release changes](docs/candidate_changes.md) for its cache identity,

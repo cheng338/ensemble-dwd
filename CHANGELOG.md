@@ -3,6 +3,45 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## Unreleased
+
+- Add optional `final_native_threads=1` to the tuning workflows and
+  `--final-native-threads` to all three tuning commands. A wider positive
+  integer budget applies only to the selected full-training pipeline fit;
+  CV and held-out prediction keep one native thread, and CV `--jobs` still
+  defaults to 1. Record nondefault phase runtime and restoration, distinguish
+  the budget and helper source in checkpoint identity, and require explicit
+  sequential nested estimators. Keep core estimators, search grids and
+  defaults unchanged. Native rounding may change results; this is an optional
+  resource control, not an automatic policy or universal speed improvement.
+- Add opt-in `exact_recovery='extended'` to every DWD base learner and final
+  refit, including through `OvOClassifier`. The extended exact-rank and integer-bit
+  limits are 32 and 8192; the default remains 16 and 4096. Preserve the existing
+  entry/operation caps, original kernel, recovery algebra and acceptance checks.
+  The option covers additional small difficult kernels but is not a speedup
+  or convergence guarantee. Retain fitted provenance and separate cache/CV
+  identities. It requires the updated local DWD source dependency. See
+  [limits and evidence](docs/method.md#optional-extended-exact-recovery).
+- Add opt-in `affine_computation='joint'` to every DWD base learner and final
+  refit, including through `OvOClassifier`. The standard default is unchanged.
+  Joint scoring refines the complete `K @ alpha + b` expression when needed,
+  addressing demonstrated intercept-cancellation rounding. It preserves the
+  objective and ensemble method but may change rounded scores, selected rows
+  and labels, and can cost more. Preserve the fitted policy through parameter
+  changes and serialization, and distinguish it in base-cache and CV identity.
+  The option requires the updated local DWD source dependency; the pinned
+  released DWD 1.3.10 wheel lacks it. See
+  [scope and measured cost](docs/method.md#optional-joint-affine-scoring).
+- Add opt-in `rbf_computation='direct'` and forward it to every DWD base
+  learner and final refit, including through `OvOClassifier`. Keep
+  `'standard'` as the default and identify the option in reusable base-stage
+  and CV checkpoints. Direct computation requires the updated local DWD
+  dependency; released DWD 1.3.10 does not expose the option. It addresses
+  demonstrated RBF numerical inconsistencies at additional computational cost.
+  Sampling, averaging raw scores, ranking by absolute consensus score and
+  final fitting are unchanged, although corrected scores can change selected
+  rows and predictions. See the [scope and costs](docs/method.md#optional-direct-rbf-computation).
+
 ## 0.3.5 — 2026-10-05
 
 - Pair this release with DWD 1.3.10 and update installation and dependency

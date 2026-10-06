@@ -127,7 +127,7 @@ def _base_diagnostics(model):
     names = ("n_iter_", "returned_iteration_", "converged_", "criterion_reached_",
              "termination_reason_", "backend_", "optimality_met_",
              "objective_tolerance_met_", "gradient_inf_norm_", "rkhs_gradient_norm_",
-             "dual_gap_", "dual_equality_residual_")
+             "dual_gap_", "dual_equality_residual_", "exact_recovery_")
     result = {}
     for name in names:
         if hasattr(model, name):
@@ -170,6 +170,22 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         or 1 for constant data; 'auto' means 1 / n_features. Resolve once
         from the current fit's input, before sampling. For RBF the kernel is
         exp(-gamma * squared_distance). Ignored by kernels without gamma.
+    rbf_computation : {'standard', 'direct'}, default='standard'
+        DWD RBF arithmetic policy, forwarded to every base and final learner.
+        Direct requires named RBF with no extra kernel_kws beyond top-level gamma.
+        It is opt-in, may change numerical scores and retained observations,
+        and may cost more. Sampling, selection and final-refit rules are unchanged.
+    affine_computation : {'standard', 'joint'}, default='standard'
+        Decision-score arithmetic, forwarded to every base and final learner.
+        Joint includes the intercept in cancellation-aware summation of
+        K @ alpha + b. It can change rounded scores, selected rows and labels,
+        and can be expensive for many uncertain or exactly zero scores.
+    exact_recovery : {'standard', 'extended'}, default='standard'
+        Budget for bounded exact-rank recovery in every DWD base and final fit.
+        Extended raises the certificate rank and integer-bit limits to 32 and
+        8192, retaining the 65536-entry and 1000000-operation limits. It can
+        cover additional small difficult kernels but does not guarantee
+        convergence or make an indefinite kernel positive semidefinite.
     kernel_kws : dict or None, default=None
         Other kernel keywords, such as degree and coef0. Set gamma using the
         top-level parameter, not this dictionary, for built-in kernels.
@@ -229,6 +245,11 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         Mean raw base decision scores on the current training data.
     gamma_ : float or None
         Resolved shared coefficient, or None for kernels without gamma.
+    affine_computation_ : {'standard', 'joint'}
+        Decision-score policy used by the fitted base and final learners.
+        Changing the constructor parameter takes effect on the next fit.
+    exact_recovery_ : {'standard', 'extended'}
+        Recovery budget requested for the completed ensemble fit.
     n_iter_, converged_ : ndarray of shape (M + 1,)
         Per-learner update counts and checked convergence flags, final model last.
     cache_hit_ : bool
@@ -252,12 +273,18 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     Base fits run sequentially; parallelize outer CV fits according to memory.
     """
 
+    # Old serialized estimators retain the standard DWD policy.
+    rbf_computation = "standard"
+    affine_computation = "standard"
+    exact_recovery = "standard"
+
     def __init__(self, M=5, theta=0.1, sv_selection_ratio=0.3, lambd=1e-6,
                  q=1.0, kernel="rbf", gamma="scale", kernel_kws=None,
                  max_iter=100, obj_tol=1e-5, stopping="objective", tol=1e-6,
                  acceleration=None, random_state=42, prediction_batch_size=1024,
                  cache_dir=None, store_base_estimators=True, backend="auto",
-                 residual_check_order="refinement_first"):
+                 residual_check_order="refinement_first", rbf_computation="standard",
+                 affine_computation="standard", exact_recovery="standard"):
         self.M = M
         self.theta = theta
         self.sv_selection_ratio = sv_selection_ratio
@@ -277,6 +304,9 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         self.store_base_estimators = store_base_estimators
         self.backend = backend
         self.residual_check_order = residual_check_order
+        self.rbf_computation = rbf_computation
+        self.affine_computation = affine_computation
+        self.exact_recovery = exact_recovery
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -293,6 +323,18 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 delattr(self, name)
 
     def _validate_options(self):
+        if not isinstance(self.exact_recovery, str) or self.exact_recovery not in (
+                "standard", "extended"):
+            raise ValueError("exact_recovery must be 'standard' or 'extended'.")
+        if not isinstance(self.affine_computation, str) or self.affine_computation not in (
+                "standard", "joint"):
+            raise ValueError("affine_computation must be 'standard' or 'joint'.")
+        if not isinstance(self.rbf_computation, str) or self.rbf_computation not in (
+                "standard", "direct"):
+            raise ValueError("rbf_computation must be 'standard' or 'direct'.")
+        if self.rbf_computation == "direct" and (
+                not isinstance(self.kernel, str) or self.kernel != "rbf"):
+            raise ValueError("rbf_computation='direct' requires the named RBF kernel.")
         _positive_integer(self.M, "M")
         _positive_integer(self.max_iter, "max_iter")
         _fraction(self.theta, "theta")
@@ -362,6 +404,14 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         return gamma, kws
 
     def _make_estimator(self, kernel_kws):
+        # Avoid adding a dependency keyword to the unchanged standard route.
+        numerical_options = {}
+        if self.rbf_computation == "direct":
+            numerical_options["rbf_computation"] = "direct"
+        if self.affine_computation == "joint":
+            numerical_options["affine_computation"] = "joint"
+        if self.exact_recovery == "extended":
+            numerical_options["exact_recovery"] = "extended"
         try:
             return KernGDWD(
                 lambd=self.lambd, q=self.q, kernel=self.kernel,
@@ -370,8 +420,13 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 acceleration=self.acceleration, prediction_batch_size=self.prediction_batch_size,
                 implementation="optimized", solver_mode="schur", backend=self.backend,
                 initialization="zero", random_state=0,
-                residual_check_order=self.residual_check_order)
+                residual_check_order=self.residual_check_order, **numerical_options)
         except TypeError as error:
+            if numerical_options:
+                raise ImportError(
+                    "The requested numerical computation options require the updated "
+                    "cheng338/dwd source dependency; the pinned release wheel does "
+                    "not expose these options.") from error
             raise ImportError(
                 "EnsembleKernelDWD requires the optimized cheng338/dwd dependency. "
                 "Install the dependency pinned in this package's metadata.") from error
@@ -464,6 +519,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
             raise ValueError("The final DWD must use the same ordered binary labels.")
         self.classes_ = classes
         self.gamma_ = gamma
+        self.affine_computation_ = self.affine_computation
+        self.exact_recovery_ = self.exact_recovery
         self.kernel_kws_ = kernel_kws
         self.subset_indices_ = subsets
         self.selected_indices_ = selected

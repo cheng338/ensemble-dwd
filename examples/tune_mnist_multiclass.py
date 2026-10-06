@@ -39,6 +39,7 @@ from tune_mnist import (positive_int, add_seed_arguments, seed_search_options,
                         report_seed_options, add_ratio_arguments, ratio_search_options,
                         add_confirmation_arguments, confirmation_search_options,
                         report_confirmation_options)
+from phase_threads import add_final_thread_argument, report_final_threads
 from search_support import data_fingerprint, new_run_directory, write_json_atomic
 
 
@@ -178,6 +179,7 @@ def search_grid(smoke=False, broad=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_final_thread_argument(parser)
     add_seed_arguments(parser)
     add_ratio_arguments(parser)
     add_confirmation_arguments(parser)
@@ -216,6 +218,7 @@ def main(argv=None):
     cache.add_argument('--no-cache', action='store_true', help='Disable base-stage caching.')
     parser.add_argument('--run', action='store_true', help='Load local data and start the search.')
     args = parser.parse_args(argv)
+    report_final_threads(args.final_native_threads)
     seed_options = seed_search_options(parser, args)
     confirmation_options = confirmation_search_options(parser, args)
     seed_count = len(seed_options.get('cv_seeds', (RANDOM_STATE,)))
@@ -306,6 +309,7 @@ def main(argv=None):
         bracket_factor=args.bracket_factor, stable_refinement_rounds=args.stable_refinement_rounds)
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
+        final_native_threads=args.final_native_threads,
         jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings, resume=args.resume,
         reuse_equivalent_folds=args.reuse_equivalent_folds, **seed_options, **ratio_options,
         **confirmation_options)

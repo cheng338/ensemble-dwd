@@ -75,6 +75,16 @@ The CI workflow uses the same lock and the explicit DWD 1.3.10 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
+The release-wheel commands above install the standard numerical policies.
+The unreleased `rbf_computation='direct'`, `affine_computation='joint'` and
+`exact_recovery='extended'` options require both updated local source
+checkouts: this package and DWD.
+Published DWD 1.3.10 lacks these constructor parameters, so installing its
+locked release wheel does not enable them. See
+[direct RBF computation](docs/method.md#optional-direct-rbf-computation),
+[joint affine scoring](docs/method.md#optional-joint-affine-scoring) and
+[extended exact recovery](docs/method.md#optional-extended-exact-recovery) before use.
+
 # Basic use
 
 This example demonstrates binary DWD. See [Multiclass use](#multiclass-use)
@@ -116,6 +126,9 @@ DWD ensemble inside `OvOClassifier`.
 | `lambd` | `1e-6` | Shared package DWD regularization parameter. |
 | `q` | `1.0` | Ordinary DWD loss exponent. |
 | `kernel` | `'rbf'` | Kernel used by every learner. |
+| `rbf_computation` | `'standard'` | RBF arithmetic; opt-in `'direct'` uses coordinate differences. |
+| `affine_computation` | `'standard'` | Decision-score arithmetic; opt-in `'joint'` includes the intercept in cancellation-aware summation. |
+| `exact_recovery` | `'standard'` | Exact-recovery budget; opt-in `'extended'` permits rank 32 and 8192-bit arithmetic for eligible small kernels. |
 | `gamma` | `'scale'` | Resolved once per binary fit and shared by its base and final learners. |
 | `max_iter`, `obj_tol` | `100`, `1e-5` | Default objective-change stopping controls. |
 | `stopping`, `tol` | `'objective'`, `1e-6` | Stopping policy and optional optimality tolerance. |
@@ -142,6 +155,30 @@ when changing this choice. See [Numerical controls](docs/method.md#numerical-con
 These are starting settings, not universal optima. `theta` and
 `sv_selection_ratio` have separate roles. The method uses the arithmetic mean
 of raw decision values, without normalizing individual learners' scores.
+
+To address sensitive RBF distance calculations explicitly, use
+`EnsembleKernelDWD(rbf_computation='direct')`. It applies to every base and
+final learner and can also be passed through
+`OvOClassifier(EnsembleKernelDWD(rbf_computation='direct'))`. The standard
+policy remains the default. Direct computation preserves the ensemble method
+but can change rounded scores and selected rows and can be substantially
+slower. See [its scope, dependency requirement and measured cost](docs/method.md#optional-direct-rbf-computation).
+
+For cancellation in `K @ alpha + b`, use
+`EnsembleKernelDWD(affine_computation='joint')`. It includes the intercept in
+the numerical refinement of each base and final decision score, with the
+current `'standard'` policy retained by default. It preserves the mathematical
+score and selection rule, but corrected rounding can change close rankings,
+selected rows and labels. Its cost depends on how many scores need refinement;
+see [joint affine scoring](docs/method.md#optional-joint-affine-scoring).
+
+`EnsembleKernelDWD(exact_recovery='extended')` increases the bounded
+exact-recovery budget shared by every base and final DWD learner. It can
+recover some small difficult fits that exceed the standard rank or integer-bit
+limit. It preserves the original kernel and acceptance checks, does not
+guarantee convergence, and is not a speed improvement. The entry limit still
+excludes kernels with more than 256 rows. See
+[extended exact recovery](docs/method.md#optional-extended-exact-recovery).
 
 # Parameter search
 
@@ -314,9 +351,18 @@ capitalized `X_train/X_test` equivalents, or `X/y`; it never downloads data.
 A supplied test split is preserved. `X/y` creates a separate stratified 25%
 test split before CV.
 
-Choose a positive `--jobs` count for the available RAM. Dispatched work is
-bounded by that count, each worker uses one native thread, and base models fit
-sequentially. New runs require a fresh `--output-dir`; the default creates a
+Choose a positive `--jobs` count for the available RAM; the default is 1.
+Dispatched CV work is bounded by that count, each worker uses one native thread,
+and base models fit sequentially. Optional `--final-native-threads N` sets a
+positive integer limit for each detected native BLAS/OpenMP pool during the
+selected full-training pipeline fit. Its default is also 1; CV and held-out
+prediction stay at one native thread. This is a library-pool limit, not a total
+CPU limit or a physical-core assignment. Wider final budgets require sequential
+nested estimators and may change numerical rounding. See
+[native threads by phase](docs/method.md#native-threads-by-phase) for scope,
+runtime records and resume rules.
+
+New runs require a fresh `--output-dir`; the default creates a
 unique `results/mnist-*` directory. `--cache-dir` selects a trusted base cache
 and `--no-cache` disables it. The examples discard base models after retaining
 their diagnostics, scores and indices.
@@ -487,7 +533,8 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.5 changelog](CHANGELOG.md#035--2026-10-05) for the current changes.
+See [Unreleased](CHANGELOG.md#unreleased) for local changes and the
+[0.3.5 changelog](CHANGELOG.md#035--2026-10-05) for the published release.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.

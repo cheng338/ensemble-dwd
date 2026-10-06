@@ -139,6 +139,8 @@ class CacheEstimatorTests(unittest.TestCase):
                    dict(obj_tol=2e-5), dict(stopping='fixed'), dict(tol=2e-6),
                    dict(acceleration='restart'), dict(random_state=19),
                    dict(residual_check_order='adaptive'),
+                   dict(affine_computation='joint'),
+                   dict(exact_recovery='extended'),
                    dict(prediction_batch_size=3), dict(store_base_estimators=False)]
         for change in changes:
             with self.subTest(change=change):

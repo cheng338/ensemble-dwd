@@ -157,6 +157,155 @@ training kernel needs at least
 factorization, recovery, feature storage and other workers require additional
 memory. This formula is a lower bound, not an estimate of peak RAM.
 
+### Optional direct RBF computation
+
+`EnsembleKernelDWD(rbf_computation='direct')` selects the DWD dependency's
+direct coordinate-difference calculation for every base model and the final
+refit. The default is `'standard'`, which retains the existing norm/dot
+construction and its documented extreme-input limitations. This unreleased
+option requires the updated local DWD and ensemble-DWD checkouts; the pinned
+published DWD 1.3.10 wheel does not include it.
+
+Direct computation supports the named `kernel='rbf'` with the corrected Schur
+solver used by this estimator. Set gamma through the usual top-level `gamma`
+parameter and leave `kernel_kws` empty or `None`; extra kernel keywords are
+unsupported for this option. The resolved gamma is shared by every learner.
+Other kernels retain their existing behavior with the standard policy; asking
+for direct computation with an unsupported configuration raises.
+
+The option changes finite-precision evaluation of
+`exp(-gamma * ||x-z||**2)`, with range-safe handling of exceptional distances.
+It addresses the demonstrated RBF self/equal-copy discrepancy and cancellation
+between nearby large vectors. It leaves the DWD objective, free intercept,
+solver acceptance checks, disjoint sampling, averaging of raw base scores,
+ranking by absolute consensus score and fresh final refit unchanged. More
+accurate rounded kernel entries can nevertheless change close score rankings,
+selected rows and predictions. Sequential distance sums are not universally
+correctly rounded, and ordinary score/intercept rounding remains possible
+with the default affine computation policy.
+
+This option improves numerical accuracy at a cost. In ten paired MNIST 2-vs-3
+prediction measurements per estimator with one native thread, direct
+computation took about 6 times as long for the complete ensemble prediction
+pipeline and 18 times as long for standalone full-kernel DWD. Four pairs had
+background-CPU flags; the unflagged results retained the same conclusion.
+These ratios are specific to those workloads. Six saved MNIST fits retained
+test labels and accuracies and the three ensembles retained selected rows;
+sensitive synthetic cases did change selections and labels.
+
+The option is included in cache and checkpoint identity. Old fitted models
+retain their original kernel policy; changing the constructor parameter
+affects the next fit. Configure `ensemble__rbf_computation='direct'` in the
+binary pipeline shown in the README, or
+`ovo__estimator__rbf_computation='direct'` in its multiclass pipeline. The
+existing parameter grids and command-line defaults remain unchanged. This
+option applies to ensemble DWD, not `EnsembleKernelSVM`.
+
+### Optional joint affine scoring
+
+`EnsembleKernelDWD(affine_computation='joint')` forwards the same numerical
+policy to every base learner and the fresh final DWD fit, including each
+pair inside `OvOClassifier`. The default is `'standard'`. This unreleased
+option requires the updated local DWD and ensemble-DWD sources; the pinned
+published DWD 1.3.10 wheel does not accept it.
+
+The policy evaluates the unchanged decision expression `K @ alpha + b`,
+including the intercept in the rounding check and, when needed, in joint
+compensated summation. Exceptional overflow or unresolved near-zero cases
+use exact arithmetic on the represented floating-point inputs before
+rounding the result to float64. It addresses cases where rounding the dot
+product before adding the intercept loses a small residual. It does not
+change the kernel or modify coefficients while scoring. The free-intercept
+objective, solver acceptance tests and strictly positive decision rule are
+unchanged; a represented zero
+still selects the first class. The ordinary accepted path is not universally
+correctly rounded or bitwise invariant across numerical backends and batches.
+
+Disjoint sampling, averaging raw base scores, stable ranking by absolute
+consensus score and fresh final fitting are unchanged. Corrected scores can
+nevertheless change close rankings, retained rows and predictions. The
+consensus mean itself uses the existing arithmetic. Joint scoring can be
+combined with `rbf_computation='direct'`: the two options address different
+rounding stages. The ensemble does not provide per-learner validation
+stopping, so that separate DWD capability remains unsupported here.
+
+This is a precision option with conditional cost. Ten paired saved MNIST
+2-vs-3 ensemble prediction measurements, with one native thread, took about
+9% longer using joint scoring. Two pairs had background-CPU flags; the
+eight unflagged pairs showed about the same overhead. Standalone full-kernel
+prediction in the corresponding test was approximately unchanged. Constructed
+exact-tie inputs were substantially more expensive because many rows entered
+exact arithmetic. These measurements do not establish a universal cost or
+training-speed improvement.
+
+Fresh ensemble refits on three saved MNIST cases, each with standard and
+direct RBF, retained all selection rankings, selected rows, test labels and
+accuracies. Two cases had small score differences. A separate two-row fitted
+linear example changed an incorrectly rounded zero into a positive residual
+and corrected its predicted label. These checks show why the option is useful
+for sensitive cases without establishing a general accuracy improvement.
+
+The fitted policy is recorded as `affine_computation_`, including in the
+fitted child models. Changing the constructor parameter affects the next
+fit; it does not alter an existing predictor. Old serialized models retain
+standard scoring. Base-cache and example CV identities distinguish the two
+policies. In the README's binary pipeline use
+`ensemble__affine_computation='joint'`, or
+`ovo__estimator__affine_computation='joint'` in its multiclass pipeline.
+The command-line defaults and search grids remain unchanged. This option
+applies to ensemble DWD, not `EnsembleKernelSVM`.
+
+### Optional extended exact recovery
+
+`EnsembleKernelDWD(exact_recovery='extended')` gives every base learner and
+the fresh final model the DWD dependency's extended exact-recovery budget.
+`OvOClassifier` clones the setting into every class pair. The default remains
+`'standard'`. The option requires the updated local DWD and ensemble-DWD
+sources; the pinned published DWD 1.3.10 wheel does not accept it.
+
+The standard limits are exact rank 16 and 4096-bit rational arithmetic.
+Extended recovery raises those limits to 32 and 8192 bits for both exact
+kernel-factor preparation and the associated MM recovery. Both profiles
+retain the 65,536-entry and one-million-operation limits. The entry limit
+restricts a square kernel to at most 256 rows; the other bounds may still
+refuse a smaller matrix. Each later MM recovery step has a separate operation
+budget. These bounds do not guarantee whole-fit wall time or peak memory.
+
+The option changes capacity, not the mathematical method. It retains the
+original represented kernel, exact PSD/rank certificate, MM equations, free
+intercept, DWD objective and acceptance tolerances. It adds no jitter or rank
+truncation and does not change the sampler, consensus averaging, row-selection
+rule or final-refit procedure. Healthy fits continue through their existing
+route. A fit that becomes possible can naturally supply scores and selections
+where the standard profile raised an error. The budget governs MM recovery;
+`backend='lbfgs'` does not use it.
+
+In the isolated trial, three of nine saved historical difficult RBF fits
+completed five fixed updates with the extended profile. The same three also
+completed 100 updates with objective stopping, but reached the iteration cap
+with `converged=False` and no reached stopping criterion. This demonstrates
+additional recovery coverage, not convergence or improved prediction accuracy.
+The other six fits still exhausted the rank-32 budget. Further independent
+exact checks found that their two stored kernel matrices were indefinite:
+larger resources cannot supply an exact PSD certificate for those unchanged
+matrices. That diagnosis concerns rounded stored entries, not the mathematical
+Gaussian kernel. The selected profile's actual refusal remains the rank limit;
+it does not reach those later negative witnesses itself.
+
+Extended recovery can cost more and is not intended as a speed optimization
+or a solution for large full-MNIST kernels. It is independent of the direct-RBF
+and joint-affine options. Different requested profiles have different base-cache
+and example CV identities. `exact_recovery_` records fitted provenance on the
+ensemble and its learners; compact base diagnostics retain it when base models
+are discarded. Changing the constructor setting affects the next fit and does
+not modify an existing predictor. Old serialized models retain the standard
+constructor setting.
+
+In the README's pipelines use `ensemble__exact_recovery='extended'` or
+`ovo__estimator__exact_recovery='extended'`. Search grids and command-line
+defaults remain unchanged. This option applies to ensemble DWD, not
+`EnsembleKernelSVM`.
+
 ## Optional base-stage cache and retained models
 
 `cache_dir=None` disables caching by default. A supplied local directory can
@@ -273,7 +422,7 @@ No data are loaded without `--run`. The preview reports initial costs and
 total candidate budget separately. The default output is a unique
 `results/mnist-*` directory. `--cache-dir` selects a trusted base cache and
 `--no-cache` disables that cache, not completed-fold checkpoints. Choose
-`--jobs` for the available RAM; dispatched work is bounded by that count and
+`--jobs` for the available RAM; it defaults to 1. Dispatched work is bounded by that count and
 each outer worker uses one native thread.
 
 New runs require a fresh `--output-dir`. Explicit `--resume --run` reuses
@@ -298,6 +447,45 @@ OVO experiment, a retained fraction of 0.3. This API deliberately exposes
 `theta` and `sv_selection_ratio` separately. The numerical learner count and
 the broader search grid are software settings; they are not claimed to be
 universally optimal or mandated by the dissertation.
+
+### Native threads by phase
+
+All three tuning commands accept optional `--final-native-threads N`, a positive
+integer with default 1. The example APIs expose the same setting as
+`run_adaptive_search(..., final_native_threads=N)` and
+`run_search_workflow(..., final_native_threads=N)`. It applies to the complete
+selected full-training pipeline fit: preprocessing, ensemble base fits,
+consensus scoring and the fresh final learner. For sequential OvO it applies
+to every class pair. CV, ratio refinement, numerical confirmation and held-out
+prediction retain their existing one-native-thread scopes.
+
+`--jobs` controls concurrent CV candidate/fold tasks or equivalent-fold groups.
+The final-thread setting instead limits each detected native BLAS/OpenMP pool;
+it is not a total machine CPU limit, a worker count or physical-core affinity.
+There is no automatic CPU allocation policy. A nondefault final budget requires
+every exposed nested estimator `n_jobs` setting to be explicitly 1. That check
+does not control workers hidden inside custom estimators or callable kernels.
+Native limits act across the Python process, so do not run unrelated numerical
+work in another Python thread while these workflow scopes are active.
+
+The objective and ensemble procedure remain unchanged, but native reduction
+rounding can change scores, stopping decisions, selected rows or labels. More
+threads do not guarantee a faster fit. The SVM comparator accepts the shared
+workflow option; additional BLAS threads do not parallelize its LIBSVM solver.
+
+The requested final budget and helper source are part of workflow identity.
+Nondefault final-fit receipts record observed native runtime before and after
+fitting and check restoration to the CV runtime, including on failure or
+interruption. The default adds no separate final runtime observation or
+inventory scan: its receipt labels the existing workflow scope and references
+frozen CV provenance where available. Base-cache keys already include observed
+thread counts, keeping entries from different budgets separate.
+
+Changing the final budget rejects resume under the current strict workflow
+identity. Changing the helper source also invalidates reuse; use a fresh run
+directory after this source change. Interrupted final fitting restarts with
+the same budget, while verified completed replay performs no new fit or test
+prediction. These controls do not alter estimator defaults or search grids.
 
 ### Work and timing summaries
 

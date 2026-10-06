@@ -361,7 +361,7 @@ def _loaded_source_guards():
             _RUNTIME_GUARDS.add(path)
 
 
-def runtime_fingerprint(*, check_inventory=True):
+def runtime_fingerprint(*, check_inventory=True, native_threads=1):
     """Hash once, check complete inventory per stage and core/native guards per fit.
 
     Workers avoid traversing large numerical package trees on every fast fit.
@@ -369,6 +369,8 @@ def runtime_fingerprint(*, check_inventory=True):
     the full inventory before and after each search, while every worker checks
     the DWD/ensemble cache identity, loaded DLLs and checkpoint source each fit.
     """
+    if isinstance(native_threads, (bool, np.bool_)) or not isinstance(native_threads, (int, np.integer)) or native_threads < 1:
+        raise ValueError('native_threads must be a positive integer')
     global _RUNTIME_FILES, _RUNTIME_PACKAGE_FILES, _RUNTIME_PACKAGES, _RUNTIME_MODULES
     global _RUNTIME_DIGEST, _RUNTIME_NATIVE, _RUNTIME_ACCELERATOR
     global _RUNTIME_CONTROLLER, _RUNTIME_MODULE_COUNT
@@ -431,12 +433,15 @@ def runtime_fingerprint(*, check_inventory=True):
         path = Path(pool['filepath']).absolute()
         files[str(path)] = _file_hash(path)
         record.update(filepath=str(path), sha256=files[str(path)])
-        if pool.get('num_threads') != 1:
-            raise CheckpointError('Checkpointed CV requires one active native thread per worker')
+        if pool.get('num_threads') != native_threads:
+            if native_threads == 1:
+                raise CheckpointError('Checkpointed CV requires one active native thread per worker')
+            raise CheckpointError('Final-fit runtime does not match its requested native-thread budget')
         pools.append(record)
     if not any(pool.get('user_api') == 'blas' for pool in pools):
         raise CheckpointError('Loaded BLAS identity is unavailable')
-    for path in (Path(sys.executable), Path(__file__), Path(inspect.getsourcefile(CandidateEvaluator))):
+    for path in (Path(sys.executable), Path(__file__), Path(__file__).with_name('phase_threads.py'),
+                 Path(inspect.getsourcefile(CandidateEvaluator))):
         files[str(path.absolute())] = _file_hash(path)
     for path in _RUNTIME_GUARDS:
         if path.name == 'METADATA':

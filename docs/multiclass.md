@@ -52,6 +52,13 @@ binary random state is cloned for each pair without using global randomness.
 As in the binary API, `lambda_dissertation = 2 * lambd` under the practical
 mean-loss objective with the dissertation's one-half penalty convention.
 
+The optional RBF calculation is also shared through cloning:
+`OvOClassifier(EnsembleKernelDWD(rbf_computation='direct'))`. In the README's
+pipeline its parameter name is `ovo__estimator__rbf_computation`. The default
+remains `'standard'`; direct computation requires the updated local DWD
+dependency, can change rounded scores and selected rows, and can cost more.
+See [supported settings and costs](method.md#optional-direct-rbf-computation).
+
 The default grid is `mnist_param_grid(prefix='ovo__estimator__')`, with
 125 candidates. Passing `broad=True` restores the historical 405 candidates.
 The four-candidate `--smoke-grid` remains an execution and integration check,
@@ -140,8 +147,17 @@ With one seed, ten classes and five folds, the initial 125-candidate stage
 permits up to 168,750 DWD learner fits before caching; the 405-candidate stage
 permits up to 546,750. Adaptive stages are additional work within the total
 candidate budget.
-The preview prints these separately. Pair fits stay sequential within each
-outer CV worker. No data are loaded without `--run`.
+The preview prints these separately. Optional `--final-native-threads N`
+sets the native BLAS/OpenMP pool limit for the selected full-training pipeline
+fit, including all sequential class pairs. It defaults to 1; outer CV `--jobs`
+also defaults to 1 and can be adjusted independently. CV workers and held-out
+prediction keep one native thread. A wider final budget requires exposed nested
+`n_jobs` settings to remain explicitly 1 and is not a total CPU or core-affinity
+limit. See [native threads by phase](method.md#native-threads-by-phase) for
+rounding, runtime records and resume restrictions.
+
+Pair fits stay sequential within each outer CV worker. No data are loaded
+without `--run`.
 
 `--smoke-grid` overrides the adaptive budget to four total candidates, zero
 expansions and no refinement, even if other limit/refinement flags were supplied.
