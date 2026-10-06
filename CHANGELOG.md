@@ -3,7 +3,12 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
-## Unreleased
+## 0.3.6 — 2026-10-06
+
+- Pair this release with DWD 1.3.11. Preserve Python 3.11 or later as the
+  supported range, all estimator defaults and the mathematical methods.
+- Update the legacy interruption test to check the final-runtime metadata
+  added by the optional phase-thread control; runtime behavior is unchanged.
 
 - Add optional `final_native_threads=1` to the tuning workflows and
   `--final-native-threads` to all three tuning commands. A wider positive
@@ -20,7 +25,7 @@ accompanying his dissertation.
   entry/operation caps, original kernel, recovery algebra and acceptance checks.
   The option covers additional small difficult kernels but is not a speedup
   or convergence guarantee. Retain fitted provenance and separate cache/CV
-  identities. It requires the updated local DWD source dependency. See
+  identities. It requires DWD 1.3.11. See
   [limits and evidence](docs/method.md#optional-extended-exact-recovery).
 - Add opt-in `affine_computation='joint'` to every DWD base learner and final
   refit, including through `OvOClassifier`. The standard default is unchanged.
@@ -29,14 +34,12 @@ accompanying his dissertation.
   objective and ensemble method but may change rounded scores, selected rows
   and labels, and can cost more. Preserve the fitted policy through parameter
   changes and serialization, and distinguish it in base-cache and CV identity.
-  The option requires the updated local DWD source dependency; the pinned
-  released DWD 1.3.10 wheel lacks it. See
+  The option requires DWD 1.3.11. See
   [scope and measured cost](docs/method.md#optional-joint-affine-scoring).
 - Add opt-in `rbf_computation='direct'` and forward it to every DWD base
   learner and final refit, including through `OvOClassifier`. Keep
   `'standard'` as the default and identify the option in reusable base-stage
-  and CV checkpoints. Direct computation requires the updated local DWD
-  dependency; released DWD 1.3.10 does not expose the option. It addresses
+  and CV checkpoints. Direct computation requires DWD 1.3.11. It addresses
   demonstrated RBF numerical inconsistencies at additional computational cost.
   Sampling, averaging raw scores, ranking by absolute consensus score and
   final fitting are unchanged, although corrected scores can change selected

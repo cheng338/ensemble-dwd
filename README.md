@@ -31,13 +31,13 @@ reserved. A software license has not yet been selected or granted.
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.5 requires DWD 1.3.10 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.10).
+Python 3.11 or later is required. Version 0.3.6 requires DWD 1.3.11 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.11).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.10 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.11 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -54,7 +54,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.5-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.6-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -64,23 +64,20 @@ existing copy does not bypass hash verification. Other numerical dependencies
 must already be installed or available from an index. Installing `dwd` by name
 from an index instead can retrieve another implementation.
 
-Pip selects a compatible wheel from `wheels`. The Windows AMD64 `abi3` wheel
-contains the compiled helper; the portable wheel contains the optimized Python
-implementation. To require the portable build, put only that wheel in `wheels`
-when installing the dependency. The bounded numerical comparisons used
-conventional Windows CPython 3.12. Their results do not establish numerical
-equivalence on other platforms or free-threaded Python.
+Pip selects a compatible wheel from `wheels`. Both DWD wheel variants require
+Python 3.11 or later. The Windows AMD64 `abi3` wheel contains the compiled
+helper; the portable wheel contains the optimized Python implementation. To
+require the portable build, put only that wheel in `wheels` when installing
+the dependency. Windows validation does not establish numerical equivalence
+on Linux, a different processor or free-threaded Python.
 
-The CI workflow uses the same lock and the explicit DWD 1.3.10 release asset
+The CI workflow uses the same lock and the explicit DWD 1.3.11 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
-The release-wheel commands above install the standard numerical policies.
-The unreleased `rbf_computation='direct'`, `affine_computation='joint'` and
-`exact_recovery='extended'` options require both updated local source
-checkouts: this package and DWD.
-Published DWD 1.3.10 lacks these constructor parameters, so installing its
-locked release wheel does not enable them. See
+The default numerical policies remain unchanged. DWD 1.3.11 also provides the
+optional `rbf_computation='direct'`, `affine_computation='joint'` and
+`exact_recovery='extended'` settings used by this release. See
 [direct RBF computation](docs/method.md#optional-direct-rbf-computation),
 [joint affine scoring](docs/method.md#optional-joint-affine-scoring) and
 [extended exact recovery](docs/method.md#optional-extended-exact-recovery) before use.
@@ -533,8 +530,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See [Unreleased](CHANGELOG.md#unreleased) for local changes and the
-[0.3.5 changelog](CHANGELOG.md#035--2026-10-05) for the published release.
+See the [0.3.6 changelog](CHANGELOG.md#036--2026-10-06) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.

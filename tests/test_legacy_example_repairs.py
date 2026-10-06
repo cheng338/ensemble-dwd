@@ -187,7 +187,12 @@ class LegacyExampleRepairTests(unittest.TestCase):
                 self.assertIs(caught.exception, error)
                 self.assertEqual(self.read('status'), {
                     'state': 'interrupted', 'phase': 'final_refit',
-                    'exception_type': type(error).__name__, 'resume_supported': False})
+                    'exception_type': type(error).__name__, 'resume_supported': False,
+                    'final_runtime': {
+                        'requested_native_threads': 1, 'scope_changed': False,
+                        'observed_final_runtime': None,
+                        'observation': 'existing_workflow_scope',
+                        'state': 'failed', 'fit_exception': type(error).__name__}})
                 self.assertEqual(self.read('coarse-cv')['fully_valid'], [True])
                 self.assertEqual(self.read('selection')['mean_cv_accuracy'], 1.)
                 self.assertFalse(self.read('review')['final_refit_performed'])

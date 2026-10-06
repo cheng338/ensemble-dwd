@@ -1,17 +1,36 @@
 # ensemble-dwd validation
 
+## 0.3.6: installed release artifacts
+
+The standard wheel retains Python 3.11 or later. All runtime source files match
+the preceding approved development source byte for byte, except the release
+version value. Examples are unchanged. The separately approved legacy
+interruption-test correction checks the final-runtime metadata already returned
+by the phase-thread workflow; it does not change runtime behavior.
+
+On Windows CPython 3.12 with AOCL, the installed standard wheel and paired
+DWD 1.3.11 wheel passed 19 focused metadata, error-handling and legacy-workflow
+tests, with no failures or skips. Three additional public-fit checks covered
+standard binary scoring, joint/direct binary scoring and sequential three-pair
+OvO fitting, including finite scores, serialization and retained-row checks.
+These used five fixed iterations and are integration checks, not convergence or
+timing studies. Import locations, package bytes and `pip check` were verified.
+
+With both standard and companion wheels available, actual pip installations on
+CPython 3.12 selected the standard pair; CPython 3.10 selected the separately
+tagged companion pair. The Python 3.10 error-note fallback is absent from the
+standard package. These Windows checks do not establish Linux/Intel equivalence.
+
 ## Current release and validation history
 
-Version 0.3.5 is paired with DWD 1.3.10. See the
-[0.3.5 changelog](CHANGELOG.md#035--2026-10-05) for its changes.
-DWD's [1.3.10 validation scope and timing follow-up](https://github.com/cheng338/dwd/blob/f6db6e45463554db52385caba8c6c1c1f63fcd8b/docs/validation-1.3.10.md)
-describes the released dependency. Later local DWD fixes listed as Unreleased
-are separate from that published release and its validation evidence.
+Version 0.3.6 is paired with DWD 1.3.11. See the
+[0.3.6 changelog](CHANGELOG.md#036--2026-10-06) for its changes.
+The records below retain their original workload and version scope; they are
+not new full MNIST searches for version 0.3.6. DWD's
+[1.3.10 validation scope and timing follow-up](https://github.com/cheng338/dwd/blob/f6db6e45463554db52385caba8c6c1c1f63fcd8b/docs/validation-1.3.10.md)
+remains historical evidence for the previous dependency release.
 
-The records below describe their named releases; they are not new full MNIST
-runs for version 0.3.5.
-
-## Unreleased final-fit native threads
+## 0.3.6: final-fit native threads
 
 The optional example setting `final_native_threads` defaults to 1 and controls
 the selected full-training pipeline fit. CV and held-out prediction retain
@@ -38,7 +57,7 @@ can help some fits and slow others; no automatic increase is made. See
 [native threads by phase](docs/method.md#native-threads-by-phase) for scope and
 the distinction between a library-pool limit and total CPU use.
 
-## Unreleased extended exact recovery
+## 0.3.6: extended exact recovery
 
 The optional `exact_recovery='extended'` profile raises exact-rank and
 integer-bit limits to 32 and 8192 while preserving the standard default,
@@ -52,12 +71,12 @@ additional resources cannot turn into exact PSD certificates.
 The ensemble integration checks option validation, real base/final and OvO
 forwarding, ordinary-fit parity, cloning, fitted and compact diagnostic
 provenance, old/current serialization, older-dependency compatibility, cache
-separation and equivalent-fold identity. This is local, unreleased recovery
-coverage for small kernels, not evidence of a speed or accuracy improvement.
+separation and equivalent-fold identity. This is recovery coverage for small
+kernels, not evidence of a speed or accuracy improvement.
 See [the method guide](docs/method.md#optional-extended-exact-recovery) for
 the limits and the distinction between successful fitting and convergence.
 
-## Unreleased joint affine scoring
+## 0.3.6: joint affine scoring
 
 The optional `affine_computation='joint'` route includes the intercept in
 cancellation-aware evaluation of `K @ alpha + b`. Standard scoring remains
@@ -77,8 +96,7 @@ Ten paired prediction observations on the difficult saved MNIST ensemble
 showed about 9% additional time; background CPU activity flagged two pairs,
 and the other eight retained that conclusion. Constructed exact ties cost
 substantially more. See [the method guide](docs/method.md#optional-joint-affine-scoring)
-for scope and limitations. The changes are local and unreleased and require
-the updated DWD source dependency.
+for scope and limitations. The option requires the paired DWD 1.3.11 dependency.
 
 ## 0.3.4 validation scope
 

@@ -162,9 +162,8 @@ memory. This formula is a lower bound, not an estimate of peak RAM.
 `EnsembleKernelDWD(rbf_computation='direct')` selects the DWD dependency's
 direct coordinate-difference calculation for every base model and the final
 refit. The default is `'standard'`, which retains the existing norm/dot
-construction and its documented extreme-input limitations. This unreleased
-option requires the updated local DWD and ensemble-DWD checkouts; the pinned
-published DWD 1.3.10 wheel does not include it.
+construction and its documented extreme-input limitations. The option requires
+the paired DWD 1.3.11 dependency.
 
 Direct computation supports the named `kernel='rbf'` with the corrected Schur
 solver used by this estimator. Set gamma through the usual top-level `gamma`
@@ -205,9 +204,8 @@ option applies to ensemble DWD, not `EnsembleKernelSVM`.
 
 `EnsembleKernelDWD(affine_computation='joint')` forwards the same numerical
 policy to every base learner and the fresh final DWD fit, including each
-pair inside `OvOClassifier`. The default is `'standard'`. This unreleased
-option requires the updated local DWD and ensemble-DWD sources; the pinned
-published DWD 1.3.10 wheel does not accept it.
+pair inside `OvOClassifier`. The default is `'standard'`. The option requires
+the paired DWD 1.3.11 dependency.
 
 The policy evaluates the unchanged decision expression `K @ alpha + b`,
 including the intercept in the rounding check and, when needed, in joint
@@ -260,8 +258,7 @@ applies to ensemble DWD, not `EnsembleKernelSVM`.
 `EnsembleKernelDWD(exact_recovery='extended')` gives every base learner and
 the fresh final model the DWD dependency's extended exact-recovery budget.
 `OvOClassifier` clones the setting into every class pair. The default remains
-`'standard'`. The option requires the updated local DWD and ensemble-DWD
-sources; the pinned published DWD 1.3.10 wheel does not accept it.
+`'standard'`. The option requires the paired DWD 1.3.11 dependency.
 
 The standard limits are exact rank 16 and 4096-bit rational arithmetic.
 Extended recovery raises those limits to 32 and 8192 bits for both exact
