@@ -3,6 +3,17 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.7 — 2026-10-06
+
+- Update the paired dependency to DWD 1.3.12 and refresh its validated
+  native and portable wheel hashes. Eligible dense compensated score
+  sums use DWD's compiled implementation on Windows CPython 3.12 x86-64;
+  unsupported inputs and runtimes retain the Python calculation.
+- Preserve the ensemble estimators, examples, defaults and mathematical
+  methods. This release changes the dependency and release metadata only.
+  The separate CPython 3.10 companion retains its existing compatibility
+  overlay and uses the portable DWD companion.
+
 ## 0.3.6 — 2026-10-06
 
 - Pair this release with DWD 1.3.11. Preserve Python 3.11 or later as the

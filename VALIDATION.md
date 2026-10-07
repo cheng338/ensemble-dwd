@@ -1,5 +1,38 @@
 # ensemble-dwd validation
 
+## 0.3.7: paired dependency validation
+
+Version 0.3.7 updates the paired DWD dependency to 1.3.12. All ensemble
+runtime files are byte-identical to 0.3.6 except the version value, and
+all examples are unchanged. The separate CPython 3.10 companion retains
+the previously validated exception-note compatibility overlay.
+
+On Windows CPython 3.12 with AOCL, the installed standard ensemble wheel
+and portable DWD wheel passed 55 focused tests.
+On Windows CPython 3.10 with OpenBLAS, the paired companion wheels passed
+64 focused tests. The focused suites had no failures or skips.
+Each configuration also passed three public-fit checks for standard
+binary scoring, joint/direct binary scoring and sequential three-pair
+OvO fitting, including serialization and retained-row checks.
+
+These completed checks cover the portable dependency variants; separate
+full-suite results for native DWD and release CI belong to the release
+validation report.
+
+Actual pip installations selected the intended interpreter-specific
+wheels. Package origins, installed source bytes, wheel records and
+`pip check` were verified; workers from these checks exited. The compatibility
+wheel rebuilt identically from its bundled source and recipe. These
+checks validate package integration, not convergence, runtime speed or
+a new MNIST search. Correctness suites could run concurrently. They do
+not establish Linux/Intel numerical or performance equivalence.
+
+DWD's new dense compensated-scoring path is qualified for eligible
+Windows CPython 3.12 x86-64 inputs. Other runtimes and unsupported inputs
+retain the Python calculation and its numerical checks. See the paired
+[DWD validation record](https://github.com/cheng338/dwd/blob/v1.3.12/VALIDATION.md)
+for the numerical and timing scope of that dependency change.
+
 ## 0.3.6: installed release artifacts
 
 The standard wheel retains Python 3.11 or later. All runtime source files match
@@ -23,10 +56,10 @@ standard package. These Windows checks do not establish Linux/Intel equivalence.
 
 ## Current release and validation history
 
-Version 0.3.6 is paired with DWD 1.3.11. See the
-[0.3.6 changelog](CHANGELOG.md#036--2026-10-06) for its changes.
+Version 0.3.7 is paired with DWD 1.3.12. See the
+[0.3.7 changelog](CHANGELOG.md#037--2026-10-06) for its changes.
 The records below retain their original workload and version scope; they are
-not new full MNIST searches for version 0.3.6. DWD's
+not new full MNIST searches for version 0.3.7. DWD's
 [1.3.10 validation scope and timing follow-up](https://github.com/cheng338/dwd/blob/f6db6e45463554db52385caba8c6c1c1f63fcd8b/docs/validation-1.3.10.md)
 remains historical evidence for the previous dependency release.
 

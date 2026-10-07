@@ -31,13 +31,13 @@ reserved. A software license has not yet been selected or granted.
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.6 requires DWD 1.3.11 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.11).
+Python 3.11 or later is required. Version 0.3.7 requires DWD 1.3.12 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.12).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.11 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.12 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -54,7 +54,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.6-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.7-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -71,11 +71,18 @@ require the portable build, put only that wheel in `wheels` when installing
 the dependency. Windows validation does not establish numerical equivalence
 on Linux, a different processor or free-threaded Python.
 
-The CI workflow uses the same lock and the explicit DWD 1.3.11 release asset
+DWD 1.3.12 accelerates eligible dense compensated score sums on Windows
+CPython 3.12 x86-64. Other runtimes and unsupported inputs keep the Python
+calculation and its numerical checks. Wheel installation compatibility does
+not guarantee that a compiled scoring path is active. See DWD's
+[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.12/docs/compiled_residual.md)
+for eligibility and fallback behavior.
+
+The CI workflow uses the same lock and the explicit DWD 1.3.12 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
-The default numerical policies remain unchanged. DWD 1.3.11 also provides the
+The default numerical policies remain unchanged. DWD 1.3.12 also provides the
 optional `rbf_computation='direct'`, `affine_computation='joint'` and
 `exact_recovery='extended'` settings used by this release. See
 [direct RBF computation](docs/method.md#optional-direct-rbf-computation),
@@ -530,7 +537,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.6 changelog](CHANGELOG.md#036--2026-10-06) for this release's changes.
+See the [0.3.7 changelog](CHANGELOG.md#037--2026-10-06) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.
