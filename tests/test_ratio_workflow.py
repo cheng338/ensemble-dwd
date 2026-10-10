@@ -1,6 +1,7 @@
 """Bounded ratio stages preserve CV evidence, sampling seeds and final fitting."""
 import contextlib
 from dataclasses import replace
+from fractions import Fraction
 import io
 import json
 from pathlib import Path
@@ -393,17 +394,20 @@ class GeneratedRatioScoreTests(unittest.TestCase):
                                 for training, validation in folds:
                                     model = clone(pipeline).set_params(**row, ensemble__random_state=seed)
                                     model.fit(X[training], y[training])
-                                    scores.append(accuracy_score(y[validation], model.predict(X[validation])))
+                                    predictions = model.predict(X[validation])
+                                    scores.append(Fraction(int(np.count_nonzero(y[validation] == predictions)), len(validation)))
                                 by_seed.append(scores)
                             expected.append(by_seed)
-                    expected = np.asarray(expected)
+                    exact_folds = np.asarray(expected, dtype=object).mean(axis=1)
+                    expected = np.asarray(expected, dtype=float)
                     if seeds is not None:
                         np.testing.assert_array_equal(search.seed_results_['scores'], expected)
-                    fold_means = expected.mean(axis=1)
+                    fold_means = np.asarray(exact_folds, dtype=float)
                     for fold in range(2):
                         np.testing.assert_array_equal(search.cv_results_[f'split{fold}_test_score'],
                                                       fold_means[:, fold])
-                    np.testing.assert_array_equal(search.cv_results_['mean_test_score'], fold_means.mean(axis=1))
+                    np.testing.assert_array_equal(search.cv_results_['mean_test_score'],
+                                                  np.asarray(exact_folds.mean(axis=1), dtype=float))
 
 
 class RatioCommandLineTests(unittest.TestCase):

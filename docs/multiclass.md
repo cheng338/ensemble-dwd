@@ -40,6 +40,12 @@ Every block must contain both pair labels; the sampler does not redraw an
 ineligible allocation. Disjointness is enforced within each pair. The same
 observation can participate in other class pairs and in the final selected set.
 
+If a binary ensemble fit fails, bounded stage and learner-progress details
+survive OvO wrapping and example checkpoint reporting. The failure record's
+class counts use the pair's encoded labels, while the existing pair message
+or note identifies the original classes. Restored bases are reported separately
+from current work; see [failure evidence](method.md#ensemble-failure-evidence).
+
 Put a `StandardScaler` before the OVO estimator inside a sklearn `Pipeline`.
 Each CV training fold then fits one scaler on that fold's multiclass rows.
 All pairs within the fold share that feature transformation. Validation and
@@ -55,7 +61,7 @@ mean-loss objective with the dissertation's one-half penalty convention.
 The optional RBF calculation is also shared through cloning:
 `OvOClassifier(EnsembleKernelDWD(rbf_computation='direct'))`. In the README's
 pipeline its parameter name is `ovo__estimator__rbf_computation`. The default
-remains `'standard'`; direct computation requires the paired DWD 1.3.12
+remains `'standard'`; direct computation requires the paired DWD 1.3.13
 dependency, can change rounded scores and selected rows, and can cost more.
 See [supported settings and costs](method.md#optional-direct-rbf-computation).
 
@@ -173,7 +179,8 @@ are met.
 Completed fold fits and the final refit save compact diagnostics. To resume,
 use `--resume --run` with the original output directory and identical data,
 folds, estimator settings, policy/budgets, jobs and immutable numerical
-runtime. Verified completed folds are reused; unfinished fits restart. An
+runtime. Verified completed folds are reused; unfinished fits restart by
+default. The option below can retain completed pairs inside those folds. An
 interrupted final fit has no optimizer checkpoint. If the completion receipt
 has already been committed, a verified resume performs no fitting or scoring
 and returns `model=None`. A crash before that
@@ -189,6 +196,20 @@ timings remain distinct. See
 [work and timing summaries](method.md#work-and-timing-summaries) for the
 completed-replay and interruption rules.
 
+Each adaptive stage also writes `<stage>-plan.json` before dispatch. Counts
+use the classes present in each training fold and each candidate's `M`, then
+include the requested CV seeds. They separate binary models, ensemble bases,
+ensemble finals, and full-model learners. These are planned counts before
+reuse or failure, not observed fitting or an ETA. Unknown estimator structures
+have unknown learner counts. Refused stages preserve any generated proposal and
+stopping reason in `coefficient-refused-stage.json` or `ratio-refused-stage.json`;
+no partial stage is launched to fill the remaining allowance.
+
+The same stage plans disclose newly introduced close but distinct coordinates
+with bounded detail samples. Coordinate closeness alone does not establish
+equivalent multiclass fits. All candidates and checkpoint identities remain
+separate; see [reporting details](method.md#work-and-timing-summaries).
+
 `--reuse-equivalent-folds` optionally shares completed CV results between
 retention ratios only when the retained count agrees for every class pair.
 Candidate labels and full-training refitting remain unchanged. See the
@@ -203,6 +224,63 @@ Final fitting uses one separate prescribed seed, set by `--refit-seed` or the
 configured default, 42. The default remains a single seed. See
 [multiple CV seeds](method.md#multiple-cv-seeds) for checkpoint, timing and
 resume rules.
+
+## Completed-pair recovery
+
+`--pair-recovery --no-cache` enables optional recovery of completed binary
+pairs inside an unfinished CV fold. It is off by default. For example:
+
+```shell
+python examples/tune_mnist_multiclass.py --data mnist.npz --output-dir results/pair-search --pair-recovery --no-cache --run
+python examples/tune_mnist_multiclass.py --data mnist.npz --output-dir results/pair-search --pair-recovery --no-cache --run --resume
+```
+
+The example API exposes `CheckpointedCV(..., pair_recovery=True,
+pair_recovery_max_bytes=None)`. The adaptive controller and optional
+numerical confirmation forward the same settings. Confirmation has a
+separate checkpoint identity; original-budget pairs cannot replace its fits.
+
+Recovery currently supports an exact two-step `Pipeline` containing
+`StandardScaler` and `OvOClassifier`, with exact `KernGDWD` or
+`EnsembleKernelDWD` children. The Pipeline must have no memory cache or
+metadata routing and must use `verbose=False`. Inputs and labels must be
+dense, finite numeric arrays. Each evaluated candidate must use a named RBF kernel, a positive
+gamma supplied as a plain Python `int` or `float`, a Python integer random
+seed, and `OvOClassifier.n_jobs=1`.
+Both retained and discarded ensemble base models are supported. Custom
+subclasses, mutable random generators, the separate ensemble base-fit cache,
+multiple CV seeds and equivalent-fold reuse are not supported together with
+this option. Ordinary fitting retains its existing supported settings.
+
+Completed models are saved as trusted local pickle files. Only reuse files
+created by a trusted run: checksums detect corruption but do not make an
+untrusted pickle safe. Resume verifies the data and row order, scaler,
+candidate, pair labels, fitted state, source files and numerical runtime.
+A changed identity requires a new run directory. The existing fold lease
+and coordinator generation guard also protect the pair files.
+
+`--pair-recovery-max-bytes N` limits committed pair payloads and manifests
+per candidate/fold store. It is not a total disk or temporary-write limit.
+The default has no byte limit; zero skips saving new models. Quota or
+optional storage failures leave successful computations usable, while
+identity or ownership failures stop reuse. An unfinished binary fit still
+restarts from the beginning. Once the authoritative fold receipt is
+committed and verified, pair payloads can be removed; interrupted cleanup
+can finish on resume without refitting the completed fold. Cleanup status
+is recorded separately without rewriting the authoritative receipt.
+
+Recovery uses the existing pair fitting, candidate failure handling and
+multiclass prediction. It does not change the solver, sampling, row
+selection, CV candidate ranking or votes. It does not save a final
+full-training refit or checkpoint the binary optimizer. Saving, checking
+and loading models costs time and disk space; enable it when avoiding
+repeated completed pairs after interruption is worth those costs.
+
+Reports distinguish newly fitted pairs, restored pairs and completed-fold
+replay. Current pair fit/load/save times are components of the enclosing
+fold fit time, not additional time to add to it. Historical fit times and
+cache observations of restored children are not counted as new work. See
+[work and timing summaries](method.md#work-and-timing-summaries).
 
 ## Resource use and diagnostics
 

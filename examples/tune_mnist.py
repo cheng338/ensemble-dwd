@@ -43,6 +43,7 @@ from search_support import (_io_path, _resolved_public_path, CandidateEvaluator,
                             eligible_accuracy, exception_details, new_run_directory,
                             parameter_snapshot, prefix_grid, record_failure,
                             write_failure_json, write_json_atomic)
+from search_support import score_value
 
 from phase_threads import (add_final_thread_argument, report_final_threads,
                            final_fit_threads, final_thread_policy_sha256,
@@ -238,8 +239,8 @@ def fully_valid_candidate_mask(cv_results):
 def ranked_valid_indices(cv_results):
     """Rank only complete candidates, keeping original order for score ties."""
     indices = np.flatnonzero(fully_valid_candidate_mask(cv_results))
-    means = np.asarray(cv_results['mean_test_score'], dtype=float)
-    return indices[np.argsort(-means[indices], kind='stable')]
+    return np.asarray(sorted(indices, key=lambda index: score_value(cv_results, index),
+                             reverse=True), dtype=int)
 
 
 def best_valid_candidate(cv_results):

@@ -1,6 +1,7 @@
 """Higher-budget confirmation stays separate from selection and final fitting."""
 import contextlib
 from dataclasses import replace
+from fractions import Fraction
 import io
 import json
 from pathlib import Path
@@ -429,15 +430,17 @@ class ConfirmationManualParityTests(unittest.TestCase):
                                     model = clone(pipeline).set_params(**row['parameters'],
                                         **{prefix + 'max_iter': 4, prefix + 'random_state': seed})
                                     model.fit(X[training], y[training])
-                                    scores.append(accuracy_score(y[validation], model.predict(X[validation])))
+                                    predictions = model.predict(X[validation])
+                                    scores.append(Fraction(int(np.count_nonzero(y[validation] == predictions)), len(validation)))
                                 candidate.append(scores)
                             expected.append(candidate)
-                    expected = np.asarray(expected)
+                    exact_folds = np.asarray(expected, dtype=object).mean(axis=1)
+                    expected = np.asarray(expected, dtype=float)
                     confirmed = report['cv_results']['confirmation']
                     for fold in range(2):
                         np.testing.assert_array_equal(confirmed[f'split{fold}_test_score'],
-                                                      expected.mean(axis=1)[:, fold])
-                    np.testing.assert_array_equal(confirmed['mean_test_score'], expected.mean(axis=1).mean(axis=1))
+                                                      np.asarray(exact_folds[:, fold], dtype=float))
+                    np.testing.assert_array_equal(confirmed['mean_test_score'], np.asarray(exact_folds.mean(axis=1), dtype=float))
                     if seeds is not None:
                         for index, row in enumerate(report['shortlist']):
                             np.testing.assert_array_equal(row['confirmation']['seed_results']['scores'],

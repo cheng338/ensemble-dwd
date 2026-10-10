@@ -1,6 +1,7 @@
 """Durable fixed-fold CV for the example workflows.
 
-Completed folds are strict, checksummed JSON; no estimator pickle is loaded.
+Completed folds are strict, checksummed JSON. Optional completed-pair recovery
+loads only trusted local estimator pickles after identity and integrity checks.
 An OS lock excludes a live coordinator. Per-fold worker locks and a generation
 token prevent surviving workers from racing a replacement coordinator. A resume
 refuses while an old worker is still fitting; it never terminates processes.
@@ -39,6 +40,8 @@ from threadpoolctl import ThreadpoolController, threadpool_limits
 from search_support import (CandidateEvaluator, array_fingerprint, data_fingerprint,
                             eligible_accuracy, exception_details, json_safe,
                             write_failure_json, write_json_atomic)
+from search_support import (ACCURACY_AGGREGATION, accuracy_fraction, accuracy_evidence,
+                            apply_accuracy_evidence, score_ranks, score_value)
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
 from work_reporting import summarize_records
 
@@ -458,9 +461,27 @@ def runtime_fingerprint(*, check_inventory=True, native_threads=1):
             'native_pools': sorted(pools, key=lambda row: row['filepath'])}
 
 
-def diagnostics(estimator):
+def _row_diagnostics(rows, y=None):
+    """Compact row identities, relative to this fitted model's training data."""
+    rows = np.asarray(rows)
+    if rows.ndim != 1 or rows.dtype.kind not in 'iu':
+        return {'available': False}
+    rows = rows.astype(np.int64, copy=False)
+    result = {'size': len(rows), 'order_sha256': array_fingerprint(rows)['sha256'],
+              'set_sha256': array_fingerprint(np.unique(rows))['sha256']}
+    if y is not None:
+        labels = np.asarray(y)
+        if labels.ndim == 1 and np.all((rows >= 0) & (rows < len(labels))):
+            classes, counts = np.unique(labels[rows], return_counts=True)
+            result['class_counts'] = [{'label': json_safe(label), 'count': int(count)}
+                                      for label, count in zip(classes, counts)]
+    return result
+
+
+def diagnostics(estimator, y=None):
     """Copy reported scalar/small-array facts without inventing convergence claims."""
     from ensemble_dwd import OvOClassifier
+    from ensemble_dwd.estimator import _base_diagnostics
 
     if isinstance(estimator, CandidateEvaluator):
         estimator = getattr(estimator, 'estimator_', estimator.estimator)
@@ -468,32 +489,43 @@ def diagnostics(estimator):
         estimator = estimator.steps[-1][1]
     result = {}
     names = ('n_iter_', 'total_iterations_', 'iterations_per_attempt_', 'converged_',
-             'criterion_reached_', 'objective_tolerance_met_', 'fit_status_',
+             'criterion_reached_', 'objective_tolerance_met_', 'optimality_met_', 'fit_status_',
              'stopping_reason_', 'termination_reason_', 'backend_', 'backend_used_',
              'gradient_inf_norm_', 'rkhs_gradient_norm_', 'dual_gap_',
              'equality_residual_', 'dual_equality_residual_', 'stationarity_residual_',
              'returned_iteration_', 'support_counts_', 'n_support_', 'gamma_',
-             'cache_hit_', 'cache_status_', 'base_diagnostics_')
+             'cache_hit_', 'cache_status_', 'base_diagnostics_', 'final_objective_',
+             'stationarity_checked_', 'C_conversion_finite_', 'prediction_precision_')
     for name in names:
         if not hasattr(estimator, name):
             continue
         value = json_safe(getattr(estimator, name))
         if len(_canonical(value)) <= 32768:
             result[name] = value
+    solver = _base_diagnostics(estimator).get('solver_diagnostics')
+    if solver:
+        result['solver_diagnostics'] = solver
     final = getattr(estimator, 'final_estimator_', None)
     if hasattr(estimator, 'subset_indices_'):
         result['subset_sizes'] = [len(rows) for rows in estimator.subset_indices_]
+        result['subset_rows'] = [_row_diagnostics(rows, y) for rows in estimator.subset_indices_]
     if hasattr(estimator, 'selected_indices_'):
         result['selected_size'] = len(estimator.selected_indices_)
+        result['selected_rows'] = _row_diagnostics(estimator.selected_indices_, y)
     if final is not None and final is not estimator:
         result['final_estimator'] = diagnostics(final)
     if isinstance(estimator, OvOClassifier) and hasattr(estimator, 'estimators_'):
         # Only OvO's fitted children represent class pairs. Binary ensembles
         # already summarize their base fits in base_diagnostics_.
-        result['pairwise_estimators'] = [
-            {'pair': json_safe(pair), 'diagnostics': diagnostics(child)}
-            for pair, child in zip(estimator.pairs_, estimator.estimators_, strict=True)
-        ]
+        result['pairwise_estimators'] = []
+        for pair, child in zip(estimator.pairs_, estimator.estimators_, strict=True):
+            pair_y = None
+            if y is not None:
+                labels = np.asarray(y)
+                included = (labels == pair[0]) | (labels == pair[1])
+                pair_y = np.where(labels[included] == pair[0], 1, -1)
+            result['pairwise_estimators'].append(
+                {'pair': json_safe(pair), 'diagnostics': diagnostics(child, pair_y)})
     return result
 
 
@@ -682,7 +714,19 @@ def _validate_equivalence(record, identity, task):
     return proof
 
 
-def _valid_fold(path, identity, task, *, parameters=None, fold=None, _allow_alias=True):
+def _validate_accuracy_counts(record, validation_size=None):
+    counts = record.get('accuracy_counts')
+    if counts is not None:
+        try:
+            if (record['state'] != 'complete' or float(accuracy_fraction(counts)) != record['score']
+                    or (validation_size is not None and counts['n_validation'] != validation_size)):
+                raise ValueError('Count/score or validation-size mismatch')
+        except (TypeError, ValueError) as error:
+            raise CheckpointError('Invalid fold accuracy counts') from error
+
+
+def _valid_fold(path, identity, task, *, parameters=None, fold=None, _allow_alias=True,
+                validation_size=None, validation_sizes=None):
     record = _read_receipt(path, identity)
     if (record.get('schema') != SCHEMA or record.get('task_sha256') != task
             or record.get('state') not in ('complete', 'ineligible')):
@@ -705,29 +749,38 @@ def _valid_fold(path, identity, task, *, parameters=None, fold=None, _allow_alia
     elif (record.get('score') is not None or record.get('failure', {}).get('category')
           not in ('ineligible_selection', 'ineligible_subset')):
         raise CheckpointError('Only a recorded expected ineligibility may omit a score')
+    if validation_sizes is not None:
+        index = record.get('fold')
+        if type(index) is not int or not 0 <= index < len(validation_sizes):
+            raise CheckpointError('Fold receipt index is outside the fixed folds')
+        validation_size = validation_sizes[index]
+    _validate_accuracy_counts(record, validation_size)
+    if 'pair_recovery' in record:
+        from pair_recovery import validate_summary
+        validate_summary(record)
     proof = _validate_equivalence(record, identity, task)
     if 'equivalent_reuse' in record:
         if not _allow_alias or proof is None or record['state'] != 'complete':
             raise CheckpointError('Equivalent fold must point directly to a completed fitted source')
-        _validate_alias(record, path, identity)
+        _validate_alias(record, path, identity, validation_size=validation_size)
     return record
 
 
-def _source_fold(folder, identity, source_task, key):
+def _source_fold(folder, identity, source_task, key, *, validation_size=None):
     if not isinstance(source_task, str) or not re.fullmatch(r'[a-f0-9]{64}', source_task):
         raise CheckpointError('Invalid equivalent-fold source task')
     source = _valid_fold(Path(folder) / 'folds' / (source_task + '.json'), identity,
-                         source_task, _allow_alias=False)
+                         source_task, _allow_alias=False, validation_size=validation_size)
     if (source['state'] != 'complete' or source.get('equivalent_fold', {}).get('key') != key):
         raise CheckpointError('Equivalent-fold source is not a matching completed fit')
     return source
 
 
-def _validate_alias(record, path, identity):
+def _validate_alias(record, path, identity, *, validation_size=None):
     reuse = record['equivalent_reuse']
     try:
         source = _source_fold(Path(path).parent.parent, identity, reuse['source_task_sha256'],
-                              record['equivalent_fold']['key'])
+                              record['equivalent_fold']['key'], validation_size=validation_size)
         elapsed = reuse['reuse_seconds']
         if (reuse['policy'] != _EQUIVALENT_POLICY
                 or reuse['source_receipt_sha256'] != _digest(source)
@@ -736,6 +789,7 @@ def _validate_alias(record, path, identity):
                 or reuse['source_score_time'] != source['score_time']
                 or reuse['diagnostics_source_task_sha256'] != source['task_sha256']
                 or record['score'] != source['score']
+                or record.get('accuracy_counts') != source.get('accuracy_counts')
                 or record.get('diagnostics') != source.get('diagnostics')
                 or record['fit_time'] != 0.0 or record['score_time'] != 0.0
                 or isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))
@@ -746,15 +800,28 @@ def _validate_alias(record, path, identity):
 
 
 def _fit_fold(folder, identity, runtime, token, task, estimator, parameters, X, y,
-              train, validation, fold, error_policy, failure_dir, *, equivalent_fold=None):
+              train, validation, fold, error_policy, failure_dir, *, equivalent_fold=None,
+              pair_recovery=None):
     folder = Path(folder)
     with _Lease(folder / 'locks' / (task + '.lock')):
         owner = _read_json(folder / 'owner.json')
         if owner.get('token') != token or owner.get('state') != 'active':
             raise CheckpointBusyError('The dispatching coordinator no longer owns this run')
+        context = None
+        if pair_recovery is not None:
+            from pair_recovery import FoldContext, cleanup_context
+            context = FoldContext(folder, identity, runtime, token, task, parameters, fold,
+                                  train, validation, X, y, pair_recovery)
+            context.assert_owner()
         result_path = folder / 'folds' / (task + '.json')
         if result_path.exists():
-            return _valid_fold(result_path, identity, task, parameters=parameters, fold=fold), True
+            saved = _valid_fold(result_path, identity, task, parameters=parameters, fold=fold,
+                                validation_size=len(validation))
+            if context is not None:
+                result = cleanup_context(context, already_validated=saved)
+                saved = deepcopy(saved)
+                saved['pair_recovery']['cleanup_status'] = result['status']
+            return saved, True
         attempt = {'schema': SCHEMA, 'identity_sha256': identity, 'task_sha256': task,
                    'attempt': uuid.uuid4().hex, 'owner_token': token, 'pid': os.getpid(),
                    'fold': fold, 'parameters': _stable(parameters), 'state': 'running',
@@ -763,12 +830,19 @@ def _fit_fold(folder, identity, runtime, token, task, estimator, parameters, X, 
             attempt['equivalent_fold'] = equivalent_fold
         path = folder / 'attempts' / (attempt['attempt'] + '.json')
         _write_receipt(path, attempt)
+        if context is not None:
+            context.attempt = attempt
+        fold_receipt_committed = False
         try:
             with threadpool_limits(limits=1):
                 if _stable(runtime_fingerprint(check_inventory=False)) != runtime:
                     raise CheckpointError('Worker runtime differs from the frozen CV identity')
                 model = clone(estimator).set_params(**parameters)
-                evaluator = CandidateEvaluator(model, error_policy=error_policy, failure_dir=failure_dir)
+                if context is None:
+                    evaluator = CandidateEvaluator(model, error_policy=error_policy, failure_dir=failure_dir)
+                else:
+                    from pair_recovery import FoldEvaluator
+                    evaluator = FoldEvaluator(model, context, error_policy=error_policy, failure_dir=failure_dir)
                 started = perf_counter()
                 evaluator.fit(X[train], y[train])
                 fit_time = perf_counter() - started
@@ -789,18 +863,48 @@ def _fit_fold(folder, identity, runtime, token, task, estimator, parameters, X, 
                 record = {**attempt, 'state': state, 'completed_at': _now(),
                           'score': float(score) if state == 'complete' else None,
                           'fit_time': fit_time, 'score_time': score_time,
-                          'failure': failure, 'diagnostics': diagnostics(evaluator)}
+                          'accuracy_counts': deepcopy(getattr(evaluator, 'accuracy_counts_', None)),
+                          'failure': failure, 'diagnostics': diagnostics(evaluator, y[train])}
+                _validate_accuracy_counts(record, len(validation))
+                if context is not None:
+                    from pair_recovery import annotate_record, validate_summary
+                    annotate_record(record, context)
+                    validate_summary(record)
+                    context.assert_owner()
                 _write_receipt(result_path, record)
-                _write_receipt(path, record)
+                fold_receipt_committed = True
+                if context is None:
+                    _write_receipt(path, record)
+                else:
+                    # Attempt/evidence records are auxiliary once the scientific
+                    # fold is committed. Optional reporting cannot discard it.
+                    try:
+                        _write_receipt(path, record)
+                    except Exception:
+                        pass
+                    result = cleanup_context(context, already_validated=record)
+                    record = deepcopy(record)
+                    record['pair_recovery']['cleanup_status'] = result['status']
+                    context.write_evidence()
                 return record, False
         except BaseException as error:
             failed = {**attempt, 'state': 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'failed',
                       'finished_at': _now(), 'failure': exception_details(error)}
+            if context is not None:
+                failed['fold_receipt_committed'] = fold_receipt_committed
+                failed['pair_recovery'] = context.summary()
             write_failure_json(path, {'payload': failed, 'sha256': _digest(failed)}, replace=True)
+            if context is not None:
+                # Never replace the original numerical/interruption exception.
+                try:
+                    context.write_evidence()
+                except Exception:
+                    pass
             raise
 
 
-def _reuse_fold(folder, identity, runtime, token, task, parameters, fold, proof, source_task):
+def _reuse_fold(folder, identity, runtime, token, task, parameters, fold, proof, source_task,
+                *, validation_size=None):
     started = perf_counter()
     folder = Path(folder)
     with _Lease(folder / 'locks' / (task + '.lock')), threadpool_limits(limits=1):
@@ -811,13 +915,15 @@ def _reuse_fold(folder, identity, runtime, token, task, parameters, fold, proof,
             raise CheckpointError('Worker runtime differs from the frozen CV identity')
         path = folder / 'folds' / (task + '.json')
         if path.exists():
-            return _valid_fold(path, identity, task, parameters=parameters, fold=fold), True
-        source = _source_fold(folder, identity, source_task, proof['key'])
+            return _valid_fold(path, identity, task, parameters=parameters, fold=fold,
+                               validation_size=validation_size), True
+        source = _source_fold(folder, identity, source_task, proof['key'], validation_size=validation_size)
         record = {'schema': SCHEMA, 'identity_sha256': identity, 'task_sha256': task,
                   'attempt': uuid.uuid4().hex, 'owner_token': token, 'pid': os.getpid(),
                   'fold': fold, 'parameters': _stable(parameters), 'state': 'complete',
                   'started_at': _now(), 'completed_at': _now(), 'failure': None,
                   'score': source['score'], 'fit_time': 0.0, 'score_time': 0.0,
+                  'accuracy_counts': deepcopy(source.get('accuracy_counts')),
                   'diagnostics': deepcopy(source.get('diagnostics', {})), 'equivalent_fold': proof,
                   'equivalent_reuse': {
                       'policy': _EQUIVALENT_POLICY, 'source_task_sha256': source_task,
@@ -826,7 +932,7 @@ def _reuse_fold(folder, identity, runtime, token, task, parameters, fold, proof,
                       'source_fit_time': source['fit_time'], 'source_score_time': source['score_time'],
                       'diagnostics_source_task_sha256': source_task, 'reuse_seconds': perf_counter() - started}}
         _validate_equivalence(record, identity, task)
-        _validate_alias(record, path, identity)
+        _validate_alias(record, path, identity, validation_size=validation_size)
         if _stable(runtime_fingerprint(check_inventory=False)) != runtime:
             raise CheckpointError('Worker runtime changed before equivalent-fold publication')
         # Include all verification before publication; the atomic write itself
@@ -842,7 +948,8 @@ def _fit_fold_group(folder, identity, runtime, token, estimator, X, y, error_pol
     completed = []
     for ci, fi, task, parameters, train, validation, proof in members:
         if source_task is not None and proof is not None:
-            result = _reuse_fold(folder, identity, runtime, token, task, parameters, fi, proof, source_task)
+            result = _reuse_fold(folder, identity, runtime, token, task, parameters, fi, proof, source_task,
+                                 validation_size=len(validation))
         else:
             result = _fit_fold(folder, identity, runtime, token, task, estimator, parameters,
                                X, y, train, validation, fi, error_policy, failure_dir, equivalent_fold=proof)
@@ -893,18 +1000,45 @@ class CheckpointedCV:
     folds. Mean fit/score timings sum seed work within each fold before averaging
     across folds. ``wall_seconds`` measures the search's elapsed time, including
     aggregation, rather than summing parallel worker times.
+
+    ``pair_recovery=True`` optionally restores completed binary pairs inside an
+    unfinished multiclass fold. This requires a plain StandardScaler/OvO
+    pipeline, one inner pair worker, exact KernGDWD or EnsembleKernelDWD, fixed
+    integer seeds, named RBF and a positive numeric gamma for every candidate.
+    It cannot combine equivalent-fold reuse, multi-seed CV or ensemble caches.
+    ``pair_recovery_max_bytes`` limits committed pair payloads/manifests per
+    fold; zero keeps fitting while saving no pairs. Trusted local checkpoints
+    only: integrity checks do not make untrusted pickle loading safe. Pair work
+    and restored historical fit times are reported separately. Both options
+    default to disabled/unlimited and do not affect ordinary fitting.
     """
     diagnostics = staticmethod(diagnostics)
 
     def __init__(self, run_dir, estimator, X, y, folds, *, jobs=1, error_policy='nan',
                  resume=False, provenance=None, reuse_equivalent_folds=False,
-                 cv_seeds=None, seed_parameter=None):
+                 cv_seeds=None, seed_parameter=None, pair_recovery=False,
+                 pair_recovery_max_bytes=None):
         if isinstance(jobs, bool) or not isinstance(jobs, (int, np.integer)) or jobs < 1:
             raise ValueError('jobs must be a positive integer')
         if error_policy not in ('nan', 'raise'):
             raise ValueError('error_policy must be nan or raise')
         if type(reuse_equivalent_folds) is not bool:
             raise ValueError('reuse_equivalent_folds must be boolean')
+        if type(pair_recovery) is not bool:
+            raise ValueError('pair_recovery must be boolean')
+        if pair_recovery_max_bytes is not None and (
+                type(pair_recovery_max_bytes) is not int or pair_recovery_max_bytes < 0):
+            raise ValueError('pair_recovery_max_bytes must be a nonnegative integer or None')
+        if not pair_recovery and pair_recovery_max_bytes is not None:
+            raise ValueError('pair_recovery_max_bytes requires pair_recovery=True')
+        self.pair_recovery, self.pair_recovery_max_bytes = pair_recovery, pair_recovery_max_bytes
+        self._pair_recovery_config = None
+        if pair_recovery:
+            from pair_recovery import normalize_config, validate_supported
+            if reuse_equivalent_folds or cv_seeds is not None:
+                raise ValueError('Pair recovery cannot combine equivalent-fold reuse or multi-seed CV')
+            validate_supported(estimator, require_numeric_gamma=False)
+            self._pair_recovery_config = normalize_config(True, pair_recovery_max_bytes)
         self.folder = _io_path(Path(run_dir) / 'cv-checkpoints')
         # Caller-owned arrays and RNG objects may change after entering a context.
         # Own immutable data and a cloned estimator so saved identities stay true.
@@ -922,6 +1056,10 @@ class CheckpointedCV:
             validate_seed(parameters[seed_parameter], name='estimator sampling seed')
         if self.X.ndim != 2 or self.y.ndim != 1 or len(self.X) != len(self.y) or self.X.dtype.hasobject or self.y.dtype.hasobject:
             raise ValueError('Checkpointed examples require dense numeric X and one-dimensional labels')
+        if self.pair_recovery and (self.X.dtype.kind not in 'biuf'
+                or self.y.dtype.kind not in 'biuf' or not np.isfinite(self.X).all()
+                or not np.isfinite(self.y).all()):
+            raise ValueError('Pair recovery requires dense finite numeric data and labels')
         self.X.setflags(write=False)
         self.y.setflags(write=False)
         self.folds = _folds(folds, len(self.y))
@@ -942,8 +1080,11 @@ class CheckpointedCV:
             self.identity = {'schema': SCHEMA, 'data': data_fingerprint(self.X, self.y),
                              'folds': [{'train': array_fingerprint(t), 'validation': array_fingerprint(v)} for t, v in self.folds],
                              'estimator': _stable(self.estimator), 'error_policy': self.error_policy,
-                             'scoring': 'accuracy', 'native_threads': 1, 'runtime': self.runtime,
+                             'scoring': 'accuracy', 'accuracy_aggregation': ACCURACY_AGGREGATION,
+                             'native_threads': 1, 'runtime': self.runtime,
                              'provenance': _stable(self.provenance)}
+            if self.pair_recovery:
+                self.identity['pair_recovery'] = deepcopy(self._pair_recovery_config)
             if self.reuse_equivalent_folds:
                 self.identity['equivalent_fold_policy'] = _EQUIVALENT_POLICY
             if self.cv_seeds is not None:
@@ -1011,6 +1152,14 @@ class CheckpointedCV:
         return self.folder / 'artifacts' / (name + '.json')
 
     def _check_runtime(self):
+        frozen = self.identity.get('pair_recovery')
+        if (self.pair_recovery is not (frozen is not None)
+                or (frozen is not None and self.pair_recovery_max_bytes != frozen['max_bytes'])
+                or self._pair_recovery_config != frozen):
+            raise CheckpointError('Pair-recovery configuration changed during this run')
+        if frozen is not None:
+            from pair_recovery import check_source_hashes
+            check_source_hashes(frozen)
         with threadpool_limits(limits=1):
             if _stable(runtime_fingerprint()) != self.runtime:
                 raise CheckpointError('Coordinator runtime changed during this run')
@@ -1080,6 +1229,7 @@ class CheckpointedCV:
                    'score_times': np.asarray(rows(lambda row, reused: row['score_time'])),
                    'states': rows(lambda row, reused: row['state']),
                    'diagnostics': rows(lambda row, reused: row.get('diagnostics', {})),
+                   'accuracy_counts': rows(lambda row, reused: row.get('accuracy_counts')),
                    'receipt_task_sha256': rows(lambda row, reused: row['task_sha256']),
                    'receipt_parameters': rows(lambda row, reused: row['parameters']),
                    'reused': rows(lambda row, reused: bool(reused)),
@@ -1092,6 +1242,7 @@ class CheckpointedCV:
         for fi in range(n_folds):
             results[f'split{fi}_test_score'] = scores[:, fi]
         results['mean_test_score'], results['std_test_score'] = np.mean(scores, axis=1), np.std(scores, axis=1)
+        apply_accuracy_evidence(results, [accuracy_evidence(counts) for counts in details['accuracy_counts']])
         # Sum fit work across seeds within a fold. These receipt timings are
         # not the elapsed time of parallel dispatch; wall_seconds reports that.
         for field in ('fit_time', 'score_time'):
@@ -1099,9 +1250,7 @@ class CheckpointedCV:
             results['mean_' + field], results['std_' + field] = np.mean(times, axis=1), np.std(times, axis=1)
         means = results['mean_test_score']
         valid = np.isfinite(means)
-        results['rank_test_score'] = np.asarray([
-            1 + int(np.sum(means[valid] > value)) if math.isfinite(value)
-            else (int(np.sum(valid)) + 1 if np.any(valid) else 1) for value in means], dtype=np.int32)
+        results['rank_test_score'] = score_ranks(results)
         for name in sorted(set().union(*(params.keys() for params in candidates))):
             results['param_estimator__' + name] = np.ma.array(
                 [params.get(name) for params in candidates], mask=[name not in params for params in candidates], dtype=object)
@@ -1127,7 +1276,7 @@ class CheckpointedCV:
                                  checkpoint_summary_=summary, seed_results_=details,
                                  work_summary_=raw.work_summary_)
         if np.any(valid):
-            index = int(np.flatnonzero(valid)[np.argmax(means[valid])])
+            index = int(max(np.flatnonzero(valid), key=lambda i: score_value(results, i)))
             search.best_index_, search.best_params_, search.best_score_ = index, results['params'][index], float(means[index])
         return search
 
@@ -1142,7 +1291,8 @@ class CheckpointedCV:
             # Receipts are the index: a representative committed before a parent
             # crash is immediately discoverable, with no separate index to repair.
             for path in sorted((self.folder / 'folds').glob('*.json')):
-                saved = _valid_fold(path, self.identity_sha256, path.stem)
+                saved = _valid_fold(path, self.identity_sha256, path.stem,
+                                    validation_sizes=[len(v) for _, v in self.folds])
                 if (saved['state'] == 'complete' and saved.get('equivalent_fold') is not None
                         and 'equivalent_reuse' not in saved):
                     sources.setdefault(saved['equivalent_fold']['key'], saved['task_sha256'])
@@ -1151,6 +1301,9 @@ class CheckpointedCV:
             # Validate changed estimator parameters, including any newly unseeded setting.
             candidate = clone(self.estimator).set_params(**parameters)
             candidate_identity = _stable(candidate)
+            if self.pair_recovery:
+                from pair_recovery import validate_supported
+                validate_supported(candidate)
             for fold, (train, validation) in enumerate(self.folds):
                 proof = (_fold_equivalence(candidate, self.identity_sha256, fold, self.y[train])
                          if self.reuse_equivalent_folds else None)
@@ -1160,9 +1313,15 @@ class CheckpointedCV:
                 seen.add(task)
                 result_path = self.folder / 'folds' / (task + '.json')
                 if result_path.exists():
-                    saved = _valid_fold(result_path, self.identity_sha256, task, parameters=parameters, fold=fold)
+                    saved = _valid_fold(result_path, self.identity_sha256, task, parameters=parameters, fold=fold,
+                                        validation_size=len(validation))
                     if self.reuse_equivalent_folds and saved.get('equivalent_fold') != proof:
                         raise CheckpointError('Saved equivalent-fold eligibility or identity changed')
+                    if self.pair_recovery:
+                        from pair_recovery import cleanup_saved_fold
+                        saved = cleanup_saved_fold(self.folder, self.identity_sha256, self.runtime,
+                            self.token, task, parameters, fold, train, validation, self.X, self.y,
+                            self._pair_recovery_config)
                     records[candidate_index, fold] = (saved, True)
                 else:
                     work.append((candidate_index, fold, task, parameters, train, validation, proof))
@@ -1193,12 +1352,14 @@ class CheckpointedCV:
                 for ci, fi, task, params, train, validation, _ in work:
                     records[ci, fi] = _fit_fold(self.folder, self.identity_sha256, self.runtime, self.token,
                         task, self.estimator, params, self.X, self.y, train, validation, fi,
-                        self.error_policy, str(self.folder.parent / 'failures'))
+                        self.error_policy, str(self.folder.parent / 'failures'),
+                        pair_recovery=self._pair_recovery_config)
             else:
                 completed = Parallel(n_jobs=self.jobs, pre_dispatch=self.jobs, batch_size=1)(
                     delayed(_fit_fold)(self.folder, self.identity_sha256, self.runtime, self.token,
                         task, self.estimator, params, self.X, self.y, train, validation, fi,
-                        self.error_policy, str(self.folder.parent / 'failures'))
+                        self.error_policy, str(self.folder.parent / 'failures'),
+                        pair_recovery=self._pair_recovery_config)
                     for ci, fi, task, params, train, validation, _ in work)
                 for (ci, fi, *_), result in zip(work, completed):
                     records[ci, fi] = result
@@ -1213,13 +1374,15 @@ class CheckpointedCV:
         for fi in range(n_folds):
             results[f'split{fi}_test_score'] = scores[:, fi]
         results['mean_test_score'], results['std_test_score'] = np.mean(scores, axis=1), np.std(scores, axis=1)
+        apply_accuracy_evidence(results, [accuracy_evidence([
+            [records[ci, fi][0].get('accuracy_counts') for fi in range(n_folds)]])
+            for ci in range(n_candidates)])
         for field in ('fit_time', 'score_time'):
             values = np.asarray([[records[ci, fi][0][field] for fi in range(n_folds)] for ci in range(n_candidates)])
             results['mean_' + field], results['std_' + field] = np.mean(values, axis=1), np.std(values, axis=1)
         valid = np.isfinite(results['mean_test_score'])
         means = results['mean_test_score']
-        results['rank_test_score'] = np.asarray([1 + int(np.sum(means[valid] > value)) if math.isfinite(value)
-                                                else (int(np.sum(valid)) + 1 if np.any(valid) else 1) for value in means], dtype=np.int32)
+        results['rank_test_score'] = score_ranks(results)
         for name in sorted(set().union(*(params.keys() for params in candidates))):
             results['param_estimator__' + name] = np.ma.array([params.get(name) for params in candidates],
                                                             mask=[name not in params for params in candidates], dtype=object)
@@ -1235,6 +1398,9 @@ class CheckpointedCV:
                 executed_folds=sum(not reused and 'equivalent_reuse' not in row for row, reused in records.values()),
                 equivalent_reuse=[[records[ci, fi][0].get('equivalent_reuse') for fi in range(n_folds)]
                                   for ci in range(n_candidates)])
+        if self.pair_recovery:
+            summary['pair_recovery'] = [[records[ci, fi][0].get('pair_recovery') for fi in range(n_folds)]
+                                        for ci in range(n_candidates)]
         try:
             work_summary = summarize_records(records)
         except Exception as error:
@@ -1251,6 +1417,6 @@ class CheckpointedCV:
         if _include_records:
             search._fold_records_ = records
         if np.any(valid):
-            index = int(np.flatnonzero(valid)[np.argmax(means[valid])])
+            index = int(max(np.flatnonzero(valid), key=lambda i: score_value(results, i)))
             search.best_index_, search.best_params_, search.best_score_ = index, results['params'][index], float(means[index])
         return search

@@ -1,5 +1,6 @@
 """Multi-seed example searches agree with independent real-estimator loops."""
 import contextlib
+from fractions import Fraction
 import io
 import json
 from pathlib import Path
@@ -69,20 +70,28 @@ class RealMultiSeedCVTests(unittest.TestCase):
         estimator, grid, seed_parameter, X, y, folds = problem
         seeds = (7, 13)
         expected = []
+        exact_expected = []
         # This reference deliberately does not call the checkpoint's scorer,
         # candidate evaluator, aggregation or cloning helpers.
         with threadpool_limits(limits=1):
             for parameters in ParameterGrid(grid):
                 seed_scores = []
+                seed_fractions = []
                 for seed in seeds:
                     fold_scores = []
+                    fold_fractions = []
                     for training, validation in folds:
                         model = clone(estimator).set_params(
                             **parameters, **{seed_parameter: seed})
                         model.fit(X[training], y[training])
-                        fold_scores.append(accuracy_score(y[validation], model.predict(X[validation])))
+                        predictions = model.predict(X[validation])
+                        fold_scores.append(accuracy_score(y[validation], predictions))
+                        fold_fractions.append(Fraction(
+                            int(np.count_nonzero(y[validation] == predictions)), len(validation)))
                     seed_scores.append(fold_scores)
+                    seed_fractions.append(fold_fractions)
                 expected.append(seed_scores)
+                exact_expected.append(seed_fractions)
         expected = np.asarray(expected)
         search = self.search(kind + str(multiclass), problem, seeds=seeds)
         seed_results = search.seed_results_
@@ -92,10 +101,18 @@ class RealMultiSeedCVTests(unittest.TestCase):
         self.assertEqual(seed_results['candidate_params'], list(ParameterGrid(grid)))
         self.assertEqual(seed_results['aggregation_policy'], 'mean-seeds-within-fold-v1')
         np.testing.assert_array_equal(seed_results['scores'], expected)
-        fold_means = expected.mean(axis=1)
+        # Average integer-count proportions with equal seed and fold weights;
+        # round only the final reported aggregate, independently of CV helpers.
+        exact_fold_means = [[sum(seed[fold] for seed in candidate) / len(seeds)
+                             for fold in range(len(folds))]
+                            for candidate in exact_expected]
+        fold_means = np.asarray([[float(value) for value in candidate]
+                                 for candidate in exact_fold_means])
+        means = np.asarray([float(sum(candidate) / len(folds))
+                            for candidate in exact_fold_means])
         for fold in range(len(folds)):
             np.testing.assert_array_equal(search.cv_results_[f'split{fold}_test_score'], fold_means[:, fold])
-        np.testing.assert_array_equal(search.cv_results_['mean_test_score'], fold_means.mean(axis=1))
+        np.testing.assert_array_equal(search.cv_results_['mean_test_score'], means)
         np.testing.assert_array_equal(search.cv_results_['std_test_score'], fold_means.std(axis=1))
         self.assertEqual(len(search.cv_results_['params']), len(ParameterGrid(grid)))
         self.assertTrue(all('estimator__' + seed_parameter not in parameters

@@ -226,8 +226,17 @@ class EquivalentFoldReuseTests(unittest.TestCase):
         self.assertEqual(actual.best_index_, expected.best_index_)
         self.assertEqual(actual.best_params_, expected.best_params_)
         self.assertEqual(actual.best_score_, expected.best_score_)
-        self.assertEqual(actual.checkpoint_summary_['diagnostics'],
-                         expected.checkpoint_summary_['diagnostics'])
+        def without_timings(value):
+            if isinstance(value, dict):
+                return {key: without_timings(item) for key, item in value.items()
+                        if key != 'seconds' and not key.endswith('_seconds')}
+            if isinstance(value, list):
+                return [without_timings(item) for item in value]
+            return value
+        # Separate fits have independent reported times. Aliases still retain
+        # the exact source diagnostics, checked below and by _validate_alias.
+        self.assertEqual(without_timings(actual.checkpoint_summary_['diagnostics']),
+                         without_timings(expected.checkpoint_summary_['diagnostics']))
 
     def test_actual_binary_dwd_and_svm_match_all_independent_fits(self):
         grid = {'model__sv_selection_ratio': [.875, .88]}
@@ -414,7 +423,7 @@ class EquivalentFoldReuseTests(unittest.TestCase):
         self.assertEqual(result.checkpoint_summary_['equivalent_reused_folds'], 2)
 
     def test_missing_or_corrupt_alias_source_is_rejected(self):
-        for damage in ('missing', 'checksum', 'changed-valid-checksum'):
+        for damage in ('missing', 'checksum', 'changed-valid-checksum', 'wrong-count-denominator'):
             with self.subTest(damage=damage):
                 with self.session(damage, estimator=pipeline('svm')) as store:
                     store.search({'model__sv_selection_ratio': [.875, .88]})
@@ -426,6 +435,12 @@ class EquivalentFoldReuseTests(unittest.TestCase):
                     envelope = json.loads(path.read_text())
                     envelope['payload']['score'] = .123
                     path.write_text(json.dumps(envelope))
+                elif damage == 'wrong-count-denominator':
+                    row['accuracy_counts'] = {key: 2 * value for key, value in row['accuracy_counts'].items()}
+                    checkpoint._write_receipt(path, row)
+                    with self.assertRaisesRegex(checkpoint.CheckpointError, 'accuracy counts'):
+                        checkpoint._source_fold(path.parent.parent, row['identity_sha256'], row['task_sha256'],
+                            row['equivalent_fold']['key'], validation_size=row['accuracy_counts']['n_validation'] // 2)
                 else:
                     row['score'] = .123
                     checkpoint._write_receipt(path, row)

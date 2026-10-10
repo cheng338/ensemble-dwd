@@ -17,6 +17,7 @@ import numpy as np
 from joblib import hash as parameter_hash
 
 from search_support import json_safe
+from search_support import score_token, comparable_tokens
 
 
 @dataclass(frozen=True)
@@ -235,13 +236,25 @@ unchanged parent records to retain the original fixed parameter values/types.
     leader = None if not len(ranked) else results['params'][int(ranked[0])]
     leader_key = None if leader is None else parameter_hash(leader)
     best = None if leader is None else float(results['mean_test_score'][ranked[0]])
+    best_token = None if leader is None else score_token(results, ranked[0])
     valid_keys = {parameter_hash(results['params'][index]) for index in np.flatnonzero(valid)}
     parent_lookup = {parameter_hash(parameters): parameters for parameters in results['params']}
+    proposal_description = None
 
     def answer(phase=None, candidates=None, review=None):
         state['state_hash'] = _state_hash(state)
-        return {'state': state, 'phase': phase,
-                'candidates': [] if candidates is None else candidates, 'review': review}
+        result = {'state': state, 'phase': phase,
+                  'candidates': [] if candidates is None else candidates, 'review': review}
+        if proposal_description is not None and review is not None:
+            from stage_reporting import candidate_budget, safe_report
+            result['proposal_report'] = safe_report(lambda: {
+                'kind': 'ratio_refinement', 'decision': 'scheduled' if review is None else 'refused',
+                'stopping_reason': None if review is None else review['stopping_reason'],
+                'proposal': proposal_description,
+                'budget': candidate_budget(coefficient_config.max_candidates, len(records),
+                                           proposal_description.get('new_candidate_count'), review is None),
+            })
+        return result
 
     def finish(reason, accepted=False):
         state['last_reason'] = reason
@@ -274,7 +287,9 @@ unchanged parent records to retain the original fixed parameter values/types.
             missing.append(candidate)
         if missing:
             return answer(phase=pending['label'], candidates=missing)
-        steady = (leader_key == pending['baseline_leader'] and best == pending['baseline_best']
+        current, previous = comparable_tokens(best_token, pending.get('baseline_score_token'),
+                                               best, pending['baseline_best'])
+        steady = (leader_key == pending['baseline_leader'] and current == previous
                   and pending_keys.issubset(valid_keys))
         state['stable_rounds'] = state['stable_rounds'] + 1 if steady else 0
         state['rounds'] += 1
@@ -301,6 +316,14 @@ unchanged parent records to retain the original fixed parameter values/types.
     patches, exhausted = _patches(results, parents, axes, bounds)
     state['parameter_limits'] = exhausted
     if exhausted:
+        from stage_reporting import encode, safe_report
+        proposal_description = safe_report(lambda: {
+            'proposal_kind': 'ratio_refinement', 'count_status': 'unavailable_parameter_limit',
+            'new_candidate_count': None, 'candidate_list_complete': False,
+            'generated_partial_parameters': encode([candidate for candidate, _ in patches]),
+            'parameter_limits': encode(exhausted),
+            'remaining_candidate_allowance': coefficient_config.max_candidates - len(records),
+        })
         return finish('parameter_limit: a complete local neighborhood exceeds representable arithmetic')
     candidates, descriptors, new_keys = [], [], set()
     for candidate, descriptor in patches:
@@ -310,6 +333,10 @@ unchanged parent records to retain the original fixed parameter values/types.
         new_keys.add(key)
         candidates.append(candidate)
         descriptors.append(descriptor)
+    if not candidates or len(records) + len(candidates) > coefficient_config.max_candidates:
+        from stage_reporting import explicit_proposal, safe_report
+        proposal_description = safe_report(lambda: explicit_proposal(
+            candidates, seen, coefficient_config.max_candidates - len(records), 'ratio_refinement'))
     if not candidates:
         return finish('parameter_limit: no new representable local candidate is available')
     if len(records) + len(candidates) > coefficient_config.max_candidates:
@@ -317,6 +344,7 @@ unchanged parent records to retain the original fixed parameter values/types.
     label = 'ratio-local-' + str(state['rounds'] + 1)
     state['pending'] = {'label': label, 'candidates': descriptors,
                         'baseline_keys': sorted(records), 'baseline_evidence': _evidence(records),
-                        'baseline_leader': leader_key, 'baseline_best': best}
+                        'baseline_leader': leader_key, 'baseline_best': best,
+                        'baseline_score_token': best_token}
     state['last_reason'] = 'local_ratio_refinement'
     return answer(phase=label, candidates=candidates)

@@ -213,6 +213,10 @@ def main(argv=None):
                         help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
     parser.add_argument('--reuse-equivalent-folds', action='store_true',
                         help='Reuse completed CV results when selection ratios retain identical rows in every class pair; disabled by default.')
+    parser.add_argument('--pair-recovery', action='store_true',
+                        help='Save completed binary pair models inside unfinished CV folds; disabled by default. Requires --no-cache and trusted local output storage.')
+    parser.add_argument('--pair-recovery-max-bytes', type=int,
+                        help='Optional nonnegative per-fold byte quota for committed pair models and metadata; zero prevents saving new pairs. Requires --pair-recovery.')
     cache = parser.add_mutually_exclusive_group()
     cache.add_argument('--cache-dir', type=Path, help='Shared trusted base-stage cache directory.')
     cache.add_argument('--no-cache', action='store_true', help='Disable base-stage caching.')
@@ -232,6 +236,18 @@ def main(argv=None):
         parser.error('--smoke-grid and --broad-grid are mutually exclusive.')
     if args.folds < 2:
         parser.error('--folds must be at least 2.')
+    if args.pair_recovery_max_bytes is not None and not args.pair_recovery:
+        parser.error('--pair-recovery-max-bytes requires --pair-recovery.')
+    if args.pair_recovery_max_bytes is not None and args.pair_recovery_max_bytes < 0:
+        parser.error('--pair-recovery-max-bytes must be nonnegative.')
+    if args.pair_recovery:
+        if not args.no_cache:
+            parser.error('--pair-recovery requires --no-cache; separate base-stage caching is not supported together.')
+        if args.reuse_equivalent_folds or seed_options:
+            parser.error('--pair-recovery cannot be combined with equivalent-fold reuse or multi-seed CV.')
+    pair_options = ({'pair_recovery': True,
+                     'pair_recovery_max_bytes': args.pair_recovery_max_bytes}
+                    if args.pair_recovery else {})
 
     grid = search_grid(args.smoke_grid, broad=args.broad_grid)
     ratio_options = ratio_search_options(parser, args, grid, prefix=PARAMETER_PREFIX,
@@ -249,6 +265,11 @@ def main(argv=None):
           'Counts are upper bounds before cache reuse; there is no automatic CV refit.')
     print(f'Outer workers: {args.jobs}; pair workers: 1; native threads per worker: 1. '
           'Completed CV results and selection are saved before the final fit.')
+    if args.pair_recovery:
+        quota = ('no byte quota' if args.pair_recovery_max_bytes is None
+                 else f'{args.pair_recovery_max_bytes:,} committed bytes per fold')
+        print(f'Optional completed-pair recovery: {quota}. Pair persistence adds I/O and storage; '
+              'completed-fold recovery remains authoritative. Final fitting still restarts after interruption.')
     max_expansions = 0 if args.smoke_grid else args.max_expansions
     max_candidates = 4 if args.smoke_grid else args.max_candidates
     refine = False if args.smoke_grid else args.refine
@@ -295,6 +316,9 @@ def main(argv=None):
         'cv_random_state': RANDOM_STATE, 'grid_kind': 'smoke' if args.smoke_grid else 'broad' if args.broad_grid else 'coarse',
         'pair_jobs': 1, 'M': 5, 'cache_dir': cache_dir, 'store_base_estimators': False,
     }
+    if args.pair_recovery:
+        settings['pair_recovery'] = {'enabled': True, 'max_bytes': args.pair_recovery_max_bytes,
+                                     'scope': 'unfinished_cv_folds'}
     # The search manifest validates this same selection before any resumed fit.
     if not args.resume:
         write_json_atomic(run_dir / 'data-selection.json', settings)
@@ -311,7 +335,7 @@ def main(argv=None):
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
         final_native_threads=args.final_native_threads,
         jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings, resume=args.resume,
-        reuse_equivalent_folds=args.reuse_equivalent_folds, **seed_options, **ratio_options,
+        reuse_equivalent_folds=args.reuse_equivalent_folds, **pair_options, **seed_options, **ratio_options,
         **confirmation_options)
     if result.get('resumed_completed'):
         print('This run already completed; saved results were verified and no fits or test scoring were repeated.')

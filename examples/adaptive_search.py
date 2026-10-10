@@ -7,8 +7,10 @@ A plateau is a search stopping decision, not a certificate of optimal parameters
 """
 from dataclasses import asdict, dataclass
 from copy import deepcopy
+from fractions import Fraction
 import hashlib
 import math
+import struct
 import uuid
 import warnings
 from numbers import Integral, Real
@@ -29,11 +31,16 @@ from search_support import (_io_path, _resolved_public_path, bare_parameters, da
                             record_failure, write_failure_json,
                             write_json_atomic)
 from tune_mnist import fully_valid_candidate_mask, ranked_valid_indices
+from search_support import score_value, score_token, token_value, comparable_tokens, equal_score_tokens
+from search_support import score_nonimproving
 from ratio_refinement import (RatioRefinementConfig, next_ratio_stage,
                               validate_ratio_grid)
 from numerical_confirmation import (NumericalConfirmationConfig, validate_confirmation,
                                     run_numerical_confirmation)
 from work_reporting import (aggregate_work_summaries, summarize_cache_diagnostics)
+from stage_reporting import (candidate_budget, grid_proposal, publish_report,
+                             safe_report, workload_plan)
+from near_coordinates import disclose
 from phase_threads import (final_fit_threads, final_thread_policy_sha256,
                            validate_final_native_threads)
 
@@ -102,6 +109,7 @@ def _results(rows, n_folds):
             'mean_score_time', 'std_score_time']
     keys += [f'split{fold}_test_score' for fold in range(n_folds)]
     return {'params': [row['params'] for row in rows],
+            'accuracy_evidence': [row.get('accuracy_evidence') for row in rows],
             **{key: np.asarray([row[key] for row in rows], dtype=float) for key in keys}}
 
 
@@ -109,9 +117,9 @@ def _boundary_directions(results, axes, config):
     ranked = ranked_valid_indices(results)
     if not len(ranked):
         return []
-    best = float(results['mean_test_score'][ranked[0]])
+    best = score_value(results, ranked[0])
     tied = [int(index) for index in ranked
-            if best - float(results['mean_test_score'][index]) <= config.tie_tol]
+            if best - score_value(results, index) <= config.tie_tol]
     directions = []
     valid = fully_valid_candidate_mask(results)
     for name in config.axes:
@@ -125,6 +133,26 @@ def _boundary_directions(results, axes, config):
             if unresolved:
                 directions.append((name, side))
     return directions
+
+
+def _rounded_geometric_extension(ordered, side):
+    """Round the capped geometric extension once, without logarithm loss."""
+    edge = ordered[0] if side == 'low' else ordered[-1]
+    exact_edge = Fraction(edge)
+    if len(ordered) == 1:
+        factor = Fraction(10)
+    else:
+        neighbor = Fraction(ordered[1] if side == 'low' else ordered[-2])
+        factor = neighbor / exact_edge if side == 'low' else exact_edge / neighbor
+        factor = min(factor, Fraction(10))
+    exact_value = exact_edge / factor if side == 'low' else exact_edge * factor
+    try:
+        value = float(exact_value)
+    except OverflowError:
+        value = math.inf
+    if not math.isfinite(value) or value <= 0 or not (value < edge if side == 'low' else value > edge):
+        raise ValueError('Further boundary values are outside representable positive arithmetic.')
+    return value
 
 
 def _outside(values, side):
@@ -144,7 +172,10 @@ def _outside(values, side):
     except OverflowError:
         value = math.inf
     if not math.isfinite(value) or value <= 0 or not (value < edge if side == 'low' else value > edge):
-        raise ValueError('Further boundary values are outside representable positive arithmetic.')
+        # Nearby floats can have identical logarithms. Preserve every existing
+        # successful coordinate; recover only a false arithmetic refusal using
+        # the same geometric rule, rather than selecting an arbitrary neighbor.
+        return _rounded_geometric_extension(ordered, side)
     return value
 
 
@@ -170,8 +201,8 @@ def _neighbors(value, values):
     result = [value]
     for adjacent in (position - 1, position + 1):
         if 0 <= adjacent < len(ordered):
-            midpoint = math.exp((math.log(value) + math.log(ordered[adjacent])) / 2.)
-            if min(value, ordered[adjacent]) < midpoint < max(value, ordered[adjacent]):
+            midpoint = _midpoint(value, ordered[adjacent])
+            if midpoint is not None:
                 result.append(midpoint)
     return sorted(set(result))
 
@@ -228,9 +259,42 @@ def _adjacent(value, values):
     return max(lower) if lower else None, min(upper) if upper else None
 
 
+def _rounded_geometric_midpoint(lower, upper):
+    """Round sqrt(lower * upper) to binary64 using exact comparisons.
+
+    Positive finite float bit patterns are ordered like their values. At most
+    63 bisections find the neighboring floats around the exact root without
+    overflowing or underflowing the product. This is only a fallback when
+    log/exp rounding loses an available interior coordinate.
+    """
+    target = Fraction(lower) * Fraction(upper)
+    low = struct.unpack('>Q', struct.pack('>d', lower))[0]
+    high = struct.unpack('>Q', struct.pack('>d', upper))[0]
+
+    def value(bits):
+        return struct.unpack('>d', struct.pack('>Q', bits))[0]
+
+    while high - low > 1:
+        middle = (low + high) // 2
+        if Fraction(value(middle)) ** 2 <= target:
+            low = middle
+        else:
+            high = middle
+    below, above = value(low), value(high)
+    threshold = ((Fraction(below) + Fraction(above)) / 2) ** 2
+    if target < threshold or (target == threshold and low % 2 == 0):
+        return below
+    return above
+
+
 def _midpoint(first, second):
     lower, upper = sorted((first, second))
     value = math.exp((math.log(lower) + math.log(upper)) / 2.)
+    if lower < value < upper:
+        return value
+    if not lower < math.nextafter(lower, upper) < upper:
+        return None
+    value = _rounded_geometric_midpoint(lower, upper)
     return value if lower < value < upper else None
 
 
@@ -238,7 +302,8 @@ def _policy_records(results):
     keys = sorted(name for name in results if name.startswith('split') and name.endswith('_test_score'))
     return {parameter_hash(parameters):
             (parameters, float(results['mean_test_score'][index]),
-             tuple(float(results[name][index]) for name in keys))
+             tuple(float(results[name][index]) for name in keys),
+             results.get('accuracy_evidence', [None] * len(results['params']))[index])
             for index, parameters in enumerate(results['params'])}
 
 
@@ -281,13 +346,18 @@ def _full_strip_certificates(results, anchors, records, stages, leader, best, co
     Its scores are checked here, never inferred from another gamma or fraction.
     """
     valid = fully_valid_candidate_mask(results)
+    leader_index = next(index for index, parameters in enumerate(results['params'])
+                        if parameter_hash(parameters) == parameter_hash(leader))
+    best_value = score_value(results, leader_index)
+    best_token = score_token(results, leader_index)
     certificates = []
     for anchor in anchors:
         for axis in config.axes:
             conditional = _conditional_values(results, anchor, axis)
             for side in ('low', 'high'):
                 levels = [(stage['label'], item) for stage in stages
-                          if stage['mean_score'] == best and stage['leader_key'] == parameter_hash(leader)
+                          if equal_score_tokens(best_token, stage.get('score_token'), best, stage['mean_score'])
+                          and stage['leader_key'] == parameter_hash(leader)
                           for item in stage['levels'] if item['axis'] == axis and item['side'] == side]
                 levels = levels[-config.plateau_rounds:]
                 if (len(levels) < config.plateau_rounds or levels[-1][1]['to'] != anchor[axis]
@@ -301,9 +371,11 @@ def _full_strip_certificates(results, anchors, records, stages, leader, best, co
                                 reverse=side == 'low')
                 indices = [conditional[value] for value in points]
                 means = [float(results['mean_test_score'][index]) for index in indices]
+                values = [score_value(results, index) for index in indices]
                 if (not all(valid[index] for index in indices)
-                        or any(after > before + config.improvement_tol for before, after in zip(means, means[1:]))
-                        or any(score > best + config.improvement_tol for score in means)):
+                        or any(not score_nonimproving(after, before, config.improvement_tol)
+                               for before, after in zip(values, values[1:]))
+                        or any(not score_nonimproving(score, best_value, config.improvement_tol) for score in values)):
                     continue
                 keys = [parameter_hash(results['params'][index]) for index in indices]
                 certificates.append({'slice_key': _slice_key(anchor, axis, side), 'axis': axis, 'side': side,
@@ -391,6 +463,8 @@ def next_search_stage(results, initial_grid, config, state=None):
     seen = set(records)
     ranked = ranked_valid_indices(results) if records else []
     best = None if not len(ranked) else float(results['mean_test_score'][ranked[0]])
+    best_token = None if not len(ranked) else score_token(results, ranked[0])
+    best_value = token_value(best_token, best)
     leader = None if not len(ranked) else results['params'][int(ranked[0])]
     valid_keys = {parameter_hash(results['params'][int(index)]) for index in ranked}
 
@@ -410,7 +484,9 @@ def next_search_stage(results, initial_grid, config, state=None):
         if missing:
             return {'state': state, 'phase': pending['label'], 'candidates': missing, 'review': None}
         unchanged = _evidence(records, pending['baseline_keys']) == pending['baseline_evidence']
-        same_score = best == pending['baseline_best']
+        current, previous = comparable_tokens(best_token, pending.get('baseline_score_token'),
+                                               best, pending['baseline_best'])
+        same_score = current == previous
         local_evidence = [parameter_hash(p) for p in pending['candidates']
                           if _in_region(p, pending.get('region'), config)]
         steady = (unchanged and same_score and leader is not None
@@ -426,7 +502,7 @@ def next_search_stage(results, initial_grid, config, state=None):
             state.pop('stability_region', None)
         if pending['kind'] == 'expansion':
             all_valid = all(parameter_hash(p) in valid_keys for p in pending['candidates'])
-            if unchanged and all_valid and best <= pending['baseline_best'] + config.improvement_tol:
+            if unchanged and all_valid and score_nonimproving(current, previous, config.improvement_tol):
                 state['stalled_expansions'] += 1
             else:
                 state['stalled_expansions'] = 0
@@ -436,7 +512,7 @@ def next_search_stage(results, initial_grid, config, state=None):
             state['full_strip_stages'] = []
         elif pending['kind'] == 'expansion':
             state['full_strip_stages'].append({'label': pending['label'],
-                'mean_score': best, 'leader_key': parameter_hash(leader),
+                'mean_score': best, 'score_token': best_token, 'leader_key': parameter_hash(leader),
                 'levels': pending.get('outward_levels', [])})
         state['pending'] = None
     elif state.get('observed_evidence') not in (None, _evidence(records)):
@@ -448,13 +524,31 @@ def next_search_stage(results, initial_grid, config, state=None):
 
     def schedule(grids, kind):
         candidates = _new_candidates(grids, seen, config.max_candidates - len(records))
+
+        def reported(answer):
+            # Supplementary metadata never enters policy state or its identity.
+            # Scheduled/pending answers retain their original replay contract;
+            # their workload is reported separately just before dispatch.
+            if answer['review'] is None:
+                return answer
+            def describe():
+                proposal = grid_proposal(grids, seen, config.max_candidates - len(records), candidates)
+                admitted = answer['review'] is None
+                return {'kind': kind, 'decision': 'scheduled' if admitted else 'refused',
+                        'stopping_reason': None if admitted else answer['review']['stopping_reason'],
+                        'proposal': proposal,
+                        'budget': candidate_budget(config.max_candidates, len(records),
+                                                   proposal['new_candidate_count'], admitted)}
+            answer['proposal_report'] = safe_report(describe)
+            return answer
+
         if candidates is None:
-            return finish('candidate_budget: the complete ' + kind + ' stage exceeds max_candidates')
+            return reported(finish('candidate_budget: the complete ' + kind + ' stage exceeds max_candidates'))
         if not candidates:
-            return finish('parameter_limit: no new representable point resolves ' + kind)
+            return reported(finish('parameter_limit: no new representable point resolves ' + kind))
         if kind == 'expansion':
             if state['expansion_rounds'] >= config.max_expansions:
-                return finish('expansion_budget: a best or tied-best conditional boundary remains unresolved')
+                return reported(finish('expansion_budget: a best or tied-best conditional boundary remains unresolved'))
             state['expansion_rounds'] += 1
             label = 'expansion-' + str(state['expansion_rounds'])
         elif kind == 'refinement':
@@ -467,7 +561,8 @@ def next_search_stage(results, initial_grid, config, state=None):
             label = 'conditional-repair-' + str(state['repair_rounds'])
         state['pending'] = {'kind': kind, 'label': label, 'candidates': candidates,
                             'baseline_keys': sorted(records), 'baseline_evidence': _evidence(records),
-                            'baseline_best': best, 'region': deepcopy(state.get('stability_region')),
+                            'baseline_best': best, 'baseline_score_token': best_token,
+                            'region': deepcopy(state.get('stability_region')),
                             'outward_probes': [deepcopy(item) for item in state.get('boundary_issues', [])
                                                if kind == 'expansion' and item['issue'] == 'winning_boundary'
                                                and item['candidate'] is not None],
@@ -482,7 +577,7 @@ def next_search_stage(results, initial_grid, config, state=None):
                             'from': select(p[axis] for p in results['params']),
                             'to': select(item['candidate'][axis] for item in probes)})
         state['last_reason'] = kind
-        return {'state': state, 'phase': label, 'candidates': candidates, 'review': None}
+        return reported({'state': state, 'phase': label, 'candidates': candidates, 'review': None})
 
     if not records:
         return schedule(grid, 'coarse')
@@ -491,7 +586,7 @@ def next_search_stage(results, initial_grid, config, state=None):
     axes = {axis: sorted({float(p[axis]) for p in results['params']}) for axis in config.axes}
     fixed = {name: values for name, values in grid.items() if name not in config.axes}
     tied = [results['params'][int(index)] for index in ranked
-            if best - float(results['mean_test_score'][index]) <= config.tie_tol]
+            if best_value - score_value(results, index) <= config.tie_tol]
     certificates = []
     if config.allow_boundary_plateau:
         certificates = _full_strip_certificates(results, tied, records, state['full_strip_stages'],
@@ -572,7 +667,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         run_dir, *, config=None, jobs=1, error_policy='nan',
                         settings=None, verbose=0, resume=False,
                         reuse_equivalent_folds=False, cv_seeds=None, refit_seed=None,
-                        ratio_refinement=None, numerical_confirmation=None, final_native_threads=1):
+                        ratio_refinement=None, numerical_confirmation=None, final_native_threads=1,
+                        pair_recovery=False, pair_recovery_max_bytes=None):
     """Evaluate only new candidates on fixed training folds, then refit once.
 
     The candidate/expansion budgets hold final fitting and held-out scoring if
@@ -589,6 +685,12 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     across folds; every requested fit must be valid. Seeds are not ranked.
     The final refit uses refit_seed, or the pipeline's original integer seed.
     These options are recorded in the run identity and cannot change on resume.
+    Optional pair_recovery restores completed binary pair models inside an
+    unfinished multiclass CV fold. It requires the supported deterministic DWD
+    pipeline without a base-stage cache; equivalent-fold reuse and multi-seed
+    CV are not supported together with it. The optional per-fold byte quota
+    limits committed pair payloads and metadata, not transient memory. Final
+    refitting is unaffected. Pair recovery is disabled by default.
     Optional ratio_refinement adds bounded joint local rounds after the original
     coefficient policy accepts. It shares the total candidate budget and never
     widens the initial grid. Unresolved follow-up work holds the final fit.
@@ -596,7 +698,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     higher iteration cap in a separate CV context. A changed ranking or an
     invalid confirmation holds final fitting. Original scores, selection and
     final-fit settings are retained; stability does not certify convergence.
-    An interrupted final refit restarts; fitted models are not serialized.
+    An interrupted final refit restarts; it does not use pair-model persistence.
     final_native_threads changes only that full-training pipeline fit; CV
     and held-out prediction stay at one native thread. It defaults to one
     and is frozen on resume. Wider budgets require explicit n_jobs=1 for
@@ -615,6 +717,19 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     if not isinstance(reuse_equivalent_folds, (bool, np.bool_)):
         raise ValueError('reuse_equivalent_folds must be boolean.')
     reuse_equivalent_folds = bool(reuse_equivalent_folds)
+    if type(pair_recovery) is not bool:
+        raise ValueError('pair_recovery must be boolean.')
+    if pair_recovery_max_bytes is not None:
+        if not pair_recovery:
+            raise ValueError('pair_recovery_max_bytes requires pair_recovery.')
+        if (isinstance(pair_recovery_max_bytes, (bool, np.bool_))
+                or not isinstance(pair_recovery_max_bytes, Integral) or pair_recovery_max_bytes < 0):
+            raise ValueError('pair_recovery_max_bytes must be a nonnegative integer or None.')
+        pair_recovery_max_bytes = int(pair_recovery_max_bytes)
+    if pair_recovery and (reuse_equivalent_folds or cv_seeds is not None):
+        raise ValueError('Pair recovery does not support equivalent-fold reuse or multi-seed CV.')
+    pair_options = ({'pair_recovery': True, 'pair_recovery_max_bytes': pair_recovery_max_bytes}
+                    if pair_recovery else {})
     grid = _initial_grid(grid, config)
     ratio_bounds = None
     if ratio_refinement is not None:
@@ -664,6 +779,9 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                              'user': {} if settings is None else settings}}
     if reuse_equivalent_folds:
         metadata['settings']['reuse_equivalent_folds'] = True
+    if pair_recovery:
+        metadata['settings']['pair_recovery'] = {'enabled': True, 'max_bytes': pair_recovery_max_bytes,
+                                                'scope': 'unfinished_cv_folds'}
     if cv_seeds is not None:
         metadata['settings']['sampling'] = {
             'cv_seeds': list(cv_seeds), 'seed_parameter': seed_parameter,
@@ -754,7 +872,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             warn_report(error)
         return summary
 
-    def evaluate(label, candidates):
+    def evaluate(label, candidates, proposal_report=None):
         nonlocal phase, last_search, active_work
         phase = label + '_cv'
         write_json_atomic(run_dir / 'status.json', {
@@ -764,6 +882,19 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                           for parameters in candidates]
         seed_note = '' if cv_seeds is None else f' and {len(cv_seeds)} sampling seeds'
         print(f'{label}: checking {len(candidates)} candidates on {len(folds)} fixed folds{seed_note}.', flush=True)
+        publish_report(run_dir / (label + '-plan.json'), lambda: {
+            'schema': 1, 'scope': 'original_search_stage', 'stage': label,
+            'budget': candidate_budget(config.max_candidates, len(seen), len(candidates), True),
+            'proposal_report': proposal_report,
+            'near_coordinates': safe_report(lambda: disclose(
+                candidates, config.axes + ((config.prefix + 'sv_selection_ratio',)
+                    if ratio_refinement is not None else ()),
+                previous=[row['params'] for row in rows])),
+            'workload_plan': workload_plan(checkpoint.estimator, candidates, checkpoint.y, folds,
+                seeds=cv_seeds, reuse={'completed_fold_receipts': resume,
+                                      'equivalent_folds': reuse_equivalent_folds,
+                                      'completed_pairs': pair_recovery}),
+        }, announce=True)
         started = perf_counter()
         active_work = {'kind': 'original_search', 'name': label, 'started': started}
         search = checkpoint.search(candidate_grid, stage=label)
@@ -772,10 +903,11 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                             'work_summary': deepcopy(search.checkpoint_summary_.get('work_summary'))})
         active_work = None
         current = search.cv_results_
-        keys = [key for key in _results([], len(folds)) if key != 'params']
+        keys = [key for key in _results([], len(folds)) if key not in ('params', 'accuracy_evidence')]
         for index, parameters in enumerate(current['params']):
             bare = bare_parameters(parameters)
             rows.append({'params': bare, 'stage': label, 'stage_index': index,
+                         'accuracy_evidence': deepcopy(current.get('accuracy_evidence', [None] * len(current['params']))[index]),
                          **{key: float(current[key][index]) for key in keys}})
             seen.add(parameter_hash(bare))
             for name in axes:
@@ -806,7 +938,15 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 policy_state = proposal['state']
                 review = proposal['review']
                 if review is None:
-                    evaluate(proposal['phase'], proposal['candidates'])
+                    evaluate(proposal['phase'], proposal['candidates'], proposal.get('proposal_report'))
+                elif review['state'] != 'accepted':
+                    publish_report(run_dir / 'coefficient-refused-stage.json', lambda: {
+                        'schema': 1, 'scope': 'refused_coefficient_stage',
+                        'decision': review['state'], 'stopping_reason': review['stopping_reason'],
+                        'budget': (proposal.get('proposal_report') or {}).get('budget')
+                                  or candidate_budget(config.max_candidates, len(seen), None, False),
+                        'proposal_report': proposal.get('proposal_report'), 'refused_stage_fits_dispatched': 0,
+                    }, announce=True)
 
             coefficient_review = deepcopy(review)
             ratio_started = ratio_refinement is not None and review['state'] == 'accepted'
@@ -817,8 +957,16 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                     ratio_policy_state = proposal['state']
                     review = proposal['review']
                     if review is not None:
+                        if review['state'] != 'accepted':
+                            publish_report(run_dir / 'ratio-refused-stage.json', lambda: {
+                                'schema': 1, 'scope': 'refused_ratio_stage',
+                                'decision': review['state'], 'stopping_reason': review['stopping_reason'],
+                                'budget': (proposal.get('proposal_report') or {}).get('budget')
+                                          or candidate_budget(config.max_candidates, len(seen), None, False),
+                                'proposal_report': proposal.get('proposal_report'), 'refused_stage_fits_dispatched': 0,
+                            }, announce=True)
                         break
-                    evaluate(proposal['phase'], proposal['candidates'])
+                    evaluate(proposal['phase'], proposal['candidates'], proposal.get('proposal_report'))
 
             results = _results(rows, len(folds))
             ranked = ranked_valid_indices(results) if rows else []
@@ -878,7 +1026,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         config=numerical_confirmation, search_config=config, jobs=jobs,
                         error_policy=error_policy, resume=resume, cv_seeds=cv_seeds,
                         seed_parameter=seed_parameter, reuse_equivalent_folds=reuse_equivalent_folds,
-                        parent_identity=checkpoint.identity_sha256)
+                        parent_identity=checkpoint.identity_sha256, **pair_options)
                     confirmation_work.update(
                         state=confirmation_report['state'], candidate_count=confirmation_report['candidate_count'],
                         wall_seconds=perf_counter() - active_work['started'],
@@ -938,7 +1086,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 raise
             refit_seconds = perf_counter() - started
             refit = {'state': 'completed', **selection, 'wall_seconds': refit_seconds,
-                     'diagnostics': checkpoint.diagnostics(model), 'native_runtime': final_runtime}
+                     'diagnostics': checkpoint.diagnostics(model, y_train), 'native_runtime': final_runtime}
             refit_work.update(state='completed', wall_seconds=refit_seconds)
             try:
                 refit_work['base_cache'] = summarize_cache_diagnostics(refit['diagnostics'])
@@ -984,7 +1132,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         error_policy=error_policy, resume=resume,
                         provenance=metadata,
                         reuse_equivalent_folds=reuse_equivalent_folds,
-                        cv_seeds=cv_seeds, seed_parameter=seed_parameter) as checkpoint:
+                        cv_seeds=cv_seeds, seed_parameter=seed_parameter, **pair_options) as checkpoint:
         saved = checkpoint.read_artifact('completed')
         if saved is not None:
             historical_work = saved.get('completion_work_summary')

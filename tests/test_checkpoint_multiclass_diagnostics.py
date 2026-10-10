@@ -105,6 +105,18 @@ class MulticlassDiagnosticsTests(unittest.TestCase):
         self.assertEqual(pairs, [[-8, 4], [-8, 91], [4, 91]])
         json.dumps(pairs, allow_nan=False)
 
+    def test_supplied_labels_follow_the_fitted_ovo_binary_remap(self):
+        labels = np.repeat(np.array([-8, 4, 91]), 4)
+        model = OvOClassifier(DiagnosticBinary()).fit(self.X, labels)
+        facts = cv_checkpoint.diagnostics(model, labels)
+        for item in facts['pairwise_estimators']:
+            child = item['diagnostics']
+            self.assertEqual(child['selected_rows']['class_counts'], [{'label': 1, 'count': 3}])
+            self.assertEqual(child['subset_rows'][0]['class_counts'], [{'label': 1, 'count': 2}])
+            self.assertEqual(child['subset_rows'][1]['class_counts'],
+                             [{'label': -1, 'count': 4}, {'label': 1, 'count': 2}])
+        self.assertEqual(DiagnosticBinary.predictions, 0)
+
     def test_binary_ensemble_diagnostics_remain_exact_and_do_not_recurse_bases(self):
         model = EnsembleKernelDWD()
         model.base_diagnostics_ = [{'converged_': False, 'stopping_reason_': 'max_iter'}]
@@ -117,7 +129,11 @@ class MulticlassDiagnosticsTests(unittest.TestCase):
         model.selected_indices_ = np.array([0, 2, 6])
         # Generic estimators_ belongs to binary base learners, not class pairs.
         model.estimators_ = [SimpleNamespace(n_iter_=999)]
-        self.assertEqual(cv_checkpoint.diagnostics(model), {
+        facts = cv_checkpoint.diagnostics(model)
+        self.assertEqual(facts.pop('subset_rows'), [cv_checkpoint._row_diagnostics(rows)
+                                                  for rows in model.subset_indices_])
+        self.assertEqual(facts.pop('selected_rows'), cv_checkpoint._row_diagnostics(model.selected_indices_))
+        self.assertEqual(facts, {
             'cache_hit_': True, 'gamma_': .125,
             'base_diagnostics_': model.base_diagnostics_,
             'subset_sizes': [4, 5], 'selected_size': 3,

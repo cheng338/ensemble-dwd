@@ -111,7 +111,7 @@ class AffineComputationTests(unittest.TestCase):
     def test_joint_never_silently_falls_back_on_older_dependency(self):
         error = TypeError("unexpected keyword argument 'affine_computation'")
         with patch('ensemble_dwd.estimator.KernGDWD', side_effect=error) as construct:
-            with self.assertRaisesRegex(ImportError, 'updated.*source dependency') as caught:
+            with self.assertRaisesRegex(ImportError, 'requested numerical computation options.*pinned') as caught:
                 self.model(affine_computation='joint').fit(self.X, self.y)
         self.assertIs(caught.exception.__cause__, error)
         self.assertEqual(construct.call_count, 1)

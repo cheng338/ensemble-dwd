@@ -11,6 +11,7 @@ from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .estimator import IneligibleSelectionError, IneligibleSubsetError, _positive_integer
+from ._failure_context import copy_failure_context
 
 
 def _pair_context(pair):
@@ -27,9 +28,19 @@ def _fit_pair(estimator, X, y, indices, pair):
         model.fit(X[indices], pair_y)
         return model
     except IneligibleSubsetError as exc:
-        raise IneligibleSubsetError(f"{_pair_context(pair)}: {exc}") from exc
+        wrapped = IneligibleSubsetError(f"{_pair_context(pair)}: {exc}")
+        try:
+            copy_failure_context(exc, wrapped)
+        except Exception:
+            pass
+        raise wrapped from exc
     except IneligibleSelectionError as exc:
-        raise IneligibleSelectionError(f"{_pair_context(pair)}: {exc}") from exc
+        wrapped = IneligibleSelectionError(f"{_pair_context(pair)}: {exc}")
+        try:
+            copy_failure_context(exc, wrapped)
+        except Exception:
+            pass
+        raise wrapped from exc
     except Exception as exc:
         exc.add_note(f"While fitting {_pair_context(pair)}.")
         raise
@@ -139,6 +150,10 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
 
     def fit(self, X, y):
         """Fit a fresh binary estimator for every observed class pair."""
+        return self._fit(X, y)
+
+    def _fit(self, X, y, *, pair_dispatch=None):
+        """Fit with an explicit internal dispatcher, preserving pair semantics."""
         self._clear_fit()
         try:
             self._validate_options()
@@ -153,10 +168,13 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
                           for first, second in class_pairs)
             indices = tuple(np.flatnonzero((y == first) | (y == second))
                             for first, second in pairs)
-            models = Parallel(n_jobs=self.n_jobs, pre_dispatch="n_jobs", batch_size=1)(
-                delayed(_fit_pair)(self.estimator, X, y, rows, pair)
-                for rows, pair in zip(indices, pairs)
-            )
+            if pair_dispatch is None:
+                models = Parallel(n_jobs=self.n_jobs, pre_dispatch="n_jobs", batch_size=1)(
+                    delayed(_fit_pair)(self.estimator, X, y, rows, pair)
+                    for rows, pair in zip(indices, pairs)
+                )
+            else:
+                models = pair_dispatch(self.estimator, X, y, indices, pairs)
             self.classes_ = classes
             self.pairs_ = pairs
             self.class_pair_indices_ = class_pairs

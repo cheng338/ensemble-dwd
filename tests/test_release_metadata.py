@@ -21,7 +21,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dependencies = [value for value in metadata["project"]["dependencies"]
                         if value.startswith("dwd")]
-        self.assertEqual(dependencies, ["dwd==1.3.12"])
+        self.assertEqual(dependencies, ["dwd==1.3.13"])
         lock = (ROOT / "requirements-dwd.txt").read_text(encoding="utf-8")
         lines = [line.strip() for line in lock.splitlines()
                  if line.strip() and not line.startswith("#")]

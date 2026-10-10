@@ -163,7 +163,7 @@ memory. This formula is a lower bound, not an estimate of peak RAM.
 direct coordinate-difference calculation for every base model and the final
 refit. The default is `'standard'`, which retains the existing norm/dot
 construction and its documented extreme-input limitations. The option requires
-the paired DWD 1.3.12 dependency.
+the paired DWD 1.3.13 dependency.
 
 Direct computation supports the named `kernel='rbf'` with the corrected Schur
 solver used by this estimator. Set gamma through the usual top-level `gamma`
@@ -205,7 +205,7 @@ option applies to ensemble DWD, not `EnsembleKernelSVM`.
 `EnsembleKernelDWD(affine_computation='joint')` forwards the same numerical
 policy to every base learner and the fresh final DWD fit, including each
 pair inside `OvOClassifier`. The default is `'standard'`. The option requires
-the paired DWD 1.3.12 dependency.
+the paired DWD 1.3.13 dependency.
 
 The policy evaluates the unchanged decision expression `K @ alpha + b`,
 including the intercept in the rounding check and, when needed, in joint
@@ -258,7 +258,7 @@ applies to ensemble DWD, not `EnsembleKernelSVM`.
 `EnsembleKernelDWD(exact_recovery='extended')` gives every base learner and
 the fresh final model the DWD dependency's extended exact-recovery budget.
 `OvOClassifier` clones the setting into every class pair. The default remains
-`'standard'`. The option requires the paired DWD 1.3.12 dependency.
+`'standard'`. The option requires the paired DWD 1.3.13 dependency.
 
 The standard limits are exact rank 16 and 4096-bit rational arithmetic.
 Extended recovery raises those limits to 32 and 8192 bits for both exact
@@ -302,6 +302,54 @@ In the README's pipelines use `ensemble__exact_recovery='extended'` or
 `ovo__estimator__exact_recovery='extended'`. Search grids and command-line
 defaults remain unchanged. This option applies to ensemble DWD, not
 `EnsembleKernelSVM`.
+
+## Optional fit profiling
+
+Version 0.3.8 offers an opt-in context for measuring ensemble-DWD
+work without adding an estimator parameter:
+
+```python
+from ensemble_dwd.profiling import fit_profile
+
+with fit_profile() as profile:
+    model.fit(X_train, y_train)
+
+observations = profile.as_dict()
+```
+
+The built-in binary DWD ensemble records validation, kernel settings,
+sampling, base fitting and scoring, consensus and sorting, selection, cache
+work and the final fit. Completed and aborted calls are separate. A cache hit
+reports reused base learners and does not invent fresh base-fit or scoring
+time. The final learner still fits normally. No profiling record is attached
+to the model or saved as a cached base result.
+`base_scoring` covers the initial scoring and accumulation passes. Additional
+scoring after an overflow is included in `base_consensus_recovery`.
+
+Inclusive stage times contain nested child stages. Self times exclude those
+children; adding all inclusive times would count some work more than once.
+The measured fit stages cover binary ensemble-DWD calls, not external
+preprocessing, arbitrary pipeline steps, SVM fitting or prediction. A profile
+around a sequential `OvOClassifier` aggregates its binary ensemble-DWD calls.
+The surrounding context can include other work, so its elapsed time is not
+automatically the estimator's fit time.
+
+Each context collects independently in its own thread and asyncio task.
+Nested contexts have separate records, and the outer context resumes after
+the inner one exits. Parallel workers need their own contexts and explicit
+aggregation; an empty parent profile does not describe their work. Exceptions
+propagate normally and aborted stages retain their observed work.
+
+Profiling has measurement overhead. It leaves the objective, sampling,
+selection, numerical checks, cache parameters and estimator defaults intact.
+Outside an active context, the instrumentation reads no clocks. Installing
+changed package sources still changes the existing cache provenance; enabling
+or disabling the context within the same installation does not.
+
+For native DWD residual dispatch, use the separate optional
+`dwd.profiling.residual_profile()` context provided by DWD 1.3.13.
+The contexts can be combined, but their nested times
+must not be added to ensemble stage times.
 
 ## Optional base-stage cache and retained models
 
@@ -381,6 +429,26 @@ evidence or departure from the established region reopens review. These are
 external search rules: the objective, subset sampler and final-refit method
 remain unchanged.
 
+If logarithm/exponential rounding loses an interior coefficient midpoint,
+the example uses exact comparisons to round the geometric midpoint to a
+floating-point value. Existing successful midpoint calculations are preserved.
+Adjacent floats still have no interior point. This applies to coefficient
+refinement, including coefficient axes in optional selection-ratio refinement;
+ratio midpoints remain arithmetic. It does not merge nearby parameters or
+reuse their fitted results. Correcting a premature refusal can require more
+evaluations before the unchanged stopping and budget rules are satisfied.
+
+Boundary expansion has the same protection in the version 0.3.8 examples.
+If the ordinary logarithm/exponential calculation refuses a positive finite
+exterior point, exact rational arithmetic evaluates the requested geometric
+extension, capped at a factor of ten, before one conversion to a float.
+Previously successful outward values are preserved. A true limit, such as
+underflow to zero or overflow beyond finite floats, remains a refusal. This
+also covers coefficient boundaries in optional ratio refinement. It does not
+replace the requested extension with an arbitrary neighboring float or merge
+different parameter values. Existing checkpoint source-identity checks require
+a fresh run directory when these workflow sources change.
+
 `AdaptiveSearchConfig` defaults to `max_expansions=3`, `max_candidates=500`,
 `top_k=3`, `plateau_rounds=2`, `improvement_tol=0.0`, `tie_tol=1e-12`,
 `refine=True`, `bracket_factor=2.0`, and `stable_refinement_rounds=2`.
@@ -408,6 +476,81 @@ and the final refit. Objective stopping, an iteration cap and an optimality
 check are reported separately; default DWD objective tolerance `1e-5` and
 `max_iter=100` are unchanged.
 
+Failure records also retain existing string exception notes in
+`exception_notes`, including the class pair attached to generic OvO fit or
+prediction errors. This records context already present on the exception;
+it does not change its type, message, cause or propagation. At most the first
+eight note entries are examined, with up to 1024 characters saved per valid
+string. `exception_notes_truncated` is true when a count or length limit removes
+data. Missing, unreadable or malformed notes are not coerced into strings.
+The notes field is absent when no valid notes are available. Earlier records
+without it remain readable; missing historical notes are not reconstructed.
+
+### Ensemble failure evidence
+
+Binary ensemble DWD and the ensemble SVM comparator attach a small
+`ensemble_failure_context` record to fit exceptions when available. The examples
+preserve it in ordinary failure records and checkpoint attempt or ineligible-fold
+receipts. It describes the current binary fit: stage, one-based base position
+when applicable, completed calls, and class counts for the input, failing subset
+or selected rows. A failed call is not counted as completed. Completion means a
+call returned, not that its optimizer converged or that the learner passed later
+validation. The original exception type, message, chaining and cleanup remain
+in effect, including the existing OvO wrappers for ineligible selections.
+
+`base_fit_calls_completed` and `final_fit_calls_completed` count fit returns in
+the current invocation. `base_score_calls_completed` counts completed initial
+whole-input scoring helpers, one per base. It does not count underlying scoring
+batches or extra predictions during overflow recovery. `cached_base_learners`
+describes restored bases separately; a cache hit reports zero current base-fit
+and initial-scoring calls. A cache write failure after successful base work
+retains the known current counts. Unobserved or custom stage implementations
+leave counts unknown instead of inferring successful work from a planned `M`.
+
+Class-count lists align with `classes` in the record, including zero counts for
+a missing selected class. At most two primitive label descriptions are retained;
+unsupported or oversized descriptions are `null`. In OvO, these are the binary
+encoded labels: `+1` denotes the first original pair class and `-1` the second.
+The existing pair message or note gives the original class pair. These counts
+do not aggregate other pairs or concurrent workers.
+
+Only bounded primitive metadata is retained, with no observations, row indices,
+models, scores or trajectories. Class-count scans occur only after an error and
+scale with the number of rows. Successful fits perform small scalar bookkeeping;
+this feature makes no zero-overhead or speed claim. Metadata or logging failure
+does not replace the original error. A new fit invocation starts fresh failure
+evidence even if a custom learner raises the same exception object again.
+Older failures without these fields remain readable and unknown facts are not
+reconstructed. No retry, redraw, eligibility relaxation or fitted-state recovery
+is introduced by these records.
+
+Checkpointed accuracy folds record `correct` and `n_validation` from the
+existing prediction. Candidate comparisons use exact fractions, with equal
+seed weights within each fold and equal weights across folds. They do not pool
+unequal folds by row count. Public scores remain floats, rounded once from the
+exact mean; `accuracy_evidence` retains the counts and exact mean. Exact ties
+keep the original candidate order. Search geometry, tolerances and budgets
+are unchanged.
+
+Older records do not acquire inferred counts. If a supplied result collection
+contains a valid candidate without count evidence, comparisons for that
+collection use the reported scalar scores. Numerical confirmation uses this
+same fallback jointly for both budgets. Arbitrary scorer results retain their
+existing scalar behavior. The updated accuracy aggregation and source identity
+require a new checkpoint directory; an old run is not silently upgraded.
+
+Compact diagnostics preserve separately reported objective stopping,
+`criterion_reached`, `optimality_met` and `converged` facts. A missing flag is
+unknown, not false. Base and final learner summaries include reported objective,
+iteration and selected solver/recovery facts without full traces. Sampled and
+selected rows have separate set and order hashes, relative to each binary
+model's training data. Class counts are included when those training labels
+are available; OvO uses its fitted pair's `+1`/`-1` coding. Within the same
+training-data identity, equal set hashes with different order hashes distinguish
+the same empirical rows from a changed row order. None of these facts alone
+establishes convergence or makes objective
+values comparable when the selected rows differ.
+
 `run.json` records data, folds, estimator settings and policy. Stage CV files,
 including repeated local and conditional-repair stages, and
 `accumulated-cv.json` preserve evidence. `selection.json` and `review.json`
@@ -426,14 +569,17 @@ New runs require a fresh `--output-dir`. Explicit `--resume --run` reuses
 checksummed completed folds only when data, folds, estimator parameters,
 policy and budgets, job count, and numerical runtime match. The installation
 must remain immutable; mismatched identity or live ownership blocks reuse.
-Unfinished fits restart. Interruptions retain completed evidence and record
+Unfinished fits restart by default; supported multiclass runs can enable
+[completed-pair recovery](multiclass.md#completed-pair-recovery).
+Interruptions retain completed evidence and record
 an interrupted status when possible. The legacy `run_search_workflow` helper
 remains nonresumable and retains its explicit coarse/local procedure. Its
 local stage preserves parent parameters and cannot discard a better coarse
 candidate.
 
-No fitted predictor or partial optimizer state is serialized. An interrupted
-final refit starts again. A crash after held-out prediction but before the
+The final-refit predictor and unfinished optimizer state are not serialized.
+Optional multiclass recovery saves only completed CV pair models. An
+interrupted final refit starts again. A crash after held-out prediction but before the
 authoritative completion receipt commits can repeat the fit and scoring.
 Once that receipt is committed, a verified resume restores saved summaries
 without fitting or scoring. Its result has `model=None`, `resumed_completed=True`.
@@ -486,6 +632,57 @@ prediction. These controls do not alter estimator defaults or search grids.
 
 ### Work and timing summaries
 
+Before each adaptive coefficient or ratio stage, `<stage>-plan.json` records
+the remaining unique-candidate allowance and the proposed CV workload. For
+supported estimators, it counts binary models, ensemble bases, ensemble finals
+and full-model learners using each candidate's effective `M`, the classes
+present in each training fold, and the requested CV seeds. Unknown estimator
+structures retain unknown learner counts. These are nominal counts for one
+successful pass before cache hits, checkpoint replay, equivalent-fold reuse,
+completed-pair recovery or early failure. They do not measure executed work,
+solver iterations, retries, CPU time, elapsed time or an ETA. Optional
+numerical confirmation and final full-training refitting remain separate
+phases and are not included in an original-stage plan.
+
+The plan's `near_coordinates` section reports close but distinct positive
+coordinates introduced by that stage. It uses the configured regularization
+and gamma axes, plus the selection-ratio axis throughout a search when ratio
+refinement is enabled. Relative separation is `(upper-lower)/upper <= 1e-14`,
+tested exactly on represented binary64 values. This threshold describes an
+observation; intentionally close inputs remain valid separate candidates.
+
+The report separates unique coordinate pairs across the stage and history,
+coordinate pairs with identical other settings, and whole-candidate pairs
+that can differ on several close axes. Counts exclude pairs already present
+in earlier stages. Details retain at most six examples per category. Axis
+and conditional counts use sorted windows; whole-candidate comparison is
+limited to 250,000 pairs involving a new candidate identity. Above that limit
+the whole-candidate count is explicitly unknown. Input processing still scales
+with the number of candidates; these are reporting limits, not search limits.
+
+A brief notice appears when newly introduced close pairs are found. Reading
+the previous stage report suppresses a repeated notice on replay when its
+report-input identity matches. Missing or unreadable supplementary reports
+may allow another notice; they cannot change recovery or fitting. No values
+are rounded or merged, no nearby candidate is skipped, and no fit is reused
+because of these observations. Coordinate ancestry is not inferred.
+
+When search stops for review, `coefficient-refused-stage.json` or
+`ratio-refused-stage.json` preserves the reason and any generated proposal.
+Fully representable, fully enumerated proposals have exact counts. For very large coefficient grids, at
+most 2,048 additional Cartesian entries are examined; the report keeps the
+generating grid and excluded identities, and labels the distinct candidate
+count as a lower bound when enumeration is incomplete. Encoding that input
+description still scales with its size. A round limit reached before proposal
+generation has no new candidate count to infer. Refusal never launches a
+partial stage or certifies optimal parameters.
+
+These supplementary reports are enabled by default. Ordinary reporting
+failures do not change fitting, candidate identity, ranking or search
+acceptance, and the reports are not inputs to recovery. Interruptions still
+propagate. Workflow source identity remains strict: use the original frozen
+workflow to resume its run, or start a new run with revised sources.
+
 All three adaptive tuning commands write `work-summary.json` automatically;
 there is no additional option or model evaluation. The summary describes the
 current invocation, with separate original-search stages, optional numerical
@@ -505,7 +702,9 @@ evaluations. Multiclass records count the observed binary pairs. The summary
 distinguishes hits, misses, disabled or bypassed caching, and non-hits with
 an unknown reason. A false cache-hit flag alone does not establish a miss.
 Missing cache metadata is unknown; replayed diagnostics do not count as new
-cache activity. These counts describe the base stage and do not count the
+cache activity. With optional multiclass pair recovery, cache observations
+from restored children also remain historical. These counts describe the
+base stage and do not count the
 separate final model fitted on the selected rows. Full-training refitting
 reports its own base-cache observations separately.
 
@@ -521,6 +720,15 @@ and ends at the named report snapshot. It includes checkpoint verification
 and earlier report writes, but excludes command-line data loading and the
 summary's own publication and final context cleanup. Replay verification is
 not a new fit.
+
+With [completed-pair recovery](multiclass.md#completed-pair-recovery), the
+optional `pair_recovery` report separates current fitted/restored pairs
+from pair evidence in replayed fold receipts. Current pair fit, load and
+save intervals are components of the enclosing fold fit interval; do not
+add them to that interval again. Historical reused-pair fit times are
+separate from current work. Failed or interrupted attempts retain available
+pair evidence, without making an incomplete fold a valid CV score. The
+default report is unchanged when pair recovery is disabled.
 
 Confirmation has its own work summary. Copies of original-search scores kept
 for comparison do not add original work a second time. Final fitting and
@@ -613,7 +821,8 @@ seed and all existing identity and selected-row checks. It preserves each
 candidate label rather than rounding ratios together. The selected candidate
 receives a separate fresh fit on all training rows with the declared final
 seed. Completed fold-seed records can be reused on a verified resume;
-unfinished evaluations restart.
+unfinished evaluations restart by default. Supported single-seed multiclass
+runs can retain completed pairs with the optional recovery setting.
 
 ### Numerical-budget confirmation
 
@@ -670,7 +879,9 @@ unchanged on resume. `numerical-confirmation.json` preserves the shortlist,
 original and confirmation scores, ranking changes, timing and stopping
 diagnostics, including multiclass pair details. A separate checkpoint context
 under `numerical-confirmation/` stores its completed fold-seed evaluations. Verified completed work can be reused after interruption;
-unfinished fits restart. Original-budget records cannot substitute for
+unfinished fits restart by default. Optional completed-pair recovery can
+retain pairs inside supported multiclass confirmation folds. Original-budget
+records cannot substitute for
 larger-budget evaluations. Optional equivalent-ratio reuse still requires all
 existing identity and row-equivalence checks within the confirmation context.
 

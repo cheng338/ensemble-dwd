@@ -1,5 +1,6 @@
 """Failure handling and durable records for external parameter searches."""
 from datetime import datetime, timezone
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ from sklearn.exceptions import NotFittedError
 from sklearn.metrics import accuracy_score
 
 from ensemble_dwd import IneligibleSelectionError, IneligibleSubsetError
+from ensemble_dwd._failure_context import failure_context
 
 
 def json_safe(value):
@@ -175,9 +177,38 @@ def exception_details(error):
         category = 'numerical_error'
     else:
         category = 'unexpected_error'
-    return {'category': category,
-            'exception_type': type(error).__module__ + '.' + type(error).__qualname__,
-            'message': str(error)}
+    details = {'category': category,
+               'exception_type': type(error).__module__ + '.' + type(error).__qualname__,
+               'message': str(error)}
+    try:
+        context = failure_context(error)
+        if context is not None:
+            details['ensemble_failure_context'] = context
+    except Exception:
+        # Supplementary failure evidence must not replace the original error.
+        pass
+    try:
+        notes = getattr(error, '__notes__', None)
+    except Exception:
+        return details
+    # Bound existing diagnostic notes without invoking user-defined containers.
+    # Python and the older-interpreter compatibility helper use plain lists.
+    if type(notes) not in (list, tuple):
+        return details
+    kept = []
+    truncated = len(notes) > 8
+    for note in notes[:8]:
+        if not isinstance(note, str):
+            continue
+        # Avoid custom __str__, length or slicing methods on a str subclass.
+        plain = str.__str__(note)
+        truncated = truncated or len(plain) > 1024
+        kept.append(plain[:1024])
+    if kept:
+        details['exception_notes'] = kept
+    if truncated:
+        details['exception_notes_truncated'] = True
+    return details
 
 
 def record_failure(directory, error, *, phase, estimator, training_data):
@@ -209,6 +240,10 @@ class CandidateEvaluator(ClassifierMixin, BaseEstimator):
         self.error_policy = error_policy
         self.failure_dir = failure_dir
 
+    def _fit_candidate(self, candidate, X, y):
+        """Fit one cloned candidate; specialized examples may dispatch its work."""
+        return candidate.fit(X, y)
+
     def fit(self, X, y):
         for name in list(vars(self)):
             if name.endswith('_'):
@@ -222,7 +257,7 @@ class CandidateEvaluator(ClassifierMixin, BaseEstimator):
         try:
             self.training_data_ = data_fingerprint(X, y)
             candidate = clone(self.estimator)
-            candidate.fit(X, y)
+            self._fit_candidate(candidate, X, y)
             classes = np.asarray(candidate.classes_)
         except Exception as error:
             self.failure_ = record_failure(
@@ -256,6 +291,7 @@ class CandidateEvaluator(ClassifierMixin, BaseEstimator):
 
 def eligible_accuracy(estimator, X, y):
     """NaN is reserved for an explicitly recorded ineligible subset or selection."""
+    estimator.accuracy_counts_ = None
     if not estimator.eligible_:
         if estimator.failure_ and estimator.failure_['category'] in (
                 'ineligible_subset', 'ineligible_selection'):
@@ -263,11 +299,136 @@ def eligible_accuracy(estimator, X, y):
         raise RuntimeError('The candidate has no eligible fitted model.')
     predictions = estimator.predict(X)
     try:
-        return float(accuracy_score(y, predictions))
+        score = float(accuracy_score(y, predictions))
+        actual, predicted = np.asarray(y), np.asarray(predictions)
+        if actual.ndim == predicted.ndim == 1 and actual.shape == predicted.shape and len(actual):
+            counts = {'correct': int(np.count_nonzero(actual == predicted)),
+                      'n_validation': len(actual)}
+            # Keep custom or unsupported scorer behavior unchanged. Counts are
+            # evidence only for the unweighted one-label-per-row accuracy above.
+            if float(accuracy_fraction(counts)) == score:
+                estimator.accuracy_counts_ = counts
+        return score
     except Exception as error:
         record_failure(estimator.failure_dir, error, phase='cv_scoring',
                        estimator=estimator.estimator_, training_data=estimator.training_data_)
         raise
+
+
+ACCURACY_AGGREGATION = 'exact-mean-seeds-within-fold-then-folds-v1'
+
+
+def accuracy_fraction(counts):
+    """Validate recorded counts; never infer them from a rounded score."""
+    if not isinstance(counts, dict) or set(counts) != {'correct', 'n_validation'}:
+        raise ValueError('Accuracy evidence must contain correct and n_validation counts.')
+    correct, size = counts['correct'], counts['n_validation']
+    if (type(correct) is not int or type(size) is not int
+            or size <= 0 or not 0 <= correct <= size):
+        raise ValueError('Invalid accuracy counts.')
+    return Fraction(correct, size)
+
+
+def _fraction_record(value):
+    return {'numerator': value.numerator, 'denominator': value.denominator}
+
+
+def accuracy_evidence(seed_folds):
+    """Exact equal-seed-within-fold, then equal-fold mean; missing stays unknown."""
+    if not seed_folds or not seed_folds[0]:
+        return None
+    n_folds = len(seed_folds[0])
+    if any(len(folds) != n_folds for folds in seed_folds):
+        raise ValueError('Accuracy evidence has inconsistent fold counts.')
+    if any(counts is None for folds in seed_folds for counts in folds):
+        return None
+    fractions = [[accuracy_fraction(counts) for counts in folds] for folds in seed_folds]
+    means = [sum((folds[fi] for folds in fractions), Fraction()) / len(fractions)
+             for fi in range(n_folds)]
+    return {'policy': ACCURACY_AGGREGATION, 'counts': seed_folds,
+            'axes': ['seed', 'fold'], 'fold_means': [_fraction_record(v) for v in means],
+            'mean': _fraction_record(sum(means, Fraction()) / n_folds)}
+
+
+def exact_accuracy_available(*collections):
+    """A comparison uses counts only if every eligible candidate has them."""
+    for results in collections:
+        evidence = results.get('accuracy_evidence')
+        for index, score in enumerate(results['mean_test_score']):
+            if np.isfinite(float(score)) and (evidence is None or evidence[index] is None):
+                return False
+    return True
+
+
+def score_value(results, index, *, exact=None):
+    """Compare a whole candidate set exactly or use its reported scalars."""
+    score = float(results['mean_test_score'][index])
+    evidence = results.get('accuracy_evidence')
+    evidence = None if evidence is None else evidence[index]
+    if evidence is None:
+        return score
+    if evidence != accuracy_evidence(evidence.get('counts')):
+        raise ValueError('Accuracy aggregation evidence does not match its counts.')
+    mean = evidence['mean']
+    value = Fraction(mean['numerator'], mean['denominator'])
+    if float(value) != score:
+        raise ValueError('Reported accuracy does not match its count evidence.')
+    if exact is None:
+        exact = exact_accuracy_available(results)
+    return value if exact else score
+
+
+def score_token(results, index):
+    value = score_value(results, index)
+    return _fraction_record(value) if isinstance(value, Fraction) else {'score': value}
+
+
+def token_value(token, fallback):
+    """Read new exact policy evidence while retaining scalar-only old results."""
+    if token is None or 'score' in token:
+        return fallback if token is None else token['score']
+    return Fraction(token['numerator'], token['denominator'])
+
+
+def comparable_tokens(first, second, first_fallback, second_fallback):
+    """Historical scalar-only stages cannot supply an exact comparison."""
+    left, right = token_value(first, first_fallback), token_value(second, second_fallback)
+    if isinstance(left, Fraction) and isinstance(right, Fraction):
+        return left, right
+    return (None if left is None else float(left), None if right is None else float(right))
+
+
+def equal_score_tokens(first, second, first_fallback, second_fallback):
+    left, right = comparable_tokens(first, second, first_fallback, second_fallback)
+    return left == right
+
+
+def score_nonimproving(after, before, tolerance):
+    """Retain scalar addition rounding; count comparisons use exact differences."""
+    if isinstance(after, Fraction) and isinstance(before, Fraction):
+        return after - before <= tolerance
+    return after <= before + tolerance
+
+
+def apply_accuracy_evidence(results, evidence):
+    """Keep public scores as floats, rounding exact fold/overall means once."""
+    results['accuracy_evidence'] = evidence
+    for index, item in enumerate(evidence):
+        if item is None:
+            continue
+        folds = [float(Fraction(v['numerator'], v['denominator'])) for v in item['fold_means']]
+        for fi, value in enumerate(folds):
+            results[f'split{fi}_test_score'][index] = value
+        mean = item['mean']
+        results['mean_test_score'][index] = float(Fraction(mean['numerator'], mean['denominator']))
+        results['std_test_score'][index] = float(np.std(folds))
+
+
+def score_ranks(results, *, exact=None):
+    values = [score_value(results, index, exact=exact) for index in range(len(results['params']))]
+    valid = [value for value in values if np.isfinite(float(value))]
+    return np.asarray([1 + sum(other > value for other in valid) if np.isfinite(float(value))
+                       else len(valid) + 1 if valid else 1 for value in values], dtype=np.int32)
 
 
 def prefix_grid(grid):

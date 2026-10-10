@@ -13,6 +13,7 @@ from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
+from ._failure_context import attach_failure_context, failure_context_scope, uses_implementation
 from .estimator import (
     IneligibleSelectionError,
     _finite_real,
@@ -232,121 +233,200 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
     def fit(self, X, y):
         """Fit using only the supplied training rows; clear state on failure."""
         self._clear_fit()
-        try:
-            return self._fit(X, y)
-        except BaseException:
-            self._clear_fit()
-            raise
+        with failure_context_scope():
+            try:
+                return self._fit(X, y)
+            except BaseException:
+                self._clear_fit()
+                raise
 
     def _base_stage(self, X, y, classes, subsets, gamma):
-        models = []
-        records = []
-        score_sum = np.zeros(len(y), dtype=np.float64)
-        for indices in subsets:
-            model = self._make_estimator(gamma).fit(X[indices], y[indices])
-            if not np.array_equal(model.classes_, classes):
-                raise ValueError("All SVC learners must use the same ordered binary labels.")
-            with np.errstate(over="ignore", invalid="ignore"):
-                score_sum += _batched_scores(model, X, self.prediction_batch_size)
-            models.append(model)
-            records.append(_diagnostics(model))
-        if np.isfinite(score_sum).all():
-            consensus = score_sum / self.M
-        else:
+        context = dict(family="ensemble_svm", stage="base_setup", base_position=None,
+                       base_fit_calls_completed=0, base_score_calls_completed=0,
+                       cached_base_learners=0, final_fit_calls_completed=0,
+                       base_work_source="current")
+        indices = None
+        try:
+            models = []
+            records = []
+            score_sum = np.zeros(len(y), dtype=np.float64)
+            for position, indices in enumerate(subsets, 1):
+                context.update(stage="base_fit", base_position=position)
+                model = self._make_estimator(gamma).fit(X[indices], y[indices])
+                context["base_fit_calls_completed"] += 1
+                context["stage"] = "base_validation"
+                if not np.array_equal(model.classes_, classes):
+                    raise ValueError("All SVC learners must use the same ordered binary labels.")
+                context["stage"] = "base_scoring"
+                with np.errstate(over="ignore", invalid="ignore"):
+                    scores = _batched_scores(model, X, self.prediction_batch_size)
+                    context["base_score_calls_completed"] += 1
+                    score_sum += scores
+                    del scores
+                models.append(model)
+                context["stage"] = "base_diagnostics"
+                records.append(_diagnostics(model))
+            context.update(stage="base_consensus", base_position=None)
+            indices = None
+            if np.isfinite(score_sum).all():
+                consensus = score_sum / self.M
+            else:
+                try:
+                    consensus = _overflow_safe_consensus(models, X, self.prediction_batch_size)
+                except FloatingPointError as error:
+                    raise FloatingPointError("SVC must return finite binary decision values.") from error
+            context["stage"] = "base_summary"
+            signed_labels = np.where(y == classes[1], 1.0, -1.0)
+            distances = np.abs(signed_labels * consensus - 1.0)
+            return dict(consensus=consensus, distances=distances,
+                        order=np.argsort(distances, kind="stable"),
+                        models=models if self.store_base_estimators else None,
+                        diagnostics=records,
+                        n_iter=np.asarray([item["n_iter"] for item in records], dtype=int),
+                        fit_status=np.asarray([item["fit_status"] for item in records], dtype=int),
+                        n_support=np.asarray([item["n_support"] for item in records], dtype=int))
+        except BaseException as error:
             try:
-                consensus = _overflow_safe_consensus(models, X, self.prediction_batch_size)
-            except FloatingPointError as error:
-                raise FloatingPointError("SVC must return finite binary decision values.") from error
-        signed_labels = np.where(y == classes[1], 1.0, -1.0)
-        distances = np.abs(signed_labels * consensus - 1.0)
-        return dict(consensus=consensus, distances=distances,
-                    order=np.argsort(distances, kind="stable"),
-                    models=models if self.store_base_estimators else None,
-                    diagnostics=records,
-                    n_iter=np.asarray([item["n_iter"] for item in records], dtype=int),
-                    fit_status=np.asarray([item["fit_status"] for item in records], dtype=int),
-                    n_support=np.asarray([item["n_support"] for item in records], dtype=int))
+                attach_failure_context(error, context, y=y, classes=classes, subset=indices)
+            except Exception:
+                pass
+            raise
 
     def _base_result(self, X, y, classes, subsets, gamma):
-        compute = lambda: self._base_stage(X, y, classes, subsets, gamma)
-        if self.cache_dir is None:
-            reason = "disabled"
-        elif self.random_state is None:
-            reason = "bypassed: random_state=None"
-        elif type(self) is not EnsembleKernelSVM:
-            reason = "bypassed: custom estimator subclass"
-        else:
+        context = dict(family="ensemble_svm", stage="base_cache", base_position=None,
+                       base_fit_calls_completed=None, base_score_calls_completed=None,
+                       cached_base_learners=None, final_fit_calls_completed=0,
+                       base_work_source="unknown")
+
+        def compute():
+            result = self._base_stage(X, y, classes, subsets, gamma)
+            # Only the known implementation establishes these completed counts.
+            if uses_implementation(self, "_base_stage", EnsembleKernelSVM._base_stage):
+                context.update(base_fit_calls_completed=len(subsets),
+                               base_score_calls_completed=len(subsets),
+                               cached_base_learners=0, base_work_source="current")
+            return result
+
+        try:
+            if self.cache_dir is None:
+                reason = "disabled"
+            elif self.random_state is None:
+                reason = "bypassed: random_state=None"
+            elif type(self) is not EnsembleKernelSVM:
+                reason = "bypassed: custom estimator subclass"
+            else:
+                try:
+                    provenance = _runtime_provenance(SVC)
+                except _CacheIdentityError as error:
+                    return compute(), False, None, "bypassed: " + str(error)
+                parameters = self.get_params(deep=False).copy()
+                for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma"):
+                    parameters.pop(name)
+                parameters["gamma"] = gamma
+                key_data = dict(family="ensemble-kernel-svm-signed-margin-v1",
+                                sampling=_SAMPLING_SCHEME,
+                                X=X, y=y, classes=classes, subsets=subsets,
+                                parameters=parameters, provenance=provenance)
+                verifier = _RuntimeVerifier(lambda: _runtime_provenance(SVC), provenance)
+                result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute, verify=verifier)
+                if hit:
+                    context.update(base_fit_calls_completed=0, base_score_calls_completed=0,
+                                   cached_base_learners=len(subsets), base_work_source="cache")
+                if hit and np.any(result["fit_status"] != 0):
+                    count = int(np.count_nonzero(result["fit_status"]))
+                    warnings.warn(
+                        f"Reusing {count} cached base SVC model(s) that did not converge. "
+                        "Increase max_iter or change the parameter candidate.",
+                        ConvergenceWarning, stacklevel=3)
+                status = "bypassed: " + verifier.failure if verifier.failure else ("hit" if hit else "miss")
+                return result, hit, key, status
+            return compute(), False, None, reason
+        except BaseException as error:
             try:
-                provenance = _runtime_provenance(SVC)
-            except _CacheIdentityError as error:
-                return compute(), False, None, "bypassed: " + str(error)
-            parameters = self.get_params(deep=False).copy()
-            for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma"):
-                parameters.pop(name)
-            parameters["gamma"] = gamma
-            key_data = dict(family="ensemble-kernel-svm-signed-margin-v1",
-                            sampling=_SAMPLING_SCHEME,
-                            X=X, y=y, classes=classes, subsets=subsets,
-                            parameters=parameters, provenance=provenance)
-            verifier = _RuntimeVerifier(lambda: _runtime_provenance(SVC), provenance)
-            result, hit, key = _cached_base_stage(self.cache_dir, key_data, compute, verify=verifier)
-            if hit and np.any(result["fit_status"] != 0):
-                count = int(np.count_nonzero(result["fit_status"]))
-                warnings.warn(
-                    f"Reusing {count} cached base SVC model(s) that did not converge. "
-                    "Increase max_iter or change the parameter candidate.",
-                    ConvergenceWarning, stacklevel=3)
-            status = "bypassed: " + verifier.failure if verifier.failure else ("hit" if hit else "miss")
-            return result, hit, key, status
-        return compute(), False, None, reason
+                attach_failure_context(error, context, y=y, classes=classes)
+            except Exception:
+                pass
+            raise
 
     def _fit(self, X, y):
-        self._validate_options()
-        X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
-        check_classification_targets(y)
-        classes, encoded = np.unique(y, return_inverse=True)
-        if len(classes) < 2:
-            raise ValueError("EnsembleKernelSVM requires two classes; the input contains one class.")
-        if len(classes) > 2:
-            raise ValueError("Only binary classification is supported. The input has more than two classes.")
-        selected_size = int(len(y) * self.sv_selection_ratio)
-        if selected_size < 2:
-            raise IneligibleSelectionError(
-                "sv_selection_ratio selects fewer than two observations. "
-                "Increase the ratio or provide more training observations.")
-        subset_size = max(2, int(len(y) * self.theta))
-        gamma = self._resolve_gamma(X)
-        subsets = _sample_subsets(encoded, subset_size, self.M,
-                                  _private_random_state(self.random_state))
-        base, hit, key, status = self._base_result(X, y, classes, subsets, gamma)
-        selected = base["order"][:selected_size].copy()
-        if len(np.unique(encoded[selected])) != 2:
-            raise IneligibleSelectionError(
-                f"The {selected_size} selected observations contain only one class. "
-                "This candidate cannot fit the final binary SVC. Increase "
-                "sv_selection_ratio or use a different parameter candidate.")
-        final = self._make_estimator(gamma).fit(X[selected], y[selected])
-        if not np.array_equal(final.classes_, classes):
-            raise ValueError("The final SVC must use the same ordered binary labels.")
-        final_diagnostics = _diagnostics(final)
-        self.classes_ = classes
-        self.gamma_ = gamma
-        self.subset_indices_ = subsets
-        self.selected_indices_ = selected
-        self.consensus_scores_ = base["consensus"]
-        self.selection_distances_ = base["distances"]
-        self.estimators_ = base["models"]
-        self.base_diagnostics_ = deepcopy(base["diagnostics"])
-        self.n_iter_ = np.append(base["n_iter"], final_diagnostics["n_iter"])
-        self.fit_status_ = np.append(base["fit_status"], final_diagnostics["fit_status"])
-        self.converged_ = self.fit_status_ == 0
-        self.n_support_ = np.vstack((base["n_support"], final_diagnostics["n_support"]))
-        self.support_counts_ = self.n_support_.sum(axis=1)
-        self.final_estimator_ = final
-        self.cache_hit_ = hit
-        self.cache_key_ = key
-        self.cache_status_ = status
-        return self
+        context = dict(family="ensemble_svm", stage="options", base_position=None,
+                       base_fit_calls_completed=0, base_score_calls_completed=0,
+                       cached_base_learners=0, final_fit_calls_completed=0,
+                       base_work_source="current")
+        classes = selected = None
+        try:
+            self._validate_options()
+            context["stage"] = "input_validation"
+            X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
+            check_classification_targets(y)
+            classes, encoded = np.unique(y, return_inverse=True)
+            if len(classes) < 2:
+                raise ValueError("EnsembleKernelSVM requires two classes; the input contains one class.")
+            if len(classes) > 2:
+                raise ValueError("Only binary classification is supported. The input has more than two classes.")
+            context["stage"] = "setup"
+            selected_size = int(len(y) * self.sv_selection_ratio)
+            if selected_size < 2:
+                raise IneligibleSelectionError(
+                    "sv_selection_ratio selects fewer than two observations. "
+                    "Increase the ratio or provide more training observations.")
+            subset_size = max(2, int(len(y) * self.theta))
+            gamma = self._resolve_gamma(X)
+            context["stage"] = "sampling"
+            subsets = _sample_subsets(encoded, subset_size, self.M,
+                                      _private_random_state(self.random_state))
+            context.update(stage="base_work", base_fit_calls_completed=None,
+                           base_score_calls_completed=None, cached_base_learners=None,
+                           base_work_source="unknown")
+            base, hit, key, status = self._base_result(X, y, classes, subsets, gamma)
+            if (uses_implementation(self, "_base_stage", EnsembleKernelSVM._base_stage)
+                    and uses_implementation(self, "_base_result", EnsembleKernelSVM._base_result)):
+                context.update(base_fit_calls_completed=0 if hit else len(subsets),
+                               base_score_calls_completed=0 if hit else len(subsets),
+                               cached_base_learners=len(subsets) if hit else 0,
+                               base_work_source="cache" if hit else "current")
+            context["stage"] = "selection"
+            selected = base["order"][:selected_size].copy()
+            if len(np.unique(encoded[selected])) != 2:
+                raise IneligibleSelectionError(
+                    f"The {selected_size} selected observations contain only one class. "
+                    "This candidate cannot fit the final binary SVC. Increase "
+                    "sv_selection_ratio or use a different parameter candidate.")
+            context["stage"] = "final_fit"
+            final = self._make_estimator(gamma).fit(X[selected], y[selected])
+            context["final_fit_calls_completed"] = 1
+            context["stage"] = "final_validation"
+            if not np.array_equal(final.classes_, classes):
+                raise ValueError("The final SVC must use the same ordered binary labels.")
+            context["stage"] = "final_diagnostics"
+            final_diagnostics = _diagnostics(final)
+            context["stage"] = "finalization"
+            self.classes_ = classes
+            self.gamma_ = gamma
+            self.subset_indices_ = subsets
+            self.selected_indices_ = selected
+            self.consensus_scores_ = base["consensus"]
+            self.selection_distances_ = base["distances"]
+            self.estimators_ = base["models"]
+            context["stage"] = "final_diagnostics"
+            self.base_diagnostics_ = deepcopy(base["diagnostics"])
+            self.n_iter_ = np.append(base["n_iter"], final_diagnostics["n_iter"])
+            self.fit_status_ = np.append(base["fit_status"], final_diagnostics["fit_status"])
+            self.converged_ = self.fit_status_ == 0
+            self.n_support_ = np.vstack((base["n_support"], final_diagnostics["n_support"]))
+            self.support_counts_ = self.n_support_.sum(axis=1)
+            context["stage"] = "finalization"
+            self.final_estimator_ = final
+            self.cache_hit_ = hit
+            self.cache_key_ = key
+            self.cache_status_ = status
+            return self
+        except BaseException as error:
+            try:
+                attach_failure_context(error, context, y=y, classes=classes, selected=selected)
+            except Exception:
+                pass
+            raise
 
     def decision_function(self, X):
         """Return finite final-model scores, positive for classes_[1]."""

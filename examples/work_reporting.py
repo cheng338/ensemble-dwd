@@ -40,7 +40,7 @@ _CACHE_OBSERVATIONS = ('reported_hits', 'reported_misses', 'reported_disabled',
                        'unknown_diagnostic_nodes')
 
 
-def _cache_nodes(diagnostics):
+def _cache_nodes(diagnostics, *, current_only=False):
     """Count observed leaves, preserving evidence of unavailable diagnostics."""
     result = {name: 0 for name in _CACHE_OBSERVATIONS}
     if not isinstance(diagnostics, dict):
@@ -51,8 +51,10 @@ def _cache_nodes(diagnostics):
             return result, True
         unavailable = False
         for pair in pairs:
+            if current_only and isinstance(pair, dict) and pair.get('work_origin') == 'recovered':
+                continue
             child = pair.get('diagnostics') if isinstance(pair, dict) else None
-            child_counts, child_unavailable = _cache_nodes(child)
+            child_counts, child_unavailable = _cache_nodes(child, current_only=current_only)
             for name, value in child_counts.items():
                 result[name] += value
             unavailable = unavailable or child_unavailable
@@ -77,7 +79,7 @@ def _cache_nodes(diagnostics):
     return result, False
 
 
-def summarize_cache_diagnostics(diagnostics):
+def summarize_cache_diagnostics(diagnostics, *, current_only=False):
     """Summarize cache flags for one observed evaluation or fitted model.
 
     Explicit bool flags report a hit or non-hit; only a matching ``miss``
@@ -86,9 +88,11 @@ def summarize_cache_diagnostics(diagnostics):
     a usable flag is unknown. Missing/empty pair collections provide no
     number of absent pairs, so no missing pair-node count is invented. The
     coverage counters still mark the evaluation as partial or unreported.
+    With current_only, restored pair models are excluded: their flags describe
+    historical model fitting rather than work done in this evaluation.
     """
     result = empty_work_summary()['base_cache']
-    counts, unavailable = _cache_nodes(diagnostics)
+    counts, unavailable = _cache_nodes(diagnostics, current_only=current_only)
     result.update(counts)
     known = sum(counts[name] for name in _CACHE_OBSERVATIONS
                 if name != 'unknown_diagnostic_nodes')
@@ -100,6 +104,68 @@ def summarize_cache_diagnostics(diagnostics):
         coverage = 'evaluations_with_complete_cache_flags'
     result[coverage] = 1
     return result
+
+
+_PAIR_COUNTS = ('fitted_pairs', 'recovered_pairs', 'fitted_unsaved_pairs')
+_PAIR_SECONDS = {'pair_fit': 'current_pair_fit_seconds',
+                 'pair_load': 'pair_load_seconds', 'pair_save': 'pair_save_seconds'}
+
+
+def _empty_pair_work():
+    return {
+        'schema': 1,
+        'current': {'evaluations': 0, **dict.fromkeys(_PAIR_COUNTS, 0)},
+        'current_worker_seconds': dict.fromkeys(_PAIR_SECONDS, 0.),
+        'historical_reused_pair_fit_seconds': 0.,
+        'replayed_receipts': {
+            'evaluations': 0, **dict.fromkeys(_PAIR_COUNTS, 0),
+            'worker_seconds': dict.fromkeys(_PAIR_SECONDS, 0.),
+            'historical_reused_pair_fit_seconds': 0.,
+        },
+        'cleanup_status_counts': {},
+    }
+
+
+def _summarize_pair_work(result, record, *, replayed):
+    """Keep restored model history separate from this invocation's work."""
+    evidence = record.get('pair_recovery')
+    if evidence is None:
+        return
+    if evidence['schema'] != 1:
+        raise ValueError('Unsupported pair recovery work schema')
+    summary = result.setdefault('pair_recovery', _empty_pair_work())
+    counts = summary['replayed_receipts'] if replayed else summary['current']
+    seconds = (summary['replayed_receipts']['worker_seconds'] if replayed
+               else summary['current_worker_seconds'])
+    historical = summary['replayed_receipts'] if replayed else summary
+    counts['evaluations'] += 1
+    for name in _PAIR_COUNTS:
+        counts[name] += evidence[name]
+    for name, field in _PAIR_SECONDS.items():
+        seconds[name] += evidence[field]
+    historical['historical_reused_pair_fit_seconds'] += evidence['historical_reused_pair_fit_seconds']
+    status = evidence['cleanup_status']
+    statuses = summary['cleanup_status_counts']
+    statuses[status] = statuses.get(status, 0) + 1
+
+
+def _aggregate_pair_work(result, summary):
+    evidence = summary.get('pair_recovery')
+    if evidence is None:
+        return
+    if evidence['schema'] != 1:
+        raise ValueError('Unsupported pair recovery work schema')
+    combined = result.setdefault('pair_recovery', _empty_pair_work())
+    for name in ('evaluations', *_PAIR_COUNTS):
+        combined['current'][name] += evidence['current'][name]
+        combined['replayed_receipts'][name] += evidence['replayed_receipts'][name]
+    for name in _PAIR_SECONDS:
+        combined['current_worker_seconds'][name] += evidence['current_worker_seconds'][name]
+        combined['replayed_receipts']['worker_seconds'][name] += evidence['replayed_receipts']['worker_seconds'][name]
+    combined['historical_reused_pair_fit_seconds'] += evidence['historical_reused_pair_fit_seconds']
+    combined['replayed_receipts']['historical_reused_pair_fit_seconds'] += evidence['replayed_receipts']['historical_reused_pair_fit_seconds']
+    for name, count in evidence['cleanup_status_counts'].items():
+        combined['cleanup_status_counts'][name] = combined['cleanup_status_counts'].get(name, 0) + count
 
 
 def summarize_records(records):
@@ -117,6 +183,7 @@ def summarize_records(records):
     current = result['current_worker_seconds']
     historical = result['historical_receipt_seconds']
     for record, replayed in values:
+        _summarize_pair_work(result, record, replayed=replayed)
         counts['total'] += 1
         alias = 'equivalent_reuse' in record
         ineligible = record['state'] == 'ineligible'
@@ -136,7 +203,7 @@ def summarize_records(records):
             counts['executed_ineligible'] += int(ineligible)
             current['fit'] += record['fit_time']
             current['score'] += record['score_time']
-            cache = summarize_cache_diagnostics(record.get('diagnostics'))
+            cache = summarize_cache_diagnostics(record.get('diagnostics'), current_only=True)
             for name, value in cache.items():
                 result['base_cache'][name] += value
     return result
@@ -158,6 +225,7 @@ def aggregate_work_summaries(summaries):
                       'historical_receipt_seconds', 'base_cache'):
             for name in result[group]:
                 result[group][name] += summary[group][name]
+        _aggregate_pair_work(result, summary)
         result['search_call_wall_seconds'] += summary['search_call_wall_seconds']
         result['search_call_count'] += summary['search_call_count']
     return result

@@ -111,7 +111,7 @@ class ExactRecoveryTests(unittest.TestCase):
     def test_extended_never_falls_back_on_older_dependency(self):
         error = TypeError("unexpected keyword argument 'exact_recovery'")
         with patch('ensemble_dwd.estimator.KernGDWD', side_effect=error) as construct:
-            with self.assertRaisesRegex(ImportError, 'updated.*source dependency') as caught:
+            with self.assertRaisesRegex(ImportError, 'requested numerical computation options.*pinned') as caught:
                 self.model(exact_recovery='extended').fit(self.X, self.y)
         self.assertIs(caught.exception.__cause__, error)
         self.assertEqual(construct.call_count, 1)

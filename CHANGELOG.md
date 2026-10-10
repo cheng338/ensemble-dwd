@@ -3,6 +3,74 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.8 — 2026-10-09
+
+- Pair this release with DWD 1.3.13. Keep Python 3.11 or later as the
+  supported range. The Python 3.10 companion remains at ensemble-dwd 0.3.7
+  with DWD 1.3.12 and does not include the changes below.
+
+- Recover valid geometric boundary expansions that were refused because
+  logarithms rounded together. Keep every previously successful coordinate,
+  the factor-of-ten step cap and genuine representability limits. Apply the
+  fallback to adaptive and optional ratio-refinement examples without merging
+  distinct parameters. Changed workflow sources require a fresh checkpoint
+  directory under the existing identity checks.
+- Add optional `ensemble_dwd.profiling.fit_profile()` for binary ensemble-DWD
+  fit stages, including base work, scoring, selection, cache reuse and the
+  final fit. Distinguish inclusive and self times and completed or aborted
+  calls. Profiles remain outside fitted models and cached base results; the
+  estimator parameters, sampling and numerical methods stay unchanged. See
+  the [profiling guide](docs/method.md#optional-fit-profiling).
+- Preserve bounded ensemble failure context: stage, base position, completed
+  fit and initial scoring calls, reused bases, and available class counts.
+  Carry these facts through OvO wrapping and example failure receipts while
+  preserving exception types, cleanup, sampling, selection and numerical work.
+  Missing work counts remain unknown; cached work is separate from current work.
+- Disclose newly introduced close but distinct search coordinates in adaptive
+  example stage plans. Distinguish coordinate pairs from same-context candidate
+  pairs, bound sampled details and whole-candidate comparisons, and suppress
+  repeated notices when the same stage report is available. Keep all parameter
+  values, candidate identities, fitted evaluations and search decisions intact.
+- Report planned learner counts and remaining candidate allowance before each
+  adaptive example stage. Save refused coefficient and ratio proposals with
+  their reasons; large grid counts remain explicitly labeled lower bounds when
+  full enumeration would be costly. Keep planned work separate from completed
+  work and reuse, preserve exact candidate identities, and leave search rules
+  and estimator mathematics unchanged. Supplementary report failures do not
+  change search decisions. Existing workflow identity checks remain strict.
+- Add optional completed-pair recovery to checkpointed multiclass DWD
+  examples, disabled by default. Verified local models can complete an
+  interrupted fold without refitting its finished pairs. Reuse preserves
+  the existing fitting and prediction methods, checks the saved identity
+  and fitted state, and reclaims pair files only after the completed fold
+  receipt is verified. Reports separate current pair work from restored
+  history. Storage limits and optional write failures preserve successful
+  computations; unfinished binary fits and final refits still restart.
+- Recover geometric refinement midpoints when logarithm/exponential rounding
+  loses an available interior parameter value. Existing successful coordinates
+  are unchanged, and adjacent floats still have no interior midpoint. This
+  corrects premature refinement refusal in narrow grids; estimator mathematics
+  and search acceptance rules are unchanged.
+- Preserve existing exception notes, including the OvO class pair, in example
+  failure records and failed checkpoint attempts. Bound the saved notes and
+  mark truncation while retaining the original exception type, message and
+  cause. Fitting and selection are unchanged.
+- Correct the dependency-construction error message for optional numerical
+  settings. It no longer claims the pinned DWD wheel lacks supported options;
+  the original exception remains chained for diagnosis.
+- Record correct-prediction and validation-row counts in checkpointed example
+  folds. Aggregate accuracy with exact fractions, retaining equal seed and
+  fold weights and the existing candidate-order tie rule. Use the same
+  evidence for adaptive ranking, stable-score checks and numerical
+  confirmation; keep arbitrary scalar scores and missing older evidence
+  separate from exact count comparisons. Updated checkpoint identities require
+  a fresh run directory.
+- Extend compact learner diagnostics with the reported final objective,
+  iteration attempts, solver/recovery summaries and distinct stopping flags.
+  Example records also retain sampled/selected row set and order hashes and,
+  when training labels are available, class counts. Missing older facts remain
+  unknown. No predictions, solver steps or convergence claims are added.
+
 ## 0.3.7 — 2026-10-06
 
 - Update the paired dependency to DWD 1.3.12 and refresh its validated

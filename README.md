@@ -31,13 +31,13 @@ reserved. A software license has not yet been selected or granted.
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.7 requires DWD 1.3.12 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.12).
+Python 3.11 or later is required. Version 0.3.8 requires DWD 1.3.13 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.13).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.12 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.13 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -54,7 +54,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.7-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.8-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -71,18 +71,21 @@ require the portable build, put only that wheel in `wheels` when installing
 the dependency. Windows validation does not establish numerical equivalence
 on Linux, a different processor or free-threaded Python.
 
-DWD 1.3.12 accelerates eligible dense compensated score sums on Windows
+The separately released Python 3.10 companion remains at ensemble-dwd 0.3.7
+with DWD 1.3.12. It does not contain the changes in version 0.3.8.
+
+DWD 1.3.13 accelerates eligible dense compensated score sums on Windows
 CPython 3.12 x86-64. Other runtimes and unsupported inputs keep the Python
 calculation and its numerical checks. Wheel installation compatibility does
 not guarantee that a compiled scoring path is active. See DWD's
-[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.12/docs/compiled_residual.md)
+[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.13/docs/compiled_residual.md)
 for eligibility and fallback behavior.
 
-The CI workflow uses the same lock and the explicit DWD 1.3.12 release asset
+The CI workflow uses the same lock and the explicit DWD 1.3.13 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
-The default numerical policies remain unchanged. DWD 1.3.12 also provides the
+The default numerical policies remain unchanged. DWD 1.3.13 also provides the
 optional `rbf_computation='direct'`, `affine_computation='joint'` and
 `exact_recovery='extended'` settings used by this release. See
 [direct RBF computation](docs/method.md#optional-direct-rbf-computation),
@@ -271,6 +274,11 @@ ratio refinement below is enabled. Missing conditional neighbors are tested
 at the same values of the other parameters. An invalid
 neighbor does not establish an interior optimum.
 
+When logarithm rounding loses a valid outward point, the version 0.3.8 examples
+recover the capped geometric extension with exact arithmetic. Previously
+successful coordinates stay unchanged; true floating-point limits still stop
+expansion. Distinct parameter values are not merged.
+
 Local refinement repeatedly proposes joint logarithmic midpoints around the
 top three distinct lambda/gamma pairs, within the explored bounds, with all
 fixed fraction choices. The default stopping rule requires valid neighbors
@@ -384,7 +392,9 @@ To resume, pass `--resume --run` with the original output directory and the
 same data, folds, estimator parameters, policy and budgets, job count, and
 numerical runtime. The installation must remain immutable. Identity mismatch
 or live ownership prevents reuse. Checksummed completed fold records survive
-interruption; unfinished fits restart. This checkpoint is separate from the
+interruption; unfinished fits restart by default. The multiclass example also
+offers [optional completed-pair recovery](docs/multiclass.md#completed-pair-recovery).
+This checkpoint is separate from the
 optional base-fit cache, so `--no-cache` does not disable completed-fold reuse.
 
 Checkpoint schema 2 preserves parameter types because numerically equal Python
@@ -401,6 +411,11 @@ including repeated local and conditional-repair stages, and
 `status.json`, and `failures/failure-*.json` describe later outcomes.
 `completed.json` mirrors the committed held-out result.
 
+Ensemble failures also retain bounded stage, learner-progress and class-count
+details in `ensemble_failure_context`, when available. These survive OvO and
+CV failure reporting; bases restored from cache are separate from current fit
+work. See [failure evidence](docs/method.md#ensemble-failure-evidence).
+
 The examples also write `work-summary.json` automatically. It separates work
 executed during the current invocation from equivalent-ratio reuse and
 checkpoint replay, with distinct search, optional confirmation, final-fit
@@ -409,8 +424,22 @@ elapsed time are separate quantities. See
 [work and timing summaries](docs/method.md#work-and-timing-summaries), including
 how completed-result replay and interrupted stages are reported.
 
-An interrupted final refit restarts from the beginning; fitted models are not
-serialized. A crash after held-out prediction but before the authoritative
+Before each adaptive stage, `<stage>-plan.json` records its candidate budget
+and planned binary, base, final, and full-model learner counts. These describe
+one successful pass before reuse or failure; they are not completed work or a
+time estimate. Refused coefficient and ratio stages have separate
+`*-refused-stage.json` reports. Large proposed grids retain their generating
+values and a labeled lower bound when a complete count would be costly.
+Reporting preserves candidate identities and search rules. See
+[work and timing summaries](docs/method.md#work-and-timing-summaries).
+
+Stage plans also disclose newly introduced close but distinct parameter values,
+with bounded detail samples and brief console notices. These observations do
+not establish equivalent fits: every candidate keeps its exact values and
+checkpoint identity. See [the reporting details](docs/method.md#work-and-timing-summaries).
+
+An interrupted final refit restarts from the beginning; its fitted models are
+not serialized. A crash after held-out prediction but before the authoritative
 completion receipt is committed can require refitting and rescoring. Once
 that receipt is committed, a verified resume returns the saved result without
 fitting or scoring again. The Python result then has `model=None` and
@@ -532,12 +561,17 @@ search cannot accept a candidate, it does not fit a final model or score the
 test set. This checks that the workflow runs; it is not an adequate search
 for comparing accuracy. See [the multiclass method guide](docs/multiclass.md).
 
+`--pair-recovery --no-cache` optionally saves completed binary pairs inside
+unfinished CV folds for verified local resume. It is off by default and
+does not checkpoint an unfinished binary fit or the final full-training fit.
+See [supported settings and storage limits](docs/multiclass.md#completed-pair-recovery).
+
 For binary and multiclass examples of `EnsembleKernelSVM`, see
 [the comparator guide](docs/ensemble-svm.md).
 
 # Results and boundaries
 
-See the [0.3.7 changelog](CHANGELOG.md#037--2026-10-06) for this release's changes.
+See the [0.3.8 changelog](CHANGELOG.md#038--2026-10-09) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.
@@ -553,6 +587,11 @@ learner. An objective stopping event does not itself certify optimality.
 `gamma_` is `None` for kernels that do not consume top-level gamma, including
 linear and callable kernels. Callable kernels receive only their explicitly
 supplied `kernel_kws`; the top-level gamma is not injected into them.
+
+Version 0.3.8 also offers optional
+[`fit_profile()`](docs/method.md#optional-fit-profiling) to measure ensemble-DWD
+fit stages and distinguish new base work from cache reuse. It records timing
+outside the fitted model, with no change to estimator settings or mathematics.
 
 `EnsembleKernelDWD` accepts exactly two classes. Wrap it in `OvOClassifier`
 for two or more classes. Precomputed kernels are unsupported.

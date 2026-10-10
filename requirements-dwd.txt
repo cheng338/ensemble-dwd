@@ -1,4 +1,4 @@
 # Validated native and portable builds of the required DWD version.
-dwd==1.3.12 \
-    --hash=sha256:8561ab1394ba2fa9007af088f6f772111af32383de1c3639477b1d720f8ba1b0 \
-    --hash=sha256:10f6a421366c6c3ef0e208dec4c9f23b6f52a924e6b42f5f726ce6c0d050b8d5
+dwd==1.3.13 \
+    --hash=sha256:04d08e0db44191effcf9be233646e8d239592fe15e5ced8e6f6f45f55e0d539e \
+    --hash=sha256:ad208acc5801eea40b3aa6171c45b751e1618b90b69268d9db5f85b34bcb65f5

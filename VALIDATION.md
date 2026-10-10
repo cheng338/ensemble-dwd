@@ -1,5 +1,42 @@
 # ensemble-dwd validation
 
+## 0.3.8: boundary recovery and optional fit profiling
+
+The boundary fallback was checked on 8,158 cases: 5,304 previously successful
+coordinates were preserved bit for bit, 2,838 false refusals were recovered,
+and 16 genuine arithmetic limits remained refused. All 2,854 fallback outcomes
+agreed with independent 1,000-digit Decimal calculations. The boundary and
+surrounding search workflows passed 144 distinct test methods, including
+adaptive and ratio-policy replay, candidate budgets and interrupted-fold
+identity. Two methods initially detected concurrent source edits and passed
+when replayed with stable sources. This correction can extend future searches;
+it does not revise completed study results or merge distinct candidates.
+
+The optional `fit_profile()` context passed 19 focused tests and 67 existing
+estimator, cache, diagnostic and interruption regressions. Checks include
+exact numerical parity, overflow recovery, real cache hits, aborted final fits,
+nested scopes, thread/task isolation, and copied contexts after scope exit.
+A separate integration check used the real source and native-library provenance:
+a cache created without profiling was reused with profiling, preserving its
+key, selected rows and numerical result. Disabled instrumentation read no clocks.
+
+Two complete MNIST training-draw fits, with profiling off and on, each fitted
+all 45 class pairs and 270 binary DWD learners. Both reproduced the saved
+scientific state, and their checked training scores and predictions matched
+bit for bit. The comparison covered 4,779 saved attributes; the original lean
+models did not retain base coefficients, so base diagnostic facts, consensus,
+subsets and selections supplied the available base-stage evidence.
+The profile reported 225 base fits, 225 initial scoring passes
+and 45 final fits. No official test arrays were decoded. These checks preserve
+the original finite iteration budget; they do not establish new convergence.
+
+The sequential Windows CPython 3.12/AOCL fits used one native thread and took
+178.109 and 177.406 seconds. These two observations do not establish zero
+profiling overhead or a speed improvement. Whole-interval background CPU
+observations were retained, without certifying the absence of short bursts.
+The objective, sampling, selection and solver settings are unchanged.
+See the [profiling scope and usage](docs/method.md#optional-fit-profiling).
+
 ## 0.3.7: paired dependency validation
 
 Version 0.3.7 updates the paired DWD dependency to 1.3.12. All ensemble
@@ -56,10 +93,10 @@ standard package. These Windows checks do not establish Linux/Intel equivalence.
 
 ## Current release and validation history
 
-Version 0.3.7 is paired with DWD 1.3.12. See the
-[0.3.7 changelog](CHANGELOG.md#037--2026-10-06) for its changes.
+Version 0.3.8 is paired with DWD 1.3.13. See the
+[0.3.8 changelog](CHANGELOG.md#038--2026-10-09) for its changes.
 The records below retain their original workload and version scope; they are
-not new full MNIST searches for version 0.3.7. DWD's
+not new full MNIST searches for version 0.3.8. DWD's
 [1.3.10 validation scope and timing follow-up](https://github.com/cheng338/dwd/blob/f6db6e45463554db52385caba8c6c1c1f63fcd8b/docs/validation-1.3.10.md)
 remains historical evidence for the previous dependency release.
 
