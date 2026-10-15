@@ -31,13 +31,13 @@ reserved. A software license has not yet been selected or granted.
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.8 requires DWD 1.3.13 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.13).
+Python 3.11 or later is required. Version 0.3.9 requires DWD 1.3.14 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.14).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.13 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.14 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -54,7 +54,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.8-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.9-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -71,21 +71,21 @@ require the portable build, put only that wheel in `wheels` when installing
 the dependency. Windows validation does not establish numerical equivalence
 on Linux, a different processor or free-threaded Python.
 
-The separately released Python 3.10 companion remains at ensemble-dwd 0.3.7
-with DWD 1.3.12. It does not contain the changes in version 0.3.8.
+Python 3.10 is no longer supported. Previously released companion wheels
+remain available as historical artifacts and will not receive updates.
 
-DWD 1.3.13 accelerates eligible dense compensated score sums on Windows
+DWD 1.3.14 accelerates eligible dense compensated score sums on Windows
 CPython 3.12 x86-64. Other runtimes and unsupported inputs keep the Python
 calculation and its numerical checks. Wheel installation compatibility does
 not guarantee that a compiled scoring path is active. See DWD's
-[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.13/docs/compiled_residual.md)
+[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.14/docs/compiled_residual.md)
 for eligibility and fallback behavior.
 
-The CI workflow uses the same lock and the explicit DWD 1.3.13 release asset
+The CI workflow uses the same lock and the explicit DWD 1.3.14 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
-The default numerical policies remain unchanged. DWD 1.3.13 also provides the
+The default numerical policies remain unchanged. DWD 1.3.14 also provides the
 optional `rbf_computation='direct'`, `affine_computation='joint'` and
 `exact_recovery='extended'` settings used by this release. See
 [direct RBF computation](docs/method.md#optional-direct-rbf-computation),
@@ -274,8 +274,9 @@ ratio refinement below is enabled. Missing conditional neighbors are tested
 at the same values of the other parameters. An invalid
 neighbor does not establish an interior optimum.
 
-When logarithm rounding loses a valid outward point, the version 0.3.8 examples
-recover the capped geometric extension with exact arithmetic. Previously
+When logarithm rounding loses a valid outward point, the examples
+recover the capped geometric extension with exact arithmetic, as introduced
+in version 0.3.8. Previously
 successful coordinates stay unchanged; true floating-point limits still stop
 expansion. Distinct parameter values are not merged.
 
@@ -571,7 +572,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.8 changelog](CHANGELOG.md#038--2026-10-09) for this release's changes.
+See the [0.3.9 changelog](CHANGELOG.md#039--2026-10-15) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.
@@ -588,7 +589,7 @@ learner. An objective stopping event does not itself certify optimality.
 linear and callable kernels. Callable kernels receive only their explicitly
 supplied `kernel_kws`; the top-level gamma is not injected into them.
 
-Version 0.3.8 also offers optional
+The package also offers optional
 [`fit_profile()`](docs/method.md#optional-fit-profiling) to measure ensemble-DWD
 fit stages and distinguish new base work from cache reuse. It records timing
 outside the fitted model, with no change to estimator settings or mathematics.

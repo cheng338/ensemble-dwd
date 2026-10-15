@@ -140,11 +140,48 @@ class BaseDiagnosticsTests(unittest.TestCase):
         self.assertEqual(_base_diagnostics(explicit_unknown), {
             'final_objective': None, 'solver_diagnostics': {'dual_certificate': {'fallback_reason': None}}})
 
+    def test_lean_adaptive_diagnostics_preserve_each_base_and_final_learner(self):
+        counters = (
+            'adaptive_residual_probes', 'adaptive_residual_probe_errors',
+            'adaptive_residual_probe_invalidations', 'adaptive_residual_probe_acceptances',
+            'adaptive_native_trials_skipped', 'adaptive_residual_probe_fallbacks',
+            'adaptive_residual_probe_reuses', 'adaptive_residual_history_resets')
+
+        class AdaptiveDiagnosticDWD(DiagnosticDWD):
+            def fit(self, X, y):
+                super().fit(X, y)
+                self.diagnostics_.update(
+                    residual_check_order='adaptive', requested_residual_check_order='adaptive')
+                checks = self.diagnostics_['linear_system_diagnostics']
+                checks.update({name: len(type(self).fits) for name in counters})
+                checks.update(adaptive_residual_probe_seconds=.01,
+                              last_adaptive_residual_probe_error='ArithmeticError: fixture')
+                return self
+
+        with patch('ensemble_dwd.estimator.KernGDWD', AdaptiveDiagnosticDWD):
+            lean = self.model(store_base_estimators=False, acceleration='restart',
+                              residual_check_order='adaptive').fit(self.X, self.y)
+        self.assertEqual(len(DiagnosticDWD.fits), lean.M + 1)
+        records = lean.base_diagnostics_ + [_base_diagnostics(lean.final_estimator_)]
+        self.assertEqual(len(records), lean.M + 1)
+        for index, (record, model) in enumerate(zip(records, DiagnosticDWD.fits), 1):
+            facts = record['solver_diagnostics']
+            self.assertEqual(facts['residual_check_order'], 'adaptive')
+            self.assertEqual(facts['requested_residual_check_order'], 'adaptive')
+            self.assertEqual(facts['linear_system_diagnostics'],
+                             model.diagnostics_['linear_system_diagnostics'])
+            self.assertTrue(all(facts['linear_system_diagnostics'][name] == index
+                                for name in counters))
+        DiagnosticDWD.fits[0].diagnostics_['linear_system_diagnostics']['adaptive_native_trials_skipped'] = 999
+        self.assertEqual(records[0]['solver_diagnostics']['linear_system_diagnostics']
+                         ['adaptive_native_trials_skipped'], 1)
+
     def test_summary_bounds_reject_arrays_traces_and_unbounded_text(self):
         model = SimpleNamespace(final_objective_=np.arange(1000),
             iterations_per_attempt_=list(range(1000)), diagnostics_={
                 'fallback_reason': 'x' * 1025, 'objective_history': list(range(1000)),
                 'linear_system_diagnostics': {'linear_solves': np.int64(10),
+                                              'last_adaptive_residual_probe_error': 'x' * 1025,
                                               'factorization_attempts': [{}] * 1000},
                 'dual_certificate': {'kernel_assumption': np.ones(10)}})
         self.assertEqual(_base_diagnostics(model), {'solver_diagnostics': {

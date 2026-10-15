@@ -256,9 +256,9 @@ def local_refinement_grid(cv_results, prefix='ensemble__', top_k=3):
     """Union local neighborhoods around up to three fully valid coarse results.
 
     Every parent parameter is retained; only lambda and gamma are varied.
-    No clipping to the coarse grid is applied. Formatting lambda/gamma
-    deduplication keys to 15 significant digits merges floating-point variants
-    of the same values. Other parameter values distinguish neighborhoods.
+    No clipping to the coarse grid is applied. Only exactly equal represented
+    lambda/gamma coordinates are deduplicated; adjacent floating-point values
+    remain distinct. Other parameter values distinguish neighborhoods.
     """
     if isinstance(top_k, bool) or not isinstance(top_k, (int, np.integer)) or top_k < 1:
         raise ValueError('top_k must be a positive integer.')
@@ -286,7 +286,7 @@ def local_refinement_grid(cv_results, prefix='ensemble__', top_k=3):
                 values = (lambd*lambda_factor, gamma*gamma_factor, theta, ratio)
                 if not np.isfinite(values).all() or min(values[:2]) <= 0:
                     raise ValueError('Local lambda/gamma values are not representable.')
-                key = (format(values[0], '.15g'), format(values[1], '.15g'), other_key)
+                key = (values[0].hex(), values[1].hex(), other_key)
                 if key not in seen:
                     seen.add(key)
                     candidate = {name: [value] for name, value in deepcopy(parent).items()}

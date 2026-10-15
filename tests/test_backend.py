@@ -175,11 +175,35 @@ class BackendTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'residual_check_order must be'):
                     self.model(residual_check_order=order).fit(self.X, self.y)
                 self.assertEqual(BackendProbeDWD.instances, [])
-        for options in (dict(backend='spectral'), dict(backend='lbfgs'), dict(acceleration='restart')):
+        for options in (dict(backend='spectral'), dict(backend='lbfgs')):
             with self.subTest(options=options), patch('ensemble_dwd.estimator.KernGDWD', BackendProbeDWD):
-                with self.assertRaisesRegex(ValueError, 'unaccelerated optimized Cholesky'):
+                with self.assertRaisesRegex(ValueError, 'optimized Cholesky'):
                     self.model(residual_check_order='adaptive', **options).fit(self.X, self.y)
                 self.assertEqual(BackendProbeDWD.instances, [])
+
+    def test_restart_adaptive_order_reaches_every_learner_and_clones(self):
+        original = self.model(residual_check_order='adaptive', acceleration='restart')
+        model = clone(original)
+        self.assertEqual(model.get_params(), original.get_params())
+        with patch('ensemble_dwd.estimator.KernGDWD', BackendProbeDWD):
+            model.fit(self.X, self.y)
+        for learner in [*model.estimators_, model.final_estimator_]:
+            self.assertEqual(learner.params['residual_check_order'], 'adaptive')
+            self.assertEqual(learner.params['acceleration'], 'restart')
+
+    def test_real_restart_adaptive_fit_preserves_healthy_ensemble(self):
+        options = dict(M=2, theta=.25, sv_selection_ratio=1., random_state=5,
+                       acceleration='restart', max_iter=8, stopping='fixed')
+        default = EnsembleKernelDWD(**options).fit(self.X, self.y)
+        adaptive = EnsembleKernelDWD(**options, residual_check_order='adaptive').fit(self.X, self.y)
+        np.testing.assert_array_equal(default.selected_indices_, adaptive.selected_indices_)
+        np.testing.assert_array_equal(default.predict(self.X), adaptive.predict(self.X))
+        for first, second in zip([*default.estimators_, default.final_estimator_],
+                                 [*adaptive.estimators_, adaptive.final_estimator_]):
+            np.testing.assert_array_equal(first.dual_coef_, second.dual_coef_)
+            np.testing.assert_array_equal(first.objective_history_, second.objective_history_)
+            self.assertEqual(second.diagnostics_['residual_check_order'], 'adaptive')
+            self.assertEqual(second.diagnostics_['acceleration'], 'restart')
 
     def test_check_order_separates_cache_and_retention_still_reuses_bases(self):
         with tempfile.TemporaryDirectory() as cache_dir, patch(

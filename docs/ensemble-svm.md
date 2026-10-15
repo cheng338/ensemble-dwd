@@ -282,6 +282,21 @@ and runtime/source identity; it cannot share DWD results or results from a
 different CV fold. A custom subclass or random_state=None bypasses caching.
 The optional disk cache and SVC's in-memory `cache_size` are distinct.
 
+The tuning command exposes the latter as `--cache-size MIB`, with the unchanged
+default of 200 MiB per active SVC. For example, `--jobs 4 --cache-size 1024`
+allows up to 4096 MiB of kernel-cache capacity across four concurrent CV fits.
+The example prints this allowance before loading data. Bases and the final SVC
+fit sequentially within each ensemble, so the cache allowance is not multiplied
+by `M + 1`. This is not a total-memory bound: data copies, models, scoring
+buffers and other processes require additional memory. Choose worker count and
+cache size together. A larger cache may help repeated kernel access, but is not
+guaranteed to improve every dataset and can reduce feasible concurrency.
+
+The option changes neither the parameter grid nor solver tolerance. Its value
+is stored in the estimator and workflow settings and is therefore checked on
+resume; changing it requires a new run directory. `--no-cache` only disables
+base-fit reuse on disk and does not disable libsvm's kernel cache.
+
 Budget worker memory for feature copies, retained models, scoring buffers
 and each active SVC's cache. `store_base_estimators=False` reduces retained
 models while preserving selection and diagnostic arrays. Prediction batches

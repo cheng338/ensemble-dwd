@@ -94,6 +94,35 @@ class CandidateSelectionTests(unittest.TestCase):
         grid = example.local_refinement_grid(cv, prefix="", top_k=1)
         self.assertEqual(set(grid[0]), {"lambd", "gamma", "theta", "sv_selection_ratio"})
 
+    def test_refinement_retains_distinct_adjacent_lambda_parents(self):
+        nearby = float(np.nextafter(1.0, 2.0))
+        parents = [candidate(1.0, 1.0), candidate(nearby, 1.0)]
+        grid = example.local_refinement_grid(results(parents, [0.9, 0.8]), top_k=2)
+        coordinates = {(row['ensemble__lambd'][0], row['ensemble__gamma'][0])
+                       for row in grid}
+        self.assertEqual(len(grid), 18)
+        self.assertIn((1.0, 1.0), coordinates)
+        self.assertIn((nearby, 1.0), coordinates)
+        self.assertEqual(sum(row['ensemble__lambd'][0] == nearby for row in grid), 3)
+
+    def test_refinement_retains_adjacent_gamma_and_extreme_scale_parents(self):
+        for scale in (1e-200, 1.0, 1e200):
+            nearby = float(np.nextafter(scale, np.inf))
+            parents = [candidate(scale, scale), candidate(scale, nearby)]
+            with self.subTest(scale=scale):
+                grid = example.local_refinement_grid(results(parents, [0.9, 0.8]), top_k=2)
+                coordinates = {(row['ensemble__lambd'][0], row['ensemble__gamma'][0])
+                               for row in grid}
+                self.assertIn((scale, scale), coordinates)
+                self.assertIn((scale, nearby), coordinates)
+                self.assertEqual(len(coordinates), len(grid))
+
+    def test_refinement_still_collapses_exact_duplicate_parents(self):
+        parents = [candidate(1.0, 1.0), candidate(1.0, 1.0)]
+        first = example.local_refinement_grid(results(parents[:1], [0.9]), top_k=1)
+        both = example.local_refinement_grid(results(parents, [0.9, 0.8]), top_k=2)
+        self.assertEqual(both, first)
+
 
 class LocalArchiveTests(unittest.TestCase):
     def test_uppercase_and_keras_archive_splits_remain_separate(self):

@@ -1,5 +1,48 @@
 # ensemble-dwd validation
 
+## 0.3.9: adaptive restart ordering and example reporting
+
+Version 0.3.9 is paired with DWD 1.3.14 and requires Python 3.11 or later.
+The Python 3.10 companion is no longer maintained; older records below retain
+their original scope.
+
+The development source passed 90 focused ensemble tests and 59 paired DWD
+tests on Windows CPython 3.12 with AOCL, with no failures, errors or skips.
+Sources were held unchanged during each suite. The exact-candidate correction
+also passed 32 helper and workflow checks; these overlap earlier checks and
+must not be added as unique tests. This evidence is not a full cross-version
+or operating-system release matrix.
+
+Coverage includes the optional adaptive/restart combination and unchanged
+eligibility restrictions; all-learner diagnostic coverage; current versus
+cached/recovered work; missing historical counters; non-overlapping timing
+subtotals; class composition and secondary metrics; immutable checkpoint-owned
+labels; exact adjacent candidate identity; and SVM cache-size validation,
+forwarding and checkpoint identity. Existing numerical acceptance, sampling,
+selection formulas and ordinary-accuracy tuning remain unchanged. Restoring
+formerly merged parameter candidates can change a future search's winner.
+
+Adaptive ordering was compared with the default ordering in 32 fresh fits:
+three saved TCGA ensemble cases and one saved full-DWD case, at one and 16 native
+threads, with two balanced pairs per case and thread count. The two difficult
+ensemble cases improved complete fitting time by approximately 28–29%; the
+full-DWD case improved by about 14.6%. The healthy ensemble case was essentially
+unchanged at one thread and about 5.4% (7 ms) slower at 16 threads. The default
+therefore remains `residual_check_order='refinement_first'`.
+
+The compared saved final coefficients, intercepts, histories, scores,
+predictions, subsets and selected rows were identical, and all learners matched
+iteration counts and final objectives under the unchanged acceptance checks.
+This does not establish universal bitwise equality or direct comparison of
+every base coefficient array. The monitored confirmation runs had no competing
+Python process in 50 ms observations; other operating-system activity cannot
+be excluded. Earlier contended timings were excluded from these timing claims.
+
+The reporting changes add no fit or prediction. Their own processing cost is
+reported separately; zero overhead is not claimed. Completed studies and their
+tables were not rewritten. See the [method guide](docs/method.md) for control
+scope and the [changelog](CHANGELOG.md#039--2026-10-15) for the release changes.
+
 ## 0.3.8: boundary recovery and optional fit profiling
 
 The boundary fallback was checked on 8,158 cases: 5,304 previously successful
@@ -93,10 +136,10 @@ standard package. These Windows checks do not establish Linux/Intel equivalence.
 
 ## Current release and validation history
 
-Version 0.3.8 is paired with DWD 1.3.13. See the
-[0.3.8 changelog](CHANGELOG.md#038--2026-10-09) for its changes.
+Version 0.3.9 is paired with DWD 1.3.14. See the
+[0.3.9 changelog](CHANGELOG.md#039--2026-10-15) for its changes.
 The records below retain their original workload and version scope; they are
-not new full MNIST searches for version 0.3.8. DWD's
+not new full MNIST searches for version 0.3.9. DWD's
 [1.3.10 validation scope and timing follow-up](https://github.com/cheng338/dwd/blob/f6db6e45463554db52385caba8c6c1c1f63fcd8b/docs/validation-1.3.10.md)
 remains historical evidence for the previous dependency release.
 

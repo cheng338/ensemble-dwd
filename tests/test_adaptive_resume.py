@@ -140,6 +140,76 @@ class AdaptiveResumeTests(unittest.TestCase):
         self.assertEqual(cv_attempts, [row for row in InterruptibleSurface.attempts if len(row[0]) == 16])
         self.assertEqual(sum(min(ids) >= 100 for ids in InterruptibleSurface.predictions), 1)
 
+    def test_secondary_metrics_and_separate_timers_replay_without_new_prediction(self):
+        result = self.run_search()
+        completed = result['completed']
+        report = completed['held_out_classification']
+        self.assertEqual(report['accuracy'], completed['held_out_accuracy'])
+        self.assertEqual(report['balanced_accuracy'], 1.)
+        self.assertEqual([row['support'] for row in report['per_class']], [4, 4])
+        self.assertEqual(sum(min(ids) >= 100 for ids in InterruptibleSurface.predictions), 1)
+        self.assertGreaterEqual(completed['pipeline_fit_seconds'], 0.)
+        self.assertGreaterEqual(completed['refit_seconds'], completed['pipeline_fit_seconds'])
+        self.assertGreaterEqual(completed['held_out_prediction_seconds'], 0.)
+        refit = result['refit']
+        self.assertAlmostEqual(refit['pipeline_fit_seconds'] + refit['fit_management_seconds'],
+                               refit['wall_seconds'])
+        self.assertFalse(refit['selection_composition']['available'])
+        counts = (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions))
+        replay = self.run_search(resume=True)
+        self.assertEqual(replay['completed'], completed)
+        self.assertEqual(counts, (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions)))
+        self.assertEqual(replay['work_summary']['held_out_scoring']['state'], 'not_performed_replay')
+
+    def test_final_clone_failure_preserves_original_error_and_completed_cv(self):
+        with patch.object(adaptive_search, 'clone', side_effect=ValueError('cannot clone final model')):
+            with self.assertRaisesRegex(ValueError, 'cannot clone final model'):
+                self.run_search()
+        failure = self.read('refit.json')
+        self.assertEqual(failure['state'], 'failed')
+        self.assertIsNone(failure['native_runtime'])
+        self.assertEqual(len(InterruptibleSurface.attempts), 45)
+        self.assertFalse(any(min(ids) >= 100 for ids in InterruptibleSurface.predictions))
+        result = self.run_search(resume=True)
+        self.assertEqual(result['completed']['held_out_accuracy'], 1.)
+        self.assertEqual(len(InterruptibleSurface.attempts), 46)
+
+    def test_secondary_reporting_failure_does_not_invalidate_original_score(self):
+        with patch.object(adaptive_search, 'classification_report', side_effect=ValueError('unsupported report')), \
+             patch.object(adaptive_search.warnings, 'warn'):
+            result = self.run_search()
+        self.assertEqual(result['completed']['held_out_accuracy'], 1.)
+        self.assertEqual(result['completed']['held_out_classification']['coverage'], 'unavailable')
+        self.assertEqual(sum(min(ids) >= 100 for ids in InterruptibleSurface.predictions), 1)
+
+    def test_final_class_reports_use_owned_training_labels_after_caller_mutation(self):
+        original_labels = self.y.copy()
+        observed = []
+        original_diagnostics = cv_checkpoint.CheckpointedCV.diagnostics
+
+        def recorded_diagnostics(model, labels):
+            observed.append(np.array(labels, copy=True))
+            facts = original_diagnostics(model, labels)
+            # This controlled estimator has no selection stage. Supply two
+            # known rows to test the reporting population independently.
+            facts['selected_rows'] = cv_checkpoint._row_diagnostics([0, 1], labels)
+            return facts
+
+        def mutate_training_alias():
+            self.y[:] = 0
+
+        InterruptibleSurface.on_first_fit = mutate_training_alias
+        with patch.object(cv_checkpoint.CheckpointedCV, 'diagnostics',
+                          side_effect=recorded_diagnostics):
+            result = self.run_search()
+        self.assertTrue(np.all(self.y == 0))
+        np.testing.assert_array_equal(observed[-1], original_labels)
+        report = result['refit']['selection_composition']
+        self.assertTrue(report['available'])
+        self.assertEqual([row['training_count'] for row in report['classes']], [10, 10])
+        self.assertEqual([row['selected_count'] for row in report['classes']], [1, 1])
+        self.assertEqual(result['completed']['held_out_accuracy'], 1.)
+
     def assert_heldout_mutation_isolated(self, field):
         original_X, original_y = self.test_X.copy(), self.test_y.copy()
         expected_identity = data_fingerprint(original_X, original_y)

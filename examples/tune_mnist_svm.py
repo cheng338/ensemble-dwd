@@ -39,6 +39,17 @@ def boundary_parameters(parameters, grid):
     return _boundary_parameters(parameters, grid, regularization='C')
 
 
+def positive_cache_size(value):
+    """Parse libsvm's per-active-fit cache allowance, expressed in MiB."""
+    try:
+        size = float(value)
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError('cache size must be finite and positive') from error
+    if not np.isfinite(size) or size <= 0:
+        raise argparse.ArgumentTypeError('cache size must be finite and positive')
+    return size
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     add_final_thread_argument(parser)
@@ -48,6 +59,9 @@ def main(argv=None):
     parser.add_argument("--digits", type=int, nargs=2, default=(7, 9))
     parser.add_argument("--jobs", type=positive_int, default=1,
                         help="Concurrent outer CV workers; pre_dispatch equals this count.")
+    parser.add_argument('--cache-size', type=positive_cache_size, default=200.0,
+                        help='Kernel cache per active SVC in MiB (default: 200). '
+                             'This is separate from the reusable base-fit disk cache.')
     parser.add_argument("--error-score", choices=("raise", "nan"), default="nan",
                         help="nan skips only ineligible subsets or selections; unexpected failures stop.")
     parser.add_argument("--output-dir", type=Path,
@@ -73,6 +87,9 @@ def main(argv=None):
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
     report_final_threads(args.final_native_threads)
+    print(f'SVC kernel cache: {args.cache_size:g} MiB per active fit; '
+          f'up to {args.cache_size * args.jobs:g} MiB across {args.jobs} CV workers. '
+          'Allow additional memory for data, models and scoring buffers.')
     seed_options = seed_search_options(parser, args)
     seed_count = len(seed_options.get('cv_seeds', (42,)))
     if args.resume and (not args.run or args.output_dir is None):
@@ -116,7 +133,8 @@ def main(argv=None):
     cache_dir = None if args.no_cache else str(args.cache_dir.resolve() if args.cache_dir else run_dir / "base-cache")
     pipeline = Pipeline([
         ("scale", StandardScaler()),
-        ("ensemble", EnsembleKernelSVM(M=5, theta=0.1, cache_dir=cache_dir, store_base_estimators=False)),
+        ("ensemble", EnsembleKernelSVM(M=5, theta=0.1, cache_dir=cache_dir,
+                                      cache_size=args.cache_size, store_base_estimators=False)),
     ])
     folds = list(StratifiedKFold(5, shuffle=True, random_state=42).split(X_train, y_train))
     from adaptive_search import AdaptiveSearchConfig, run_adaptive_search
@@ -131,7 +149,7 @@ def main(argv=None):
         reuse_equivalent_folds=args.reuse_equivalent_folds,
         settings={"classifier": "EnsembleKernelSVM", "selection": "signed_margin",
                   "data_path": str(args.data.resolve()), "digits": args.digits,
-                  "cache_dir": cache_dir},
+                  "cache_dir": cache_dir, "svc_cache_size_mib": args.cache_size},
         **seed_options, **ratio_options,
     )
     if result.get('resumed_completed'):

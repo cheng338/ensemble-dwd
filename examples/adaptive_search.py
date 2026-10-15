@@ -38,6 +38,8 @@ from ratio_refinement import (RatioRefinementConfig, next_ratio_stage,
 from numerical_confirmation import (NumericalConfirmationConfig, validate_confirmation,
                                     run_numerical_confirmation)
 from work_reporting import (aggregate_work_summaries, summarize_cache_diagnostics)
+from evaluation_reporting import (classification_report, numerical_check_summary,
+                                  selection_composition)
 from stage_reporting import (candidate_budget, grid_proposal, publish_report,
                              safe_report, workload_plan)
 from near_coordinates import disclose
@@ -771,6 +773,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'held_out': data_fingerprint(X_test, y_test)}
     metadata = {'schema_version': 1, 'policy': asdict(config), 'initial_grid': grid,
                 'workflow_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                'reporting_sha256': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                                     for name in ('evaluation_reporting.py', 'work_reporting.py')},
                 'final_thread_policy_sha256': final_thread_policy_sha256(),
                 'data': identity, 'folds': [{'train': t, 'validation': v} for t, v in folds],
                 'settings': {'jobs': jobs, 'native_threads': 1, 'scoring': 'accuracy',
@@ -1073,12 +1077,15 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             refit_parameters = dict(selection['parameters'])
             if cv_seeds is not None:
                 refit_parameters[seed_parameter] = refit_seed
+            pipeline_fit_seconds = None
             try:
                 model = clone(checkpoint.estimator).set_params(**refit_parameters)
                 final_runtime = {}
                 with final_fit_threads(final_native_threads, model, final_runtime,
                                        frozen_runtime=checkpoint.runtime):
+                    pipeline_started = perf_counter()
                     model.fit(checkpoint.X, checkpoint.y)
+                    pipeline_fit_seconds = perf_counter() - pipeline_started
             except Exception as error:
                 write_failure_json(run_dir / 'refit.json', {'state': 'failed', **selection,
                     'wall_seconds': perf_counter() - started, 'failure': exception_details(error),
@@ -1086,13 +1093,26 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 raise
             refit_seconds = perf_counter() - started
             refit = {'state': 'completed', **selection, 'wall_seconds': refit_seconds,
-                     'diagnostics': checkpoint.diagnostics(model, y_train), 'native_runtime': final_runtime}
-            refit_work.update(state='completed', wall_seconds=refit_seconds)
+                     'pipeline_fit_seconds': pipeline_fit_seconds,
+                     'fit_management_seconds': refit_seconds - pipeline_fit_seconds,
+                     'diagnostics': checkpoint.diagnostics(model, checkpoint.y), 'native_runtime': final_runtime}
+            refit_work.update(state='completed', wall_seconds=refit_seconds,
+                              pipeline_fit_seconds=pipeline_fit_seconds,
+                              fit_management_seconds=refit_seconds - pipeline_fit_seconds)
             try:
                 refit_work['base_cache'] = summarize_cache_diagnostics(refit['diagnostics'])
             except Exception as error:
                 warn_report(error)
                 refit_work['base_cache'] = {'reporting_error': str(error), 'coverage': 'unavailable'}
+            for name, reporter in (
+                    ('numerical_checks', lambda: numerical_check_summary(refit['diagnostics'])),
+                    ('selection_composition', lambda: selection_composition(refit['diagnostics'], checkpoint.y))):
+                try:
+                    refit[name] = reporter()
+                except Exception as error:
+                    warn_report(error)
+                    refit[name] = {'reporting_error': str(error), 'coverage': 'unavailable'}
+            refit_work['numerical_checks'] = refit['numerical_checks']
             active_work = None
             if cv_seeds is not None:
                 refit['refit_parameters'] = refit_parameters
@@ -1104,11 +1124,29 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             checkpoint.check_runtime()
             scoring_work.update(state='running', attempted=True)
             active_work = {'kind': 'held_out_scoring', 'started': perf_counter()}
-            accuracy = float(accuracy_score(y_test, model.predict(X_test)))
-            scoring_work.update(state='completed', wall_seconds=perf_counter() - active_work['started'])
+            prediction_started = perf_counter()
+            predictions = model.predict(X_test)
+            prediction_finished = perf_counter()
+            accuracy = float(accuracy_score(y_test, predictions))
+            scoring_finished = perf_counter()
+            prediction_seconds = prediction_finished - prediction_started
+            accuracy_scoring_seconds = scoring_finished - prediction_finished
+            scoring_work.update(state='completed', wall_seconds=scoring_finished - active_work['started'],
+                                prediction_seconds=prediction_seconds,
+                                accuracy_scoring_seconds=accuracy_scoring_seconds)
             active_work = None
             completed = {**selection, 'refit_seconds': refit_seconds, 'held_out_accuracy': accuracy,
+                         'pipeline_fit_seconds': pipeline_fit_seconds,
+                         'held_out_prediction_seconds': prediction_seconds,
+                         'held_out_accuracy_scoring_seconds': accuracy_scoring_seconds,
                          'final_native_threads': final_native_threads}
+            reporting_started = perf_counter()
+            try:
+                completed['held_out_classification'] = classification_report(y_test, predictions)
+            except Exception as error:
+                warn_report(error)
+                completed['held_out_classification'] = {'reporting_error': str(error), 'coverage': 'unavailable'}
+            scoring_work['secondary_metric_reporting_seconds'] = perf_counter() - reporting_started
             review.update(final_refit_performed=True, held_out_scored=True)
             # Commit the authoritative completion receipt before public mirrors.
             # A verified completed resume never fits or scores the test set again.

@@ -7,6 +7,33 @@ Cache flags describe only reported base-cache observations, not cache-loading
 time, avoided fits, or measured time savings.
 """
 from collections.abc import Mapping
+from evaluation_reporting import CHECK_FIELDS, CHECK_SUBTOTAL, numerical_check_summary
+
+
+def _empty_numerical_work():
+    return {'schema': 1, 'aliases_excluded': 0, 'evaluations_without_summary': 0,
+            'learner_inventory_incomplete_evaluations': 0,
+            'by_origin': {origin: {'learner_records': 0, 'fields': {
+                field: {'sum': None, 'reported_learners': 0, 'unknown_learners': 0}
+                for field in (*CHECK_FIELDS, CHECK_SUBTOTAL)}}
+                for origin in ('current_fit', 'historical_reference', 'unknown_origin')},
+            'interpretation': 'Historical values sum diagnostic references, which may repeat cached fits; they are not unique historical work. Only current_fit describes new numerical checks. Unknown is not zero. Native residual time is not added to compensated residual time.'}
+
+
+def _merge_numerical_groups(target, source):
+    for origin, group in source.items():
+        destination = target[origin]
+        destination['learner_records'] += group['learner_records']
+        for field, value in destination['fields'].items():
+            evidence = group['fields'].get(field)
+            if evidence is None:
+                # An older summary can predate a newly reported counter.
+                value['unknown_learners'] += group['learner_records']
+                continue
+            if evidence['sum'] is not None:
+                value['sum'] = (value['sum'] or 0) + evidence['sum']
+            for count in ('reported_learners', 'unknown_learners'):
+                value[count] += evidence[count]
 
 
 def empty_work_summary():
@@ -32,6 +59,7 @@ def empty_work_summary():
         },
         'search_call_wall_seconds': 0.,
         'search_call_count': 0,
+        'numerical_checks': _empty_numerical_work(),
     }
 
 
@@ -187,6 +215,18 @@ def summarize_records(records):
         counts['total'] += 1
         alias = 'equivalent_reuse' in record
         ineligible = record['state'] == 'ineligible'
+        numerical = result['numerical_checks']
+        if alias:
+            numerical['aliases_excluded'] += 1
+        else:
+            try:
+                evidence = numerical_check_summary(record.get('diagnostics'), historical=replayed)
+                _merge_numerical_groups(numerical['by_origin'], evidence['by_origin'])
+                numerical['learner_inventory_incomplete_evaluations'] += int(evidence['learner_inventory_incomplete'])
+            except Exception:
+                # Auxiliary numeric reporting cannot invalidate a committed
+                # evaluation or erase the legacy work/score summary.
+                numerical['evaluations_without_summary'] += 1
         if replayed:
             counts['checkpoint_replayed'] += 1
             counts['replayed_ineligible'] += int(ineligible)
@@ -226,6 +266,14 @@ def aggregate_work_summaries(summaries):
             for name in result[group]:
                 result[group][name] += summary[group][name]
         _aggregate_pair_work(result, summary)
+        numerical = summary.get('numerical_checks')
+        if numerical is None:
+            result['numerical_checks']['evaluations_without_summary'] += summary['evaluations']['total']
+        else:
+            for count in ('aliases_excluded', 'evaluations_without_summary',
+                          'learner_inventory_incomplete_evaluations'):
+                result['numerical_checks'][count] += numerical[count]
+            _merge_numerical_groups(result['numerical_checks']['by_origin'], numerical['by_origin'])
         result['search_call_wall_seconds'] += summary['search_call_wall_seconds']
         result['search_call_count'] += summary['search_call_count']
     return result

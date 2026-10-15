@@ -3,6 +3,34 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.9 — 2026-10-15
+
+- Pair this release with DWD 1.3.14.
+- End maintenance of the separate Python 3.10 companion. Python 3.11 or later
+  remains required; historical release assets and validation records are retained.
+- Allow optional adaptive residual ordering with restart acceleration when
+  paired with DWD 1.3.14. Preserve `refinement_first` as
+  the default, all numerical acceptance checks and the existing cache separation
+  between policies. Keep adaptive-check counters in base-learner diagnostics.
+- Preserve distinct represented lambda/gamma values in the legacy local
+  refinement helper. Deduplicate exact coordinates only, retaining adjacent
+  floating-point candidates and their original parent points. This can restore
+  candidates formerly omitted by decimal rounding; the adaptive workflow's
+  existing exact identities are unchanged.
+- Report final selected-set class composition and held-out balanced accuracy
+  and per-class recall from the existing predictions. Numerical summaries cover
+  all base and final learners, distinguish current work from cached or recovered
+  history, and avoid adding overlapping residual-check timers. Candidate
+  selection continues to use ordinary accuracy. Final class reports use the
+  checkpoint's owned training labels even if the caller changes its array.
+- Separate final pipeline fitting, prediction and scoring intervals in the
+  adaptive examples while preserving the meaning of existing elapsed-time
+  fields.
+- Expose the existing SVC kernel-cache allowance as `--cache-size` in the SVM
+  tuning example, retaining the 200 MiB default. Display its concurrent cache
+  allowance separately from other memory needs and from base-fit disk caching.
+  The chosen value remains part of the estimator and checkpoint identity.
+
 ## 0.3.8 — 2026-10-09
 
 - Pair this release with DWD 1.3.13. Keep Python 3.11 or later as the

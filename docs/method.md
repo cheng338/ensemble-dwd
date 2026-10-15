@@ -140,13 +140,17 @@ no backend is uniformly faster. Finite-budget scores and selected rows can
 differ, so validate an explicit backend through the complete estimator.
 
 The explicit option `residual_check_order='adaptive'` changes the order of
-existing residual checks in unaccelerated optimized Cholesky MM. It requires
-`backend='auto'` or `'cholesky'` and `acceleration=None`; the default remains
+existing residual checks in optimized Cholesky MM. It requires
+`backend='auto'` or `'cholesky'`; both `acceleration=None` and `'restart'`
+are supported by the paired DWD 1.3.14 build. The default remains
 `'refinement_first'`. Automatic spectral recovery uses the original check
 order, and anchor recovery retains its original checks. The option does not
 loosen tolerances or recovery limits, but a different accepted coefficient
 state can change finite-iteration scores, selected rows and predictions.
 Validate it through the complete ensemble before relying on its results.
+The rules for restart proposals, objective-descent checks and restart decisions are unchanged.
+The policy can avoid repeated speculative corrections that fail their checks;
+it does not omit the accurate assessment needed to accept the original state.
 
 Prediction is evaluated in batches to limit query-kernel allocations.
 Training still uses dense kernel matrices. At `M=5`, an uncached successful fit
@@ -163,7 +167,7 @@ memory. This formula is a lower bound, not an estimate of peak RAM.
 direct coordinate-difference calculation for every base model and the final
 refit. The default is `'standard'`, which retains the existing norm/dot
 construction and its documented extreme-input limitations. The option requires
-the paired DWD 1.3.13 dependency.
+the paired DWD 1.3.14 dependency.
 
 Direct computation supports the named `kernel='rbf'` with the corrected Schur
 solver used by this estimator. Set gamma through the usual top-level `gamma`
@@ -205,7 +209,7 @@ option applies to ensemble DWD, not `EnsembleKernelSVM`.
 `EnsembleKernelDWD(affine_computation='joint')` forwards the same numerical
 policy to every base learner and the fresh final DWD fit, including each
 pair inside `OvOClassifier`. The default is `'standard'`. The option requires
-the paired DWD 1.3.13 dependency.
+the paired DWD 1.3.14 dependency.
 
 The policy evaluates the unchanged decision expression `K @ alpha + b`,
 including the intercept in the rounding check and, when needed, in joint
@@ -258,7 +262,7 @@ applies to ensemble DWD, not `EnsembleKernelSVM`.
 `EnsembleKernelDWD(exact_recovery='extended')` gives every base learner and
 the fresh final model the DWD dependency's extended exact-recovery budget.
 `OvOClassifier` clones the setting into every class pair. The default remains
-`'standard'`. The option requires the paired DWD 1.3.13 dependency.
+`'standard'`. The option requires the paired DWD 1.3.14 dependency.
 
 The standard limits are exact rank 16 and 4096-bit rational arithmetic.
 Extended recovery raises those limits to 32 and 8192 bits for both exact
@@ -305,7 +309,7 @@ defaults remain unchanged. This option applies to ensemble DWD, not
 
 ## Optional fit profiling
 
-Version 0.3.8 offers an opt-in context for measuring ensemble-DWD
+The package offers an opt-in context for measuring ensemble-DWD
 work without adding an estimator parameter:
 
 ```python
@@ -347,7 +351,7 @@ changed package sources still changes the existing cache provenance; enabling
 or disabling the context within the same installation does not.
 
 For native DWD residual dispatch, use the separate optional
-`dwd.profiling.residual_profile()` context provided by DWD 1.3.13.
+`dwd.profiling.residual_profile()` context provided by DWD 1.3.14.
 The contexts can be combined, but their nested times
 must not be added to ensemble stage times.
 
@@ -438,7 +442,7 @@ ratio midpoints remain arithmetic. It does not merge nearby parameters or
 reuse their fitted results. Correcting a premature refusal can require more
 evaluations before the unchanged stopping and budget rules are satisfied.
 
-Boundary expansion has the same protection in the version 0.3.8 examples.
+Boundary expansion has the same protection, introduced in the version 0.3.8 examples.
 If the ordinary logarithm/exponential calculation refuses a positive finite
 exterior point, exact rational arithmetic evaluates the requested geometric
 extension, capped at a factor of ten, before one conversion to a float.
@@ -690,6 +694,34 @@ confirmation, final refitting and held-out scoring. Numerical confirmation
 itself remains disabled unless requested. Existing timing fields keep their
 names and meanings.
 
+For a newly completed final fit, `refit.json` and `completed.json` also report
+`pipeline_fit_seconds`: the interval around `model.fit` alone, including any
+pipeline preprocessing and the complete ensemble procedure. The original
+`wall_seconds` and `refit_seconds` still include cloning, thread management and
+runtime verification. `fit_management_seconds` is their difference from the
+pipeline fit interval. It does not include later diagnostic construction or
+file publication. Compare like intervals when assessing small, fast fits.
+
+The held-out result records `held_out_prediction_seconds` around the existing
+single `model.predict` call, including pipeline query preprocessing, and
+`held_out_accuracy_scoring_seconds` for the subsequent accuracy calculation.
+`held_out_classification` records balanced accuracy and per-class support,
+prediction counts and recall from those same predictions. Balanced accuracy is
+the mean recall over classes present in the held-out labels; recall for a class
+absent from those labels is unknown. These are descriptive metrics: ordinary
+accuracy remains the CV selection criterion. The work summary separates the
+secondary metric reporting interval from its existing held-out scoring interval.
+None of these intervals includes result-file publication. A completed replay
+restores the saved metrics and timings without predicting again.
+
+Final `selection_composition` reports each class's training and selected counts,
+their proportions in those two sets, and the fraction of that class retained.
+For multiclass OvO, these records use each binary pair's training population and
+include the mapping back to the original labels. A changed selected class
+mixture can help explain an accuracy result; the report does not balance the
+classes, change the selection ratio, or replace the original ranking. Missing
+historical class counts remain unavailable.
+
 For each completed CV stage, fold-and-seed evaluations fall into three
 separate groups: newly executed evaluations (including recorded ineligible
 results), newly created equivalent-ratio receipts, and previously existing
@@ -707,6 +739,23 @@ from restored children also remain historical. These counts describe the
 base stage and do not count the
 separate final model fitted on the selected rows. Full-training refitting
 reports its own base-cache observations separately.
+
+`numerical_checks` visits every recorded base learner and the final learner,
+including each OvO pair. Per-learner final-fit details appear in `refit.json`;
+CV work summaries aggregate the same counters and timing fields. Cached base
+diagnostics, recovered pairs and replayed folds are historical references,
+separate from current fitting. Those references can describe the same cached
+fit more than once, so their sum is not unique historical work. Equivalent-ratio
+aliases do not add their source diagnostics again. Missing cache-origin facts
+remain `unknown_origin`; missing counter or timer values remain null with
+explicit coverage counts. A partial sum is not a complete total.
+
+The reported `refinement_and_compensated_seconds` subtotal adds only native
+refinement and compensated residual checking for learners reporting both.
+`native_residual_seconds` can overlap compensated checking and is displayed
+separately, never added to that subtotal. These timers are components of fitting,
+not additional time to add to the pipeline interval. Without applicable solver
+diagnostics, including SVM-only fits, this report cannot infer numerical costs.
 
 Current worker fit and score times are sums of measured worker intervals.
 They are neither CPU time nor elapsed parallel-run time. Timings stored in

@@ -130,7 +130,8 @@ _SOLVER_DIAGNOSTIC_FIELDS = (
     "auto_fallback", "fallback_reason", "prediction_precision",
     "score_reconstruction_max_error", "objective_reconstruction_error",
     "optimality_criterion", "optimality_tolerance", "coefficient_representation",
-    "returned_state_uses_certified_columns",
+    "returned_state_uses_certified_columns", "residual_check_order",
+    "requested_residual_check_order",
     ("linear_system_diagnostics", (
         "linear_system", "factor_representation", "linear_solves", "linear_recoveries",
         "refinement_steps", "max_linear_residual", "max_constraint_residual",
@@ -139,7 +140,12 @@ _SOLVER_DIAGNOSTIC_FIELDS = (
         "native_refinement_trials", "native_refinement_discarded",
         "native_refinement_acceptances", "native_refinement_seconds",
         "compensated_residual_checks", "compensated_residual_seconds",
-        "native_residual_checks", "native_residual_seconds")),
+        "native_residual_checks", "native_residual_seconds",
+        "adaptive_residual_probes", "adaptive_residual_probe_errors",
+        "last_adaptive_residual_probe_error", "adaptive_residual_probe_seconds",
+        "adaptive_residual_probe_invalidations", "adaptive_residual_probe_acceptances",
+        "adaptive_native_trials_skipped", "adaptive_residual_probe_fallbacks",
+        "adaptive_residual_probe_reuses", "adaptive_residual_history_resets")),
     ("dual_certificate", (
         "feasibility", "slope_quantum", "dual_quadratic_method", "fallback_reason",
         "dual_objective_lower_bound", "dual_objective_is_lower_bound",
@@ -311,6 +317,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         The default preserves the existing order; 'adaptive' is an opt-in
         ordering policy with separate base-cache entries. Acceptance criteria
         are unchanged, but finite-budget outputs need not be bitwise identical.
+        Optimized Cholesky MM supports the policy with or without restart
+        acceleration with the paired DWD 1.3.14 dependency.
 
     Attributes
     ----------
@@ -456,8 +464,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 "refinement_first", "adaptive"):
             raise ValueError("residual_check_order must be 'refinement_first' or 'adaptive'.")
         if self.residual_check_order == "adaptive" and (
-                self.backend not in ("auto", "cholesky") or self.acceleration is not None):
-            raise ValueError("Adaptive residual ordering requires unaccelerated optimized Cholesky MM.")
+                self.backend not in ("auto", "cholesky")):
+            raise ValueError("Adaptive residual ordering requires optimized Cholesky MM.")
         if self.prediction_batch_size is not None:
             _positive_integer(self.prediction_batch_size, "prediction_batch_size")
         if self.cache_dir is not None and not isinstance(self.cache_dir, (str, PathLike)):
