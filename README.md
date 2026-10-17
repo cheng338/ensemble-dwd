@@ -20,24 +20,25 @@ The package implements:
 
 The four-stage ensemble DWD method is described in Chapter 5 of:
 
-> Cheng, Chang (2026). *Overcoming the Curses of Dimensionality and
-> Kernelization: Scalable DWD and Supervised NMF*. Doctoral dissertation
+> Cheng, Chang (2026). *Ensemble Kernel Distance-Weighted Discrimination and
+> Supervised Nonnegative Matrix Factorization for Classification*. Doctoral dissertation
 > manuscript, Purdue University.
 
 See [CITATION.cff](CITATION.cff) for citation details.
 
-This is private research software. Copyright 2026 Chang Cheng. All rights
-reserved. A software license has not yet been selected or granted.
+This is private research software. Copyright 2026 Chang Cheng. **All Rights
+Reserved.** A software license has not yet been selected or granted. See
+[LICENSE](LICENSE).
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.9 requires DWD 1.3.14 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.14).
+Python 3.11 or later is required. Version 0.3.10 requires DWD 1.3.15 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.15).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.14 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.15 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -54,7 +55,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.9-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.10-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -74,18 +75,18 @@ on Linux, a different processor or free-threaded Python.
 Python 3.10 is no longer supported. Previously released companion wheels
 remain available as historical artifacts and will not receive updates.
 
-DWD 1.3.14 accelerates eligible dense compensated score sums on Windows
+DWD 1.3.15 accelerates eligible dense compensated score sums on Windows
 CPython 3.12 x86-64. Other runtimes and unsupported inputs keep the Python
 calculation and its numerical checks. Wheel installation compatibility does
 not guarantee that a compiled scoring path is active. See DWD's
-[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.14/docs/compiled_residual.md)
+[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.15/docs/compiled_residual.md)
 for eligibility and fallback behavior.
 
-The CI workflow uses the same lock and the explicit DWD 1.3.14 release asset
+The CI workflow uses the same lock and the explicit DWD 1.3.15 release asset
 page. This keeps its dependency source fixed independently of repository
 variables used by older release branches.
 
-The default numerical policies remain unchanged. DWD 1.3.14 also provides the
+The default numerical policies remain unchanged. DWD 1.3.15 also provides the
 optional `rbf_computation='direct'`, `affine_computation='joint'` and
 `exact_recovery='extended'` settings used by this release. See
 [direct RBF computation](docs/method.md#optional-direct-rbf-computation),
@@ -189,17 +190,18 @@ excludes kernels with more than 256 rows. See
 
 # Parameter search
 
-Put preprocessing inside the cross-validation pipeline. Search the complete
-ensemble and score predictions from its final refitted model:
+Search the complete ensemble and score predictions from its final refitted
+model. This MNIST example assumes training and test pixels are already
+floating-point values in `[0, 1]`: divide raw `0-255` pixels by 255 once, and
+leave already scaled pixels unchanged. The pipeline applies no further
+pixel transformation. Any learned preprocessing belongs inside the CV pipeline.
 
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from ensemble_dwd import EnsembleKernelDWD, mnist_param_grid
 
 pipeline = Pipeline([
-    ('scale', StandardScaler()),
     ('ensemble', EnsembleKernelDWD(
         cache_dir='.ensemble-dwd-cache', store_base_estimators=False,
     )),
@@ -211,7 +213,8 @@ search = GridSearchCV(
     scoring='accuracy', n_jobs=1, error_score='raise',
 )
 # Run explicitly when the data and computational budget are ready:
-# search.fit(X_train, y_train)
+# search.fit(X_train_unit, y_train)
+# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
 
 This example stops on every fit error, including an expected
@@ -244,6 +247,18 @@ without an automatic refit. Only new parameter combinations are
 proposed; verified completed fold records are reused. Earlier candidates
 remain eligible for selection. Changing only retention can also reuse the
 package's separate base-stage cache.
+
+The three MNIST tuning commands default to `--preprocessing unit`, dividing
+raw pixels by 255 to produce features in `[0, 1]`. Omitting
+`--pixel-input-range` declares raw `0-255` input by default; the commands do
+not infer the range from observed values. For data already in `[0, 1]`, pass
+`--pixel-input-range 0-1` to avoid dividing again. Explicit
+`--preprocessing standard` instead fits `StandardScaler` inside each
+training-fold pipeline. The commands apply only the chosen transformation.
+Retune the coefficients and use a fresh output directory when changing
+preprocessing or its declared input range. Neither choice guarantees better
+accuracy or speed. See
+[MNIST pixel preprocessing](docs/method.md#mnist-pixel-preprocessing).
 
 All three tuning commands optionally accept `--cv-seeds 42 43 44`. Each
 candidate uses the same prescribed seeds and folds. Scores are averaged across
@@ -495,16 +510,16 @@ SVM fitting parameters take effect on the next fit.
 `OvOClassifier(EnsembleKernelDWD(...))` fits 45 binary ensembles for ten classes.
 
 The following example tunes multiclass ensemble DWD. Each candidate uses
-one parameter configuration across all class pairs.
+one parameter configuration across all class pairs. Supply training and test
+pixels already in `[0, 1]`, dividing raw `0-255` values by 255 once and leaving
+already scaled values unchanged. No further pixel transformation is applied.
 
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from ensemble_dwd import EnsembleKernelDWD, OvOClassifier, mnist_param_grid
 
 pipeline = Pipeline([
-    ('scale', StandardScaler()),
     ('ovo', OvOClassifier(EnsembleKernelDWD(
         M=5, random_state=42, store_base_estimators=False,
         cache_dir='.ensemble-dwd-cache',
@@ -516,7 +531,8 @@ search = GridSearchCV(
     cv=StratifiedKFold(5, shuffle=True, random_state=42),
     scoring='accuracy', n_jobs=1, error_score='raise',
 )
-# search.fit(X_train, y_train)
+# search.fit(X_train_unit, y_train)
+# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
 
 Each class pair uses the same binary procedure for selection and refitting. Only
@@ -572,7 +588,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.9 changelog](CHANGELOG.md#039--2026-10-15) for this release's changes.
+See the [0.3.10 changelog](CHANGELOG.md#0310--2026-10-17) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.

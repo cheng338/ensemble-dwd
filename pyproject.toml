@@ -8,12 +8,13 @@ dynamic = ["version", "description"]
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{name = "Chang Cheng"}]
+license = {file = "LICENSE"}
 dependencies = [
     "numpy",
     "scipy",
     "scikit-learn>=1.6",
     "joblib>=1.3",
-    "dwd==1.3.14",
+    "dwd==1.3.15",
 ]
 classifiers = [
     "Private :: Do Not Upload",
@@ -31,5 +32,5 @@ classifiers = [
 name = "ensemble_dwd"
 
 [tool.flit.sdist]
-include = ["docs/", "examples/", "tests/", "CITATION.cff", "CHANGELOG.md", "VALIDATION.md", "requirements-dwd.txt", ".github/", ".gitattributes"]
+include = ["docs/", "examples/", "tests/", "LICENSE", "CITATION.cff", "CHANGELOG.md", "VALIDATION.md", "requirements-dwd.txt", ".github/", ".gitattributes"]
 exclude = ["**/__pycache__/**", "**/*.pyc", "build/", "dist/"]

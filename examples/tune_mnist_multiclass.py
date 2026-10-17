@@ -27,15 +27,16 @@ import sys
 import numpy as np
 from sklearn.model_selection import ParameterGrid, StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.utils import check_random_state
 
 from ensemble_dwd import EnsembleKernelDWD, OvOClassifier, mnist_param_grid
+from ensemble_dwd._validation import _reject_complex
 
 EXAMPLES_DIRECTORY = str(Path(__file__).resolve().parent)
 if EXAMPLES_DIRECTORY not in sys.path:
     sys.path.insert(0, EXAMPLES_DIRECTORY)
 from tune_mnist import (positive_int, add_seed_arguments, seed_search_options,
+                        add_preprocessing_arguments, preprocessing_options,
                         report_seed_options, add_ratio_arguments, ratio_search_options,
                         add_confirmation_arguments, confirmation_search_options,
                         report_confirmation_options)
@@ -63,8 +64,7 @@ def validate_split(X, y, name):
         raise ValueError(f'{name}: features must be finite real numbers.')
     if not np.isfinite(X).all() or np.prod(X.shape[1:]) == 0:
         raise ValueError(f'{name}: features must be nonempty and finite.')
-    if np.iscomplexobj(y):
-        raise ValueError(f'{name}: MNIST labels must be real integer digits 0 through 9.')
+    _reject_complex(y, f'{name}: MNIST labels')
     try:
         labels = np.asarray(y, dtype=np.float64)
     except (TypeError, ValueError) as error:
@@ -179,6 +179,7 @@ def search_grid(smoke=False, broad=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_preprocessing_arguments(parser)
     add_final_thread_argument(parser)
     add_seed_arguments(parser)
     add_ratio_arguments(parser)
@@ -222,6 +223,7 @@ def main(argv=None):
     cache.add_argument('--no-cache', action='store_true', help='Disable base-stage caching.')
     parser.add_argument('--run', action='store_true', help='Load local data and start the search.')
     args = parser.parse_args(argv)
+    preprocessor, preprocessing = preprocessing_options(parser, args)
     report_final_threads(args.final_native_threads)
     seed_options = seed_search_options(parser, args)
     confirmation_options = confirmation_search_options(parser, args)
@@ -306,7 +308,7 @@ def main(argv=None):
     cache_dir = None if args.no_cache else str(
         args.cache_dir.resolve() if args.cache_dir is not None else run_dir / 'base-cache')
     pipeline = Pipeline([
-        ('scale', StandardScaler()),
+        ('scale', preprocessor),
         ('ovo', OvOClassifier(EnsembleKernelDWD(
             M=5, theta=0.1, random_state=RANDOM_STATE, cache_dir=cache_dir,
             store_base_estimators=False), n_jobs=1, prediction_batch_size=1024)),
@@ -315,6 +317,7 @@ def main(argv=None):
         **provenance, 'digits': DIGITS, 'n_pairs': 45, 'fold_count': args.folds,
         'cv_random_state': RANDOM_STATE, 'grid_kind': 'smoke' if args.smoke_grid else 'broad' if args.broad_grid else 'coarse',
         'pair_jobs': 1, 'M': 5, 'cache_dir': cache_dir, 'store_base_estimators': False,
+        'preprocessing': preprocessing,
     }
     if args.pair_recovery:
         settings['pair_recovery'] = {'enabled': True, 'max_bytes': args.pair_recovery_max_bytes,

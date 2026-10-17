@@ -23,6 +23,7 @@ if str(EXAMPLES) not in sys.path:
     sys.path.insert(0, str(EXAMPLES))
 
 import stage_reporting as reporting
+from mnist_preprocessing import UnitPixelScaler
 from stage_reporting import (COUNT_FIELDS, candidate_budget, encode, explicit_proposal,
                              grid_proposal, publish_report, safe_report, workload_plan)
 
@@ -35,6 +36,11 @@ class CustomEstimator(BaseEstimator):
 class ChildDWD(KernGDWD):
     def __sklearn_clone__(self):
         raise AssertionError("subclass cloning must not run")
+
+
+class ChildPixelScaler(UnitPixelScaler):
+    def __sklearn_clone__(self):
+        raise AssertionError("custom pixel scaler cloning must not run")
 
 
 class WorkloadTests(unittest.TestCase):
@@ -154,6 +160,51 @@ class WorkloadTests(unittest.TestCase):
         np.testing.assert_array_equal(self.y, before)
         self.assertEqual(result["totals"]["total_learner_fits"], 24)
         self.assertFalse(hasattr(model.named_steps["scale"], "mean_"))
+
+    def test_unit_pixel_scaler_keeps_standard_scaler_workload_counts(self):
+        for model in (KernGDWD(), SVC(), EnsembleKernelDWD(M=3), EnsembleKernelSVM(M=3)):
+            baseline = self.plan(Pipeline([("scale", StandardScaler()),
+                                           ("ovo", OvOClassifier(model))]), seeds=[7, 13])
+            for input_range in ("0-255", "0-1"):
+                with self.subTest(model=type(model).__name__, input_range=input_range):
+                    actual = self.plan(Pipeline([("scale", UnitPixelScaler(input_range=input_range)),
+                                                 ("ovo", OvOClassifier(model))]), seeds=[7, 13])
+                    self.assertEqual(actual, baseline)
+
+    def test_exact_pixel_scaler_candidate_replacement_is_counted(self):
+        model = Pipeline([("scale", StandardScaler()),
+                          ("ovo", OvOClassifier(EnsembleKernelDWD(M=3)))])
+        for input_range in ("0-255", "0-1"):
+            result = self.plan(model, [{"scale": UnitPixelScaler(input_range=input_range)}])
+            self.assertEqual(result["known_candidate_count"], 1)
+            self.assertEqual(result["totals"]["total_learner_fits"], 16)
+        self.assertIs(type(model.named_steps["scale"]), StandardScaler)
+
+    def test_pixel_scaler_subclass_and_custom_replacements_remain_unknown(self):
+        for transform in (ChildPixelScaler(input_range="0-255"), CustomEstimator(), MinMaxScaler()):
+            with self.subTest(transform=type(transform).__name__):
+                direct = self.plan(Pipeline([("scale", transform),
+                                             ("ovo", OvOClassifier(EnsembleKernelDWD()))]))
+                model = Pipeline([("scale", UnitPixelScaler(input_range="0-255")),
+                                  ("ovo", OvOClassifier(EnsembleKernelDWD()))])
+                replacement = self.plan(model, [{"scale": transform}])
+                for result in (direct, replacement):
+                    self.assertEqual(result["unknown_candidate_count"], 1)
+                    self.assertTrue(all(value is None for value in result["totals"].values()))
+
+    def test_pixel_scaler_reporting_never_fits_or_transforms(self):
+        transform = UnitPixelScaler(input_range="0-255")
+        model = Pipeline([("scale", transform), ("ovo", OvOClassifier(EnsembleKernelDWD()))])
+        before = self.y.copy()
+        with patch.object(UnitPixelScaler, "fit", side_effect=AssertionError("fit")), \
+                patch.object(UnitPixelScaler, "transform", side_effect=AssertionError("transform")), \
+                patch.object(EnsembleKernelDWD, "fit", side_effect=AssertionError("fit")), \
+                patch.object(OvOClassifier, "fit", side_effect=AssertionError("fit")), \
+                patch.object(OvOClassifier, "predict", side_effect=AssertionError("predict")):
+            result = self.plan(model)
+        np.testing.assert_array_equal(self.y, before)
+        self.assertEqual(result["totals"]["total_learner_fits"], 24)
+        self.assertEqual(vars(transform), {"input_range": "0-255"})
 
 
 class ProposalTests(unittest.TestCase):

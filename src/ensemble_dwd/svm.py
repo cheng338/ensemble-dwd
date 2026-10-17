@@ -14,6 +14,7 @@ from sklearn.utils.validation import check_is_fitted, validate_data
 
 from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
 from ._failure_context import attach_failure_context, failure_context_scope, uses_implementation
+from ._validation import _reject_complex
 from .estimator import (
     IneligibleSelectionError,
     _finite_real,
@@ -33,7 +34,9 @@ def _batched_scores(model, X, batch_size):
     scores = np.empty(len(X), dtype=np.float64)
     for start in range(0, len(X), size):
         stop = min(start + size, len(X))
-        values = np.asarray(model.decision_function(X[start:stop]), dtype=np.float64)
+        values = model.decision_function(X[start:stop])
+        _reject_complex(values, "SVC decision values")
+        values = np.asarray(values, dtype=np.float64)
         if values.shape != (stop - start,) or not np.isfinite(values).all():
             raise FloatingPointError("SVC must return one finite decision value per observation.")
         scores[start:stop] = values
@@ -357,6 +360,8 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         try:
             self._validate_options()
             context["stage"] = "input_validation"
+            _reject_complex(X, "Features")
+            _reject_complex(y, "Labels")
             X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
             check_classification_targets(y)
             classes, encoded = np.unique(y, return_inverse=True)
@@ -431,12 +436,14 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
     def decision_function(self, X):
         """Return finite final-model scores, positive for classes_[1]."""
         check_is_fitted(self)
+        _reject_complex(X, "Features")
         X = validate_data(self, X, reset=False, accept_sparse=False, dtype=np.float64)
         return _batched_scores(self.final_estimator_, X, self.prediction_batch_size)
 
     def predict(self, X):
         """Return original labels using the final SVC's native tie convention."""
         check_is_fitted(self)
+        _reject_complex(X, "Features")
         X = validate_data(self, X, reset=False, accept_sparse=False, dtype=np.float64)
         size = len(X) if self.prediction_batch_size is None else _positive_integer(
             self.prediction_batch_size, "prediction_batch_size")
@@ -444,6 +451,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         for start in range(0, len(X), size):
             stop = min(start + size, len(X))
             values = np.asarray(self.final_estimator_.predict(X[start:stop]))
+            _reject_complex(values, "SVC predicted labels")
             if values.shape != (stop - start,) or not np.isin(values, self.classes_).all():
                 raise ValueError("SVC must return one valid class label per observation.")
             result[start:stop] = values

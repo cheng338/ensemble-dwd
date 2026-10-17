@@ -19,6 +19,7 @@ from ensemble_dwd.multiclass import _fit_pair
 from search_support import CandidateEvaluator, data_fingerprint, json_safe
 from _pair_store import PairStore, StoreMismatch, canonical, digest, _read_envelope
 import _pair_store
+from mnist_preprocessing import UnitPixelScaler
 
 POLICY = 'completed-pair-v1'
 
@@ -113,13 +114,14 @@ def normalize_config(enabled, max_bytes):
     expected_store = Path(__file__).with_name('_pair_store.py').resolve()
     if Path(_pair_store.__file__).resolve() != expected_store:
         raise cp.CheckpointError('Pair storage loaded outside the example source directory')
-    paths = [Path(__file__).absolute(), expected_store]
+    paths = [Path(__file__).absolute(), expected_store, cp._preprocessing_source()]
     return {'policy': POLICY, 'max_bytes': max_bytes,
             'source_hashes': {str(path): cp._file_hash(path) for path in paths}}
 
 
 def check_source_hashes(config):
     cp = checkpoint()
+    cp._preprocessing_source()
     if Path(_pair_store.__file__).resolve() != Path(__file__).with_name('_pair_store.py').resolve():
         raise cp.CheckpointError('Pair storage source origin changed')
     for path, expected in config['source_hashes'].items():
@@ -137,9 +139,13 @@ def validate_supported(model, *, require_numeric_gamma=True):
     if getattr(model, 'transform_input', None) is not None:
         raise ValueError('Pair recovery does not support metadata routing')
     scaler, ovo = (item[1] for item in model.steps)
-    if (type(scaler) is not StandardScaler or type(ovo) is not OvOClassifier
+    if (type(scaler) not in (StandardScaler, UnitPixelScaler) or type(ovo) is not OvOClassifier
             or type(ovo.n_jobs) is not int or ovo.n_jobs != 1):
-        raise ValueError('Pair recovery requires StandardScaler and serial exact OvOClassifier')
+        raise ValueError('Pair recovery requires exact StandardScaler or UnitPixelScaler and serial exact OvOClassifier')
+    if type(scaler) is UnitPixelScaler:
+        if not checkpoint()._unchanged_methods(scaler):
+            raise ValueError('Pair recovery requires unchanged UnitPixelScaler methods')
+        scaler._validate_options()
     binary = ovo.estimator
     if type(binary) not in (KernGDWD, EnsembleKernelDWD):
         raise ValueError('Pair recovery supports exact KernGDWD or EnsembleKernelDWD only')

@@ -16,6 +16,7 @@ from dwd.gen_kern_dwd import KernGDWD
 from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
 from ._failure_context import attach_failure_context, failure_context_scope, uses_implementation
 from .profiling import _profiled, _record_cache_result, _stage
+from ._validation import _reject_complex
 
 
 class IneligibleSelectionError(ValueError):
@@ -92,7 +93,9 @@ def _sample_subsets(y_encoded, size, M, rng):
 
 
 def _binary_scores(model, X):
-    scores = np.asarray(model.decision_function(X), dtype=np.float64)
+    scores = model.decision_function(X)
+    _reject_complex(scores, "DWD decision values")
+    scores = np.asarray(scores, dtype=np.float64)
     if scores.shape == (X.shape[0], 1):
         scores = scores[:, 0]
     if scores.shape != (X.shape[0],) or not np.isfinite(scores).all():
@@ -173,7 +176,7 @@ _SOLVER_DIAGNOSTIC_FIELDS = (
         "history_scope",
         ("successful_attempt_timing", _TIMING_FIELDS),
         ("failed_attempt", ("completed_iterations", "failed_iteration", "setup_seconds",
-                            "optimization_seconds", "elapsed_seconds", "backend",
+                            "optimization_seconds", "elapsed_seconds", "failed_backend",
                             "mm_function_recovery_attempted",
                             "mm_function_recovery_accepted_actions",
                             "mm_function_certificate_status")))),
@@ -650,6 +653,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 self._validate_options()
             context["stage"] = "input_validation"
             with _stage("input_validation"):
+                _reject_complex(X, "Features")
+                _reject_complex(y, "Labels")
                 X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
                 check_classification_targets(y)
                 classes, encoded = np.unique(y, return_inverse=True)
@@ -731,6 +736,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     def decision_function(self, X):
         """Return final-model scores, positive for classes_[1]."""
         check_is_fitted(self)
+        _reject_complex(X, "Features")
         X = validate_data(self, X, reset=False, accept_sparse=False, dtype=np.float64)
         return _binary_scores(self.final_estimator_, X)
 

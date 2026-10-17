@@ -102,14 +102,17 @@ same fractions and outer endpoints. These are starting grids, not universal
 optima or runtime guarantees. C and DWD lambda need separate tuning; equal
 candidate counts do not imply equal regularization or wall-clock cost.
 
+The following MNIST example assumes training and test pixels are already
+floating-point values in `[0, 1]`: divide raw `0-255` pixels by 255 once and
+leave already scaled pixels unchanged. The pipeline applies no further
+pixel transformation.
+
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from ensemble_dwd import EnsembleKernelSVM, mnist_svm_param_grid
 
 pipeline = Pipeline([
-    ("scale", StandardScaler()),
     ("ensemble", EnsembleKernelSVM(
         cache_dir=".ensemble-svm-cache", store_base_estimators=False,
     )),
@@ -120,7 +123,8 @@ search = GridSearchCV(
     scoring="accuracy", n_jobs=2, pre_dispatch=2, error_score="raise",
 )
 # Supply only training data. Keep the final test set held out.
-# search.fit(X_train, y_train)
+# search.fit(X_train_unit, y_train)
+# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
 
 This example stops on all fit errors. A broad grid may contain
@@ -227,16 +231,17 @@ a common coefficient across pairs; `gamma="scale"` resolves separately for
 each pair before sampling.
 
 Use `mnist_svm_param_grid(prefix='ovo__estimator__')` for the nested estimator.
-This constructs a training-only search; it does not launch it:
+This constructs a training-only search; it does not launch it. Supply training
+and test pixels already in `[0, 1]`, dividing raw `0-255` values by 255 once
+and leaving already scaled values unchanged. No further pixel transformation
+is applied.
 
 ```python
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from ensemble_dwd import EnsembleKernelSVM, OvOClassifier, mnist_svm_param_grid
 
 pipeline = Pipeline([
-    ('scale', StandardScaler()),
     ('ovo', OvOClassifier(EnsembleKernelSVM(
         M=5, random_state=42, store_base_estimators=False,
         cache_dir='.ensemble-svm-cache',
@@ -247,7 +252,8 @@ search = GridSearchCV(
     cv=StratifiedKFold(5, shuffle=True, random_state=42),
     scoring='accuracy', n_jobs=1, pre_dispatch=1, error_score='raise',
 )
-# search.fit(X_train, y_train)  # Keep the final test set held out.
+# search.fit(X_train_unit, y_train)  # Keep the final test set held out.
+# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
 
 The default preset has 125 candidates; `broad=True` restores 405. Either can
@@ -282,7 +288,16 @@ and runtime/source identity; it cannot share DWD results or results from a
 different CV fold. A custom subclass or random_state=None bypasses caching.
 The optional disk cache and SVC's in-memory `cache_size` are distinct.
 
-The tuning command exposes the latter as `--cache-size MIB`, with the unchanged
+The MNIST command defaults to `--preprocessing unit`: divide raw `0-255`
+pixels by 255. Omitting `--pixel-input-range` declares that raw range; the
+command does not infer it. Pass `--pixel-input-range 0-1` for already scaled
+pixels to avoid dividing again. Explicit `--preprocessing standard` instead
+uses fold-local `StandardScaler`; the two transforms are not combined.
+Changing preprocessing or its declared range requires new tuning and a
+fresh run directory. See
+[MNIST pixel preprocessing](method.md#mnist-pixel-preprocessing).
+
+The tuning command exposes SVC's in-memory cache as `--cache-size MIB`, with the unchanged
 default of 200 MiB per active SVC. For example, `--jobs 4 --cache-size 1024`
 allows up to 4096 MiB of kernel-cache capacity across four concurrent CV fits.
 The example prints this allowance before loading data. Bases and the final SVC

@@ -1,5 +1,36 @@
 # ensemble-dwd validation
 
+## 0.3.10: real-valued input validation and MNIST preprocessing
+
+Version 0.3.10 is paired with DWD 1.3.15 and requires Python 3.11 or later.
+The checks below cover development sources on local Windows environments;
+they do not establish validation of every release artifact or platform.
+
+The complex-input changes passed 121 focused and estimator-contract tests and
+three integration tests using the real DWD implementation, with no failures,
+errors or skips. The checks cover complex arrays, complex scalars stored in
+object arrays, MNIST labels, learner scores and predicted labels. Unsupported
+complex values are rejected before conversion can discard their imaginary
+parts. Ordinary real-input comparisons preserved scores, predictions, consensus,
+subsets and selected rows exactly. No evidence was found that the historical
+experiments supplied complex input, and no speed improvement is claimed.
+
+The final unit-pixel default passed 120 relevant tests: 78 preprocessing,
+checkpoint, search and recovery checks plus 42 existing command-line checks.
+They cover raw pixels divided by 255, explicitly declared inputs already in
+`[0,1]`, real fits, parallel execution, equivalent-ratio reuse and partial-pair
+recovery. Checkpoints created with standardization are rejected under the new
+unit-pixel default before fitting, with their prior receipts preserved.
+Fold-local `StandardScaler` remains available explicitly. These tests are
+correctness checks, not a new accuracy or timing study; historical experiments
+were not rerun or rewritten.
+
+Three release-metadata checks passed for the installation examples, dependency
+lock structure and All Rights Reserved notice before the version update.
+The suites above overlap and must not be summed as unique tests. The estimator
+objectives, disjoint sampling, selection rules and numerical acceptance checks
+remain unchanged. See the [changelog](CHANGELOG.md#0310--2026-10-17).
+
 ## 0.3.9: adaptive restart ordering and example reporting
 
 Version 0.3.9 is paired with DWD 1.3.14 and requires Python 3.11 or later.

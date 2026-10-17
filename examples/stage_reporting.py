@@ -23,6 +23,7 @@ from dwd.gen_kern_dwd import KernGDWD
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
 from search_support import _io_path, write_json_atomic
 from near_coordinates import console_notice
+from mnist_preprocessing import UnitPixelScaler
 
 
 COUNT_FIELDS = (
@@ -30,6 +31,7 @@ COUNT_FIELDS = (
     "full_learner_fits", "total_learner_fits",
 )
 _BINARY_TYPES = (KernGDWD, EnsembleKernelDWD, EnsembleKernelSVM, SVC)
+_PREPROCESSING_TYPES = (StandardScaler, UnitPixelScaler)
 
 
 def _counts(value=0):
@@ -121,8 +123,8 @@ def _model_shape(estimator, *, validate_M=True):
                 or any(not isinstance(step, (list, tuple)) or len(step) != 2
                        for step in steps)):
             return None, "unsupported pipeline structure"
-        if any(type(step) is not StandardScaler for _, step in steps[:-1]):
-            return None, "unsupported preprocessing; only exact StandardScaler is counted"
+        if any(type(step) not in _PREPROCESSING_TYPES for _, step in steps[:-1]):
+            return None, "unsupported preprocessing; only exact StandardScaler or UnitPixelScaler is counted"
         terminal = steps[-1][1]
     ovo = type(terminal) is OvOClassifier
     binary = terminal.estimator if ovo else terminal
@@ -154,7 +156,7 @@ def _unsupported_replacement(parameters):
             visited.add(id(value))
             pending.extend(value.values() if type(value) is dict else value)
             continue
-        if isinstance(value, BaseEstimator) and type(value) is not StandardScaler:
+        if isinstance(value, BaseEstimator) and type(value) not in _PREPROCESSING_TYPES:
             _, reason = _model_shape(value, validate_M=False)
             if reason is not None:
                 return reason

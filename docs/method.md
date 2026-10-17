@@ -1,8 +1,8 @@
 # Binary ensemble kernel DWD
 
 The estimator implements the four stages in Section 5.1.1 of Chang Cheng's
-dissertation, *Overcoming the Curses of Dimensionality and Kernelization:
-Scalable DWD and Supervised NMF* (Purdue University, 2026).
+dissertation, *Ensemble Kernel Distance-Weighted Discrimination and Supervised
+Nonnegative Matrix Factorization for Classification* (Purdue University, 2026).
 `EnsembleKernelDWD` supports binary classification. `OvOClassifier` uses it
 for each class pair, as described in [the multiclass method](multiclass.md).
 
@@ -389,6 +389,52 @@ retained base models do not directly serialize the source feature matrix, but
 their scores and index diagnostics may still be sensitive. Entries retaining
 models include those models' training feature rows. Constructor parameter changes take effect on a
 subsequent fit; they do not modify already fitted child models.
+
+## MNIST pixel preprocessing
+
+The binary DWD, binary SVM and ten-digit tuning commands all accept
+`--preprocessing standard|unit`. The default is `unit`: divide raw pixels
+by 255 to produce features in `[0, 1]`. Omitting `--pixel-input-range`
+declares `0-255` input under this default policy. It does not ask the command
+to infer the range from the data.
+
+The equivalent explicit declaration and the option for already scaled data
+are:
+
+```text
+--preprocessing unit --pixel-input-range 0-255
+--preprocessing unit --pixel-input-range 0-1
+```
+
+The first divides pixels by 255. The second leaves already scaled pixel
+values unchanged. Both return float64 features in `[0, 1]`, without estimating
+a range from training or test values. Out-of-range values raise an error;
+they are not clipped. Use `--pixel-input-range 0-1` for already scaled data
+to avoid dividing again. Values in `[0, 1]` also fall within the raw range,
+so they cannot establish the intended range automatically.
+
+Explicit `--preprocessing standard` opts into `StandardScaler`. Each CV
+training fold fits its own means and variances and applies them to that
+fold's validation rows. The separate final fit learns its scaler from the
+complete training partition. Test rows never set the scaling statistics.
+`--pixel-input-range` is rejected with `standard`.
+
+Unit scaling replaces variance standardization. Dividing by 255 and then
+applying `StandardScaler` would restore the same inverse-variance weighting
+on nonconstant training features, apart from rounding. The unit option keeps
+rare pixels from receiving that additional weight. The commands apply only
+the chosen transformation. This choice changes feature geometry and can
+change selected rows and predictions; it is not a numerical repair to DWD
+or SVM or a universal requirement for MNIST.
+
+The pipeline retains its `scale` step. The declared mode and input range are
+saved in workflow settings and distinguish checkpoint identities. Changing
+either requires a fresh run directory and new training-only tuning. The
+standardized and unit-pixel geometries have no universal conversion for
+gamma, lambda or C. Solver defaults, sampling and search defaults remain
+unchanged, and neither preprocessing choice guarantees improved accuracy or
+speed. The choice belongs to the examples; the estimators still accept
+caller-prepared features.
 
 ## Validation and proposed search space
 
@@ -1003,7 +1049,8 @@ OvO, the retained count must match separately in every original class pair.
 Equal accuracies alone never establish equivalence.
 
 Reuse is restricted to supported built-in ensembles with fixed integer seeds
-and known deterministic preprocessing. Supported Python parameter types are
+and known deterministic preprocessing, including exact `StandardScaler` and
+the examples' exact `UnitPixelScaler` with its declared range. Supported Python parameter types are
 required throughout the estimator, including nested kernel and preprocessing
 options. NumPy scalars or arrays and custom estimators or transformers do not
 gain equivalent-fold reuse; they use ordinary fitting when their exact

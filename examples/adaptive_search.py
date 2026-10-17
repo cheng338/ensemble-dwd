@@ -773,6 +773,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'held_out': data_fingerprint(X_test, y_test)}
     metadata = {'schema_version': 1, 'policy': asdict(config), 'initial_grid': grid,
                 'workflow_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                'preprocessing_sha256': hashlib.sha256(Path(__file__).with_name('mnist_preprocessing.py').read_bytes()).hexdigest(),
                 'reporting_sha256': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                                      for name in ('evaluation_reporting.py', 'work_reporting.py')},
                 'final_thread_policy_sha256': final_thread_policy_sha256(),

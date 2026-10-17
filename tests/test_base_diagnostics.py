@@ -49,7 +49,8 @@ class DiagnosticDWD:
                 'attempts': 2, 'discarded_completed_updates': 4,
                 'successful_updates': 7, 'total_completed_updates': 11,
                 'total_attempted_updates': 12, 'history_scope': 'successful_spectral_attempt',
-                'failed_attempt': {'completed_iterations': 4, 'failed_iteration': 5},
+                'failed_attempt': {'completed_iterations': 4, 'failed_iteration': 5,
+                                   'failed_backend': 'cholesky'},
                 'successful_attempt_timing': {'total_seconds': .3}},
             'dual_certificate': {
                 'dual_objective_lower_bound': 0., 'dual_objective_is_lower_bound': True,
@@ -139,6 +140,52 @@ class BaseDiagnosticsTests(unittest.TestCase):
             'dual_certificate': {'fallback_reason': None}})
         self.assertEqual(_base_diagnostics(explicit_unknown), {
             'final_objective': None, 'solver_diagnostics': {'dual_certificate': {'fallback_reason': None}}})
+
+    def test_failed_backend_survives_the_dwd_recovery_receipt(self):
+        # Match the scalar receipt emitted by DWD's exhausted_constrained_recovery.
+        failed_attempt = {
+            'failed_backend': 'cholesky', 'failed_iteration': 5,
+            'completed_iterations': 4, 'setup_seconds': .1,
+            'optimization_seconds': .2, 'constrained_failure': 'fixture failure',
+            'linear_mode': 'cholesky', 'linear_solves': 5, 'linear_recoveries': 1,
+            'mm_function_recovery_attempted': True,
+            'mm_function_recovery_accepted_actions': 2,
+            'mm_function_certificate_status': 'certified_exact_psd_rank',
+        }
+        model = SimpleNamespace(diagnostics_={
+            'spectral_restart': {'failed_attempt': deepcopy(failed_attempt)}})
+        record = _base_diagnostics(model)
+        compact = record['solver_diagnostics']['spectral_restart']['failed_attempt']
+        self.assertEqual(compact, {
+            key: failed_attempt[key] for key in (
+                'failed_backend', 'failed_iteration', 'completed_iterations',
+                'setup_seconds', 'optimization_seconds',
+                'mm_function_recovery_attempted', 'mm_function_recovery_accepted_actions',
+                'mm_function_certificate_status')})
+        self.assertNotIn('backend', compact)
+        model.diagnostics_['spectral_restart']['failed_attempt']['failed_backend'] = 'changed'
+        self.assertEqual(compact['failed_backend'], 'cholesky')
+
+    def test_failed_backend_keeps_missing_and_explicit_unknown_distinct(self):
+        for fields in ({}, {'failed_backend': None}):
+            with self.subTest(fields=fields):
+                failed_attempt = {'completed_iterations': 4, **fields}
+                model = SimpleNamespace(diagnostics_={
+                    'spectral_restart': {'failed_attempt': failed_attempt}})
+                compact = _base_diagnostics(model)['solver_diagnostics'][
+                    'spectral_restart']['failed_attempt']
+                self.assertEqual(compact, failed_attempt)
+
+    def test_failed_backend_rejects_unbounded_or_nonscalar_state(self):
+        for value in (np.array(['cholesky']), ['cholesky'], {'name': 'cholesky'},
+                      'x' * 1025, object()):
+            with self.subTest(value_type=type(value).__name__):
+                model = SimpleNamespace(diagnostics_={'spectral_restart': {
+                    'failed_attempt': {'completed_iterations': np.int64(4),
+                                       'failed_backend': value}}})
+                compact = _base_diagnostics(model)['solver_diagnostics'][
+                    'spectral_restart']['failed_attempt']
+                self.assertEqual(compact, {'completed_iterations': 4})
 
     def test_lean_adaptive_diagnostics_preserve_each_base_and_final_learner(self):
         counters = (

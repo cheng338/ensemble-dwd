@@ -28,7 +28,7 @@ jobs:
       - name: Install validated DWD wheel
         run: >-
           python -m pip install --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.14"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.15"
           --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
       - name: Install package and pinned DWD dependency
         run: python -m pip install .
@@ -50,7 +50,7 @@ jobs:
       - name: Install validated DWD wheel
         run: >-
           python -m pip install --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.14"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.15"
           --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
       - name: Install compatible older numerical dependencies and package
         run: >-

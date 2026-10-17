@@ -29,10 +29,10 @@ from sklearn.base import clone
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV, ParameterGrid, StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from threadpoolctl import threadpool_limits
 
 from ensemble_dwd import EnsembleKernelDWD, mnist_param_grid
+from ensemble_dwd._validation import _reject_complex
 
 # Also support loading this example by its file path, as the example tests do.
 EXAMPLES_DIRECTORY = str(Path(__file__).resolve().parent)
@@ -44,6 +44,8 @@ from search_support import (_io_path, _resolved_public_path, CandidateEvaluator,
                             parameter_snapshot, prefix_grid, record_failure,
                             write_failure_json, write_json_atomic)
 from search_support import score_value
+from mnist_preprocessing import (add_preprocessing_arguments, make_preprocessor,
+                                 preprocessing_metadata)
 
 from phase_threads import (add_final_thread_argument, report_final_threads,
                            final_fit_threads, final_thread_policy_sha256,
@@ -58,8 +60,7 @@ def select_pair(X, y, first, second):
         raise ValueError('MNIST features must be real numbers.')
     if not np.isfinite(X).all() or any(size == 0 for size in X.shape[1:]):
         raise ValueError('MNIST features must be nonempty and finite.')
-    if np.iscomplexobj(y):
-        raise ValueError('MNIST labels must be real integer digit values.')
+    _reject_complex(y, 'MNIST labels')
     labels = np.asarray(y, dtype=np.float64)
     if not np.isfinite(labels).all() or not np.equal(labels, np.floor(labels)).all():
         raise ValueError('MNIST labels must be finite integer digit values.')
@@ -137,6 +138,21 @@ def report_seed_options(options):
               f"Separate final-refit seed: {options['refit_seed']}.")
         print('Candidate budgets count parameter sets; CV fits also multiply by the number of seeds. '
               'Every requested fold and seed must be valid; seeds are never selected by validation accuracy.')
+
+
+def preprocessing_options(parser, args):
+    """Validate the declaration before loading data or creating a search run."""
+    try:
+        preprocessor = make_preprocessor(args.preprocessing, args.pixel_input_range)
+        metadata = preprocessing_metadata(args.preprocessing, args.pixel_input_range)
+    except (TypeError, ValueError) as error:
+        parser.error(str(error))
+    if args.preprocessing == 'standard':
+        print('MNIST preprocessing: standard; StandardScaler is fitted on each training fold.')
+    else:
+        print(f'MNIST preprocessing: unit [0, 1], declared input range {metadata["pixel_input_range"]}; '
+              'fixed pixel scaling replaces StandardScaler.')
+    return preprocessor, metadata
 
 
 def add_ratio_arguments(parser):
@@ -498,6 +514,7 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_preprocessing_arguments(parser)
     add_final_thread_argument(parser)
     add_seed_arguments(parser)
     add_ratio_arguments(parser)
@@ -536,6 +553,7 @@ def main(argv=None):
                         help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument('--run', action='store_true', help='Start the requested search stages.')
     args = parser.parse_args(argv)
+    preprocessor, preprocessing = preprocessing_options(parser, args)
     report_final_threads(args.final_native_threads)
     seed_options = seed_search_options(parser, args)
     confirmation_options = confirmation_search_options(parser, args)
@@ -583,7 +601,7 @@ def main(argv=None):
     cache_dir = None if args.no_cache else str(
         args.cache_dir.resolve() if args.cache_dir is not None else run_dir / 'base-cache')
     pipeline = Pipeline([
-        ('scale', StandardScaler()),
+        ('scale', preprocessor),
         ('ensemble', EnsembleKernelDWD(M=5, theta=0.1, cache_dir=cache_dir, store_base_estimators=False)),
     ])
     # Every adaptive stage uses these same training/validation rows.
@@ -601,7 +619,8 @@ def main(argv=None):
         reuse_equivalent_folds=args.reuse_equivalent_folds,
         final_native_threads=args.final_native_threads,
         settings={'data_path': str(args.data.resolve()), 'digits': args.digits,
-                  'cache_dir': cache_dir, 'store_base_estimators': False},
+                  'cache_dir': cache_dir, 'store_base_estimators': False,
+                  'preprocessing': preprocessing},
         **seed_options, **ratio_options, **confirmation_options,
     )
     if result.get('resumed_completed'):

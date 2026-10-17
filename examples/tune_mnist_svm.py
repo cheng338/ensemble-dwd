@@ -19,7 +19,6 @@ import sys
 import numpy as np
 from sklearn.model_selection import ParameterGrid, StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
 from ensemble_dwd import EnsembleKernelSVM, mnist_svm_param_grid
 
@@ -28,6 +27,7 @@ if EXAMPLES_DIRECTORY not in sys.path:
     sys.path.insert(0, EXAMPLES_DIRECTORY)
 from tune_mnist import (load_local_data, positive_int, add_seed_arguments,
                         seed_search_options, report_seed_options,
+                        add_preprocessing_arguments, preprocessing_options,
                         add_ratio_arguments, ratio_search_options,
                         boundary_parameters as _boundary_parameters)
 from phase_threads import add_final_thread_argument, report_final_threads
@@ -52,6 +52,7 @@ def positive_cache_size(value):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_preprocessing_arguments(parser)
     add_final_thread_argument(parser)
     add_seed_arguments(parser)
     add_ratio_arguments(parser)
@@ -86,6 +87,7 @@ def main(argv=None):
                         help='Start from 405 coarse candidates instead of 125.')
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
+    preprocessor, preprocessing = preprocessing_options(parser, args)
     report_final_threads(args.final_native_threads)
     print(f'SVC kernel cache: {args.cache_size:g} MiB per active fit; '
           f'up to {args.cache_size * args.jobs:g} MiB across {args.jobs} CV workers. '
@@ -132,7 +134,7 @@ def main(argv=None):
     run_dir = new_run_directory(args.output_dir, resume=args.resume)
     cache_dir = None if args.no_cache else str(args.cache_dir.resolve() if args.cache_dir else run_dir / "base-cache")
     pipeline = Pipeline([
-        ("scale", StandardScaler()),
+        ("scale", preprocessor),
         ("ensemble", EnsembleKernelSVM(M=5, theta=0.1, cache_dir=cache_dir,
                                       cache_size=args.cache_size, store_base_estimators=False)),
     ])
@@ -149,7 +151,8 @@ def main(argv=None):
         reuse_equivalent_folds=args.reuse_equivalent_folds,
         settings={"classifier": "EnsembleKernelSVM", "selection": "signed_margin",
                   "data_path": str(args.data.resolve()), "digits": args.digits,
-                  "cache_dir": cache_dir, "svc_cache_size_mib": args.cache_size},
+                  "cache_dir": cache_dir, "svc_cache_size_mib": args.cache_size,
+                  "preprocessing": preprocessing},
         **seed_options, **ratio_options,
     )
     if result.get('resumed_completed'):

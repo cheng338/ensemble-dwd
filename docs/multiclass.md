@@ -46,10 +46,16 @@ class counts use the pair's encoded labels, while the existing pair message
 or note identifies the original classes. Restored bases are reported separately
 from current work; see [failure evidence](method.md#ensemble-failure-evidence).
 
-Put a `StandardScaler` before the OVO estimator inside a sklearn `Pipeline`.
-Each CV training fold then fits one scaler on that fold's multiclass rows.
-All pairs within the fold share that feature transformation. Validation and
-test rows do not participate in fitting the scaler or choosing subsets.
+The MNIST command defaults to fixed unit-pixel scaling before the OVO
+estimator inside a sklearn `Pipeline`. An omitted `--pixel-input-range`
+declares raw `0-255` pixels, which are divided by 255; use
+`--pixel-input-range 0-1` for already scaled pixels. The range is not inferred.
+Explicit `--preprocessing standard` instead fits one `StandardScaler` on
+each CV training fold's multiclass rows. All pairs within the fold share
+the chosen transformation. Validation and test rows do not participate in
+fitting the scaler or choosing subsets. See
+[MNIST pixel preprocessing](method.md#mnist-pixel-preprocessing) for the
+options and the requirements for retuning and fresh checkpoint directories.
 
 Use a numeric `gamma` for a common RBF coefficient across pairs. With
 `gamma='scale'`, the binary estimator resolves it on each pair's transformed
@@ -241,7 +247,8 @@ numerical confirmation forward the same settings. Confirmation has a
 separate checkpoint identity; original-budget pairs cannot replace its fits.
 
 Recovery currently supports an exact two-step `Pipeline` containing
-`StandardScaler` and `OvOClassifier`, with exact `KernGDWD` or
+`StandardScaler` or the examples' `UnitPixelScaler`, followed by
+`OvOClassifier`, with exact `KernGDWD` or
 `EnsembleKernelDWD` children. The Pipeline must have no memory cache or
 metadata routing and must use `verbose=False`. Inputs and labels must be
 dense, finite numeric arrays. Each evaluated candidate must use a named RBF kernel, a positive
@@ -256,7 +263,8 @@ Completed models are saved as trusted local pickle files. Only reuse files
 created by a trusted run: checksums detect corruption but do not make an
 untrusted pickle safe. Resume verifies the data and row order, scaler,
 candidate, pair labels, fitted state, source files and numerical runtime.
-A changed identity requires a new run directory. The existing fold lease
+A changed preprocessing mode or declared pixel range changes that identity
+and requires a new run directory. The existing fold lease
 and coordinator generation guard also protect the pair files.
 
 `--pair-recovery-max-bytes N` limits committed pair payloads and manifests

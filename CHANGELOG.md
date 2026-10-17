@@ -3,6 +3,25 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.10 — 2026-10-17
+
+- Pair this release with DWD 1.3.15; Python 3.11 or later remains required.
+- State All Rights Reserved in the package metadata and LICENSE while a software
+  license remains undecided. Update the dissertation title in the citation and
+  method documentation.
+- Reject complex features, labels and learner outputs before float conversion,
+  including complex scalars stored in object arrays. Close the object-label
+  conversion gap in the MNIST helpers and guard invalid learner outputs before
+  consensus scoring or voting. Real-valued fitting and selection are unchanged.
+- Preserve DWD's `failed_backend` in compact spectral-restart diagnostics.
+  Older records without that field remain unknown; fitting and prediction are
+  unchanged.
+- Make fixed unit-pixel scaling the default in all three MNIST tuning
+  commands. Input defaults to raw `0-255` pixels; already scaled data require
+  `--pixel-input-range 0-1`. Keep fold-local `StandardScaler` available through
+  `--preprocessing standard`, record the choice in workflow settings, and
+  require retuning with fresh checkpoints when preprocessing changes.
+
 ## 0.3.9 — 2026-10-15
 
 - Pair this release with DWD 1.3.14.

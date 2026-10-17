@@ -44,6 +44,8 @@ from search_support import (ACCURACY_AGGREGATION, accuracy_fraction, accuracy_ev
                             apply_accuracy_evidence, score_ranks, score_value)
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
 from work_reporting import summarize_records
+import mnist_preprocessing
+from mnist_preprocessing import UnitPixelScaler
 
 SCHEMA = 2
 _HASHES = {}
@@ -63,7 +65,7 @@ _EQUIVALENT_POLICY = 'retained-count-v2'
 _SEED_AGGREGATION_POLICY = 'mean-seeds-within-fold-v1'
 _REUSE_METHODS = {
     cls: {name: value for name, value in vars(cls).items() if callable(value)}
-    for cls in (Pipeline, StandardScaler, OvOClassifier, EnsembleKernelDWD, EnsembleKernelSVM)
+    for cls in (Pipeline, StandardScaler, UnitPixelScaler, OvOClassifier, EnsembleKernelDWD, EnsembleKernelSVM)
 }
 
 
@@ -364,6 +366,16 @@ def _loaded_source_guards():
             _RUNTIME_GUARDS.add(path)
 
 
+def _preprocessing_source():
+    """Keep the example transformer tied to the adjacent source file."""
+    expected = Path(__file__).with_name('mnist_preprocessing.py').resolve()
+    if (Path(mnist_preprocessing.__file__).resolve() != expected
+            or mnist_preprocessing.UnitPixelScaler is not UnitPixelScaler
+            or Path(inspect.getsourcefile(UnitPixelScaler)).resolve() != expected):
+        raise CheckpointError('MNIST preprocessing loaded outside the frozen example source')
+    return expected
+
+
 def runtime_fingerprint(*, check_inventory=True, native_threads=1):
     """Hash once, check complete inventory per stage and core/native guards per fit.
 
@@ -444,6 +456,7 @@ def runtime_fingerprint(*, check_inventory=True, native_threads=1):
     if not any(pool.get('user_api') == 'blas' for pool in pools):
         raise CheckpointError('Loaded BLAS identity is unavailable')
     for path in (Path(sys.executable), Path(__file__), Path(__file__).with_name('phase_threads.py'),
+                 _preprocessing_source(),
                  Path(inspect.getsourcefile(CandidateEvaluator))):
         files[str(path.absolute())] = _file_hash(path)
     for path in _RUNTIME_GUARDS:
@@ -643,14 +656,18 @@ def _fold_equivalence(candidate, identity, fold, y_train):
     model = candidate
     if type(model) is Pipeline:
         if (not _unchanged_methods(model) or len(model.steps) != 2
-                or type(model.steps[0][1]) is not StandardScaler
+                or type(model.steps[0][1]) not in (StandardScaler, UnitPixelScaler)
                 or not _unchanged_methods(model.steps[0][1])
                 or getattr(model, 'transform_input', None) is not None):
             return None
         try:
             model._validate_params()
             model._validate_steps()
-            model.steps[0][1]._validate_params()
+            scaler = model.steps[0][1]
+            if type(scaler) is UnitPixelScaler:
+                scaler._validate_options()
+            else:
+                scaler._validate_params()
         except (TypeError, ValueError):
             return None
         model = model.steps[-1][1]
@@ -975,7 +992,7 @@ class CheckpointedCV:
     ``reuse_equivalent_folds=True`` reuses successful folds for exact built-in
     ensembles with identical retained counts and all other inputs unchanged.
     Supported wrappers are the package's OvOClassifier and a two-step Pipeline
-    containing StandardScaler followed by a supported classifier. Python
+    containing exact StandardScaler or UnitPixelScaler followed by a supported classifier. Python
     float/int ratios and fixed integer seeds are required; unsupported cases
     retain ordinary fitting and validation. The default is disabled.
 
@@ -1002,7 +1019,7 @@ class CheckpointedCV:
     aggregation, rather than summing parallel worker times.
 
     ``pair_recovery=True`` optionally restores completed binary pairs inside an
-    unfinished multiclass fold. This requires a plain StandardScaler/OvO
+    unfinished multiclass fold. This requires a plain StandardScaler or UnitPixelScaler/OvO
     pipeline, one inner pair worker, exact KernGDWD or EnsembleKernelDWD, fixed
     integer seeds, named RBF and a positive numeric gamma for every candidate.
     It cannot combine equivalent-fold reuse, multi-seed CV or ensemble caches.

@@ -12,6 +12,7 @@ from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .estimator import IneligibleSelectionError, IneligibleSubsetError, _positive_integer
 from ._failure_context import copy_failure_context
+from ._validation import _reject_complex
 
 
 def _pair_context(pair):
@@ -157,6 +158,8 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
         self._clear_fit()
         try:
             self._validate_options()
+            _reject_complex(X, "Features")
+            _reject_complex(y, "Labels")
             X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
             check_classification_targets(y)
             classes = np.unique(y)
@@ -188,6 +191,7 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
     def _prediction_data(self, X):
         check_is_fitted(self)
         _positive_integer(self.prediction_batch_size, "prediction_batch_size")
+        _reject_complex(X, "Features")
         return validate_data(self, X, reset=False, accept_sparse=False, dtype=np.float64)
 
     def _batch_votes(self, X):
@@ -197,6 +201,7 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
                 self.estimators_, self.pairs_, self.class_pair_indices_):
             try:
                 predictions = np.asarray(model.predict(X))
+                _reject_complex(predictions, "Binary predicted labels")
                 if predictions.shape != (len(X),):
                     raise ValueError("A binary estimator must predict one label per row.")
                 if not np.isin(predictions, (-1, 1)).all():

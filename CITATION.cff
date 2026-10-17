@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "Please cite this software and the dissertation describing its ensemble method."
 type: software
 title: "ensemble-dwd: Ensemble Kernel Distance Weighted Discrimination"
-version: 0.3.9
-date-released: 2026-10-15
+version: 0.3.10
+date-released: 2026-10-17
 authors:
   - family-names: Cheng
     given-names: Chang
@@ -14,7 +14,7 @@ abstract: >-
   selection and a final SVC refit.
 references:
   - type: thesis
-    title: "Overcoming the Curses of Dimensionality and Kernelization: Scalable DWD and Supervised NMF"
+    title: "Ensemble Kernel Distance-Weighted Discrimination and Supervised Nonnegative Matrix Factorization for Classification"
     authors:
       - family-names: Cheng
         given-names: Chang

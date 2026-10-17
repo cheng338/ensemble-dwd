@@ -11,6 +11,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_rights_notice_is_in_package_metadata_and_source_archive(self):
+        metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["project"]["license"], {"file": "LICENSE"})
+        self.assertIn("LICENSE", metadata["tool"]["flit"]["sdist"]["include"])
+        notice = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("Copyright 2026 Chang Cheng", notice)
+        self.assertIn("All Rights Reserved.", notice)
+        self.assertIn("has not yet been selected or granted", notice)
+        self.assertFalse(any("OSI Approved" in value
+                             for value in metadata["project"]["classifiers"]))
+
     def test_readme_local_wheel_matches_package_version(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         example_wheels = re.findall(r"dist/(ensemble_dwd-[^\s]+\.whl)", readme)
@@ -21,7 +32,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dependencies = [value for value in metadata["project"]["dependencies"]
                         if value.startswith("dwd")]
-        self.assertEqual(dependencies, ["dwd==1.3.14"])
+        self.assertEqual(dependencies, ["dwd==1.3.15"])
         lock = (ROOT / "requirements-dwd.txt").read_text(encoding="utf-8")
         lines = [line.strip() for line in lock.splitlines()
                  if line.strip() and not line.startswith("#")]
