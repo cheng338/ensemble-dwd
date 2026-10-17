@@ -26,7 +26,7 @@ The four-stage ensemble DWD method is described in Chapter 5 of:
 
 See [CITATION.cff](CITATION.cff) for citation details.
 
-This is private research software. Copyright 2026 Chang Cheng. **All Rights
+Copyright 2026 Chang Cheng. **All Rights
 Reserved.** A software license has not yet been selected or granted. See
 [LICENSE](LICENSE).
 
