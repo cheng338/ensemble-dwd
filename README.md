@@ -32,7 +32,7 @@ Reserved.** A software license has not yet been selected or granted. See
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.10 requires DWD 1.3.15 from the
+Python 3.11 or later is required. Version 0.3.11 requires DWD 1.3.15 from the
 [DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.15).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
@@ -55,7 +55,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.10-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.11-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -588,7 +588,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.10 changelog](CHANGELOG.md#0310--2026-10-17) for this release's changes.
+See the [0.3.11 changelog](CHANGELOG.md#0311--2026-10-17) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.

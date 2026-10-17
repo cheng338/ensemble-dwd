@@ -3,6 +3,18 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.11 — 2026-10-17
+
+- Preserve clear rejection of unsupported sparse inputs with NumPy 1.26 and
+  SciPy 1.12. Inspect sparse input types before the complex-value check tries
+  to convert them to dense arrays. Complex sparse values retain the explicit
+  complex-data error; supported dense real-valued fitting is unchanged.
+- Run push-triggered CI on branches. Release tags identify the same tested
+  commit without scheduling a duplicate matrix.
+- Include the changes listed under 0.3.10 below. That release candidate was
+  not published because its minimum-dependency CI check found the sparse-input
+  validation problem.
+
 ## 0.3.10 — 2026-10-17
 
 - Pair this release with DWD 1.3.15; Python 3.11 or later remains required.

@@ -1,5 +1,28 @@
 # ensemble-dwd validation
 
+## 0.3.11: sparse-input validation on older dependencies
+
+The public validation path was checked on local Windows Python 3.12 with
+NumPy 1.26.4, SciPy 1.12.0 and scikit-learn 1.6.1, and separately with NumPy
+2.5.4, SciPy 1.18.1 and scikit-learn 1.9.1. Each environment passed the same
+20 focused tests with no failures, errors or skips. These overlapping suites
+are not 40 distinct tests.
+
+Before the correction, a real-valued DOK sparse array reproduced the conversion
+failure in the shared guard, ensemble DWD, ensemble SVM and the multiclass
+wrapper. The guard now recognizes sparse containers before NumPy conversion.
+Unsupported real sparse inputs receive an explicit dense-input error; complex
+sparse inputs retain the complex-data error without discarding imaginary values.
+Regression coverage includes all seven SciPy sparse formats as matrices and
+arrays, failed refitting, prediction, score validation and the three estimator
+contracts that exposed the problem. Supported dense-input calculations, fitting
+objectives, subset sampling and numerical acceptance are unchanged.
+
+The 0.3.10 candidate was not published because its minimum-dependency CI job
+found this issue. Version 0.3.11 includes its other changes below and remains
+paired with DWD 1.3.15. Release CI runs on the branch; the tag is verified to
+reference the same tested commit rather than launching a duplicate matrix.
+
 ## 0.3.10: real-valued input validation and MNIST preprocessing
 
 Version 0.3.10 is paired with DWD 1.3.15 and requires Python 3.11 or later.

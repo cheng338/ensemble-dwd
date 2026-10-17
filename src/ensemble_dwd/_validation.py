@@ -1,6 +1,7 @@
 """Validation shared by real-valued estimators and their examples."""
 
 import numpy as np
+from scipy.sparse import issparse
 
 
 def _reject_complex(value, name):
@@ -11,6 +12,14 @@ def _reject_complex(value, name):
     """
     def reject():
         raise ValueError(f"Complex data not supported: {name} must be real values.")
+
+    # NumPy may iterate older SciPy sparse arrays instead of treating them as
+    # opaque objects. Reject them without conversion; these APIs require dense
+    # inputs and decision values, even when their entries are real.
+    if issparse(value):
+        if value.dtype.kind == "c":
+            reject()
+        raise TypeError(f"Sparse data not supported: {name} must be dense values.")
 
     array = np.asarray(value)
     if array.dtype.kind == "c":
