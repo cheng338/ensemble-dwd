@@ -64,7 +64,7 @@ These are correctness checks using small fixtures, generally one native
 thread and two workers for designated parallel tests. Concurrent checks are
 not performance benchmarks. These dated checks precede the release version
 and dependency-lock changes; release-artifact verification and hosted CI have
-separate records. Version 0.3.12 is paired with DWD 1.3.16.
+separate records. Version 0.3.12 is paired with DWD 1.3.17.
 
 ## 0.3.11: sparse-input validation on older dependencies
 

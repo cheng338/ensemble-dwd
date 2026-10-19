@@ -5,7 +5,7 @@ accompanying his dissertation.
 
 ## 0.3.12 — 2026-10-19
 
-- Pair this release with DWD 1.3.16; Python 3.11 or later remains required.
+- Pair this release with DWD 1.3.17; Python 3.11 or later remains required.
 
 - Add optional `base_jobs` to `EnsembleKernelDWD`, with sequential fitting as
   the default (`base_jobs=1`). Eligible parallel bases use one native thread
@@ -37,7 +37,7 @@ accompanying his dissertation.
 - Document the paired development DWD build's wider guarded native-runtime
   eligibility and internal scoring/basis-validation reuse. Ensemble sampling,
   selection and objectives are unchanged; the dependency lock identifies the
-  DWD 1.3.16 native and portable wheels.
+  DWD 1.3.17 native and portable wheels.
 - Apply the current `prediction_batch_size` after fitting without mutating the
   final DWD estimator. Forward a per-call limit when supported; otherwise batch
   calls externally, retaining any tighter limit inside an older child model.

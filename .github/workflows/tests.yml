@@ -29,7 +29,7 @@ jobs:
       - name: Download the validated DWD wheel
         run: >-
           python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.16"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.17"
           --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
       - name: Install the exact validated DWD wheel
         run: python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/dwd
@@ -66,7 +66,7 @@ jobs:
       - name: Download the validated DWD wheel
         run: >-
           python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.16"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.17"
           --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
       - name: Install compatible older numerical dependencies
         run: >-

@@ -32,13 +32,13 @@ Reserved.** A software license has not yet been selected or granted. See
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.12 requires DWD 1.3.16 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.16).
+Python 3.11 or later is required. Version 0.3.12 requires DWD 1.3.17 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.17).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.16 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.17 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -75,16 +75,16 @@ on Linux, a different processor or free-threaded Python.
 Python 3.10 is no longer supported. Previously released companion wheels
 remain available as historical artifacts and will not receive updates.
 
-DWD 1.3.16 qualifies guarded compiled residual checks and dense compensated
+DWD 1.3.17 qualifies guarded compiled residual checks and dense compensated
 score sums on conventional Windows x86-64 CPython 3.11 through 3.13. Unsupported
 inputs or runtimes retain guarded fallback arithmetic. Wheel installation
 compatibility does not guarantee that a compiled scoring path is active. See
-DWD's [compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.16/docs/compiled_residual.md).
+DWD's [compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.17/docs/compiled_residual.md).
 
 The dependency also reuses bounded temporary buffers and avoids repeated work
 within eligible prediction calls. These changes apply to base and final DWD
 estimators without altering disjoint sampling, selection or the fitted objective.
-The CI workflow uses the same dependency lock and explicit DWD 1.3.16 release
+The CI workflow uses the same dependency lock and explicit DWD 1.3.17 release
 asset page.
 
 Version 0.3.12 uses automatic affine scoring and residual ordering for new
