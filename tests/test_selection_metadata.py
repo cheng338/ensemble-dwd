@@ -33,7 +33,13 @@ class SelectionMetadataTests(unittest.TestCase):
             for store in (False, True):
                 with self.subTest(labels=labels.dtype, store=store):
                     model = estimator(store_base_estimators=store).fit(X, labels)
-                    assert_array_equal(model.selected_indices_, [4, 5, 6, 1, 2, 7])
+                    # Duplicate rows can acquire slightly different floating-point
+                    # scores across numerical libraries. Selection uses the actual
+                    # unrounded scores, with input order breaking exact ties.
+                    expected = sorted(range(len(X)), key=lambda index:
+                                      (abs(model.consensus_scores_[index]), index))[:6]
+                    assert_array_equal(model.selected_indices_, expected)
+                    assert_array_equal(model.final_estimator_._Xfit, X[expected])
                     assert_array_equal(model.training_class_counts_, [6, 3])
                     assert_array_equal(model.selected_class_counts_, [3, 3])
                     report = model.selection_composition_
@@ -51,9 +57,34 @@ class SelectionMetadataTests(unittest.TestCase):
                     previous_scores = scores
                     restored = pickle.loads(pickle.dumps(model))
                     self.assertEqual(restored.selection_composition_, report)
+                    assert_array_equal(restored.selected_indices_, model.selected_indices_)
+                    assert_array_equal(restored.consensus_scores_, model.consensus_scores_)
                     assert_array_equal(restored.training_class_counts_, model.training_class_counts_)
                     assert_array_equal(restored.selected_class_counts_, model.selected_class_counts_)
                     assert_array_equal(restored.predict(X), model.predict(X))
+
+    def test_exact_consensus_ties_keep_input_order_at_selection_boundary(self):
+        X, y = fixture()
+        # Exact opposite-sign magnitudes exercise absolute-score ordering and
+        # a tie crossing the sixth-row cutoff, independent of BLAS reductions.
+        consensus = np.array([-4., 1., -1., 2., 0., -2., 3., -3., 4.])
+        expected = [4, 1, 2, 3, 5, 6]
+        for store in (False, True):
+            with self.subTest(store=store):
+                with patch("ensemble_dwd.estimator._binary_scores",
+                           return_value=consensus.copy()) as score:
+                    model = estimator(store_base_estimators=store).fit(X, y)
+                self.assertEqual(score.call_count, 1)
+                assert_array_equal(model.consensus_scores_, consensus)
+                assert_array_equal(model.selected_indices_, expected)
+                assert_array_equal(model.final_estimator_._Xfit, X[expected])
+                assert_array_equal(model.training_class_counts_, [6, 3])
+                assert_array_equal(model.selected_class_counts_, [3, 3])
+                restored = pickle.loads(pickle.dumps(model))
+                assert_array_equal(restored.selected_indices_, expected)
+                assert_array_equal(restored.consensus_scores_, consensus)
+                self.assertEqual(restored.selection_composition_, model.selection_composition_)
+                assert_array_equal(restored.predict(X), model.predict(X))
 
     def test_failed_refit_clears_metadata_but_invalid_prediction_preserves_it(self):
         X, y = fixture()

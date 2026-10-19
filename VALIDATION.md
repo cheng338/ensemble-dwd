@@ -1,5 +1,21 @@
 # ensemble-dwd validation
 
+## 0.3.13: portable selection-order regression tests
+
+Version 0.3.13 includes the accumulated changes documented for the unpublished
+0.3.12 candidate below and remains paired with DWD 1.3.17. The 0.3.12 hosted CI
+found a platform-sensitive expected row in a selection-metadata test: two
+almost equal computed scores did not have the assumed order on every runtime.
+The corrected test independently derives the expected selection from the actual
+decision scores. A separate controlled-score fixture checks exact tie ordering.
+These test-only changes preserve the estimator implementation, selection rule,
+objectives and numerical acceptance. They do not represent a correction to
+historical experimental results or establish a performance gain.
+
+The dated application checks below retain their original scope. Validation of
+the corrected release artifacts and hosted CI is recorded separately; the
+unpublished candidate's failed test is not counted as a passing release check.
+
 ## 0.3.12: optional parallel bases and named SVM kernels
 
 `EnsembleKernelDWD(base_jobs=1)` retains sequential base fitting. Explicit
@@ -64,7 +80,7 @@ These are correctness checks using small fixtures, generally one native
 thread and two workers for designated parallel tests. Concurrent checks are
 not performance benchmarks. These dated checks precede the release version
 and dependency-lock changes; release-artifact verification and hosted CI have
-separate records. Version 0.3.12 is paired with DWD 1.3.17.
+separate records. The corrected release, version 0.3.13, is paired with DWD 1.3.17.
 
 ## 0.3.11: sparse-input validation on older dependencies
 

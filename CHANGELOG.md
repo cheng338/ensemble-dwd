@@ -3,7 +3,20 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
-## 0.3.12 — 2026-10-19
+## 0.3.13 — 2026-10-19
+
+- Include all changes listed under the unpublished 0.3.12 candidate below,
+  paired with DWD 1.3.17.
+- Correct a platform-sensitive selection-metadata test: independently derive
+  the expected ordering from the actual decision scores, and test exact tie
+  ordering separately with controlled scores. The earlier test assumed that
+  two almost equal computed scores would tie on every runtime. Package
+  selection, numerical acceptance and fitted results are unchanged by this
+  test-only correction.
+- Preserve the 0.3.12 tag as an unpublished release candidate. Its hosted CI
+  exposed the test assumption; 0.3.13 is the corrected release.
+
+## 0.3.12 — 2026-10-19 (unpublished candidate)
 
 - Pair this release with DWD 1.3.17; Python 3.11 or later remains required.
 
