@@ -142,8 +142,9 @@ differ, so validate an explicit backend through the complete estimator.
 The explicit option `residual_check_order='adaptive'` changes the order of
 existing residual checks in optimized Cholesky MM. It requires
 `backend='auto'` or `'cholesky'`; both `acceleration=None` and `'restart'`
-are supported by the paired DWD 1.3.14 build. The default remains
-`'refinement_first'`. Automatic spectral recovery uses the original check
+are supported. New ensembles default to `'auto'`, resolving to adaptive for
+eligible auto/Cholesky learners and `refinement_first` for spectral/L-BFGS.
+Explicit settings remain available. Automatic spectral recovery uses the original check
 order, and anchor recovery retains its original checks. The option does not
 loosen tolerances or recovery limits, but a different accepted coefficient
 state can change finite-iteration scores, selected rows and predictions.
@@ -204,12 +205,17 @@ binary pipeline shown in the README, or
 existing parameter grids and command-line defaults remain unchanged. This
 option applies to ensemble DWD, not `EnsembleKernelSVM`.
 
-### Optional joint affine scoring
+<a id="optional-joint-affine-scoring"></a>
+
+### Joint affine scoring
 
 `EnsembleKernelDWD(affine_computation='joint')` forwards the same numerical
 policy to every base learner and the fresh final DWD fit, including each
-pair inside `OvOClassifier`. The default is `'standard'`. The option requires
-the paired DWD 1.3.14 dependency.
+pair inside `OvOClassifier`. New ensembles default to `'auto'`, which resolves
+to joint when the dependency explicitly supports affine scoring and otherwise
+to standard. Explicit standard remains standard even with a new-auto DWD
+dependency; explicit joint is never silently downgraded. Concrete policies
+are forwarded without catch-and-retry feature detection.
 
 The policy evaluates the unchanged decision expression `K @ alpha + b`,
 including the intercept in the rounding check and, when needed, in joint
@@ -231,7 +237,8 @@ combined with `rbf_computation='direct'`: the two options address different
 rounding stages. The ensemble does not provide per-learner validation
 stopping, so that separate DWD capability remains unsupported here.
 
-This is a precision option with conditional cost. Ten paired saved MNIST
+Joint scoring has conditional cost. The following measurements predate the
+guarded exact-zero shortcut and the automatic development default. Ten paired saved MNIST
 2-vs-3 ensemble prediction measurements, with one native thread, took about
 9% longer using joint scoring. Two pairs had background-CPU flags; the
 eight unflagged pairs showed about the same overhead. Standalone full-kernel
@@ -250,12 +257,12 @@ for sensitive cases without establishing a general accuracy improvement.
 The fitted policy is recorded as `affine_computation_`, including in the
 fitted child models. Changing the constructor parameter affects the next
 fit; it does not alter an existing predictor. Old serialized models retain
-standard scoring. Base-cache and example CV identities distinguish the two
-policies. In the README's binary pipeline use
+standard scoring. Base-cache and example CV identities distinguish requested
+policies; base caches also bind the resolved dependency policy. In the README's binary pipeline use
 `ensemble__affine_computation='joint'`, or
 `ovo__estimator__affine_computation='joint'` in its multiclass pipeline.
-The command-line defaults and search grids remain unchanged. This option
-applies to ensemble DWD, not `EnsembleKernelSVM`.
+The commands inherit the estimator default while retaining their search
+grids. This scoring policy applies to ensemble DWD, not `EnsembleKernelSVM`.
 
 ### Optional extended exact recovery
 
@@ -387,8 +394,21 @@ Cache entries use trusted local pickle-based serialization. Keep the directory
 private; loading a modified or untrusted entry is unsafe. Entries without
 retained base models do not directly serialize the source feature matrix, but
 their scores and index diagnostics may still be sensitive. Entries retaining
-models include those models' training feature rows. Constructor parameter changes take effect on a
-subsequent fit; they do not modify already fitted child models.
+models include those models' training feature rows. Kernel and solver parameter
+changes take effect on a subsequent fit; they do not modify already fitted child
+models. The prediction allocation control `prediction_batch_size` takes effect
+immediately. The wrapper passes the current limit to children supporting a
+per-call override, without mutating their parameters. With older or custom
+children it batches calls externally; a tighter internal child limit can remain
+in effect, including when the wrapper limit is `None`.
+
+After a successful fit, `training_class_counts_` and `selected_class_counts_`
+give the counts in `classes_` order. `selection_composition_` records each label,
+its original and selected fractions, its retention fraction, and the realized
+overall selection ratio. These remain available without retained base models
+and after serialization. They describe the selected rows; they do not impose
+class quotas, redraw subsets or change the absolute-consensus selection rule.
+An unsuccessful refit clears these learned attributes with the other fitted state.
 
 ## MNIST pixel preprocessing
 
@@ -911,7 +931,7 @@ policy includes these settings, so changing them requires a fresh run.
 
 Every stage uses the same folds and prescribed CV seeds. Each candidate
 keeps its exact ratio; the estimator's existing `int(n * ratio)` retained-row
-count is unchanged. Optional equivalent-fold reuse still requires the same
+count is unchanged. Eligible equivalent-fold reuse still requires the same
 seed and all existing identity and selected-row checks. It preserves each
 candidate label rather than rounding ratios together. The selected candidate
 receives a separate fresh fit on all training rows with the declared final
@@ -977,7 +997,7 @@ under `numerical-confirmation/` stores its completed fold-seed evaluations. Veri
 unfinished fits restart by default. Optional completed-pair recovery can
 retain pairs inside supported multiclass confirmation folds. Original-budget
 records cannot substitute for
-larger-budget evaluations. Optional equivalent-ratio reuse still requires all
+larger-budget evaluations. Eligible equivalent-ratio reuse still requires all
 existing identity and row-equivalence checks within the confirmation context.
 
 The Python example API accepts
@@ -1035,11 +1055,12 @@ quantities differ when work runs in parallel or a completed result is reused.
 
 ### Equivalent-fold reuse
 
-All three tuning commands accept `--reuse-equivalent-folds`, disabled by
-default. The example APIs expose the same option as
-`CheckpointedCV(..., reuse_equivalent_folds=True)` and
-`run_adaptive_search(..., reuse_equivalent_folds=True)`. Keep the option
-unchanged when resuming a run.
+All three tuning commands automatically reuse eligible equivalent folds.
+The example APIs default to `reuse_equivalent_folds='auto'`. Use
+`--no-reuse-equivalent-folds`, or `reuse_equivalent_folds=False` in the API,
+to disable reuse. The existing `--reuse-equivalent-folds` flag explicitly
+enables the same qualified mechanism. Keep the setting unchanged when
+resuming: automatic and explicit enablement have distinct recorded identities.
 
 Two retention ratios can produce the same integer number of selected rows.
 When every other setting and the training fold match, the built-in ensemble
@@ -1071,6 +1092,15 @@ Interrupted searches retain committed sources; unfinished work is evaluated
 on resume. Full-training fitting remains separate: two ratios with equal CV
 fold counts can retain different numbers of rows on the complete training
 set, so the selected original ratio is always fitted there.
+
+Equivalent-fold reuse also works with optional completed-pair recovery. Each
+candidate retains its own recovery identity. When an equivalence group contains
+partial pair work, its representative prefers that store. A verified completed
+equivalent fold can supply another candidate's receipt. An alias's obsolete
+partial store is reclaimed only after its authoritative receipt is committed.
+Alias records report zero new fit and score time, with the source's historical
+times recorded separately. Higher-budget numerical confirmation uses its own
+identity and cannot reuse original-budget results.
 
 This option complements the base-stage cache, which already reuses base
 models across ratios. It can avoid the remaining duplicate final fold fits

@@ -529,8 +529,14 @@ def main(argv=None):
                         help='Fresh directory for a new run, or the original directory with --resume; defaults to results/mnist-*.')
     parser.add_argument('--resume', action='store_true',
                         help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
-    parser.add_argument('--reuse-equivalent-folds', action='store_true',
-                        help='Reuse completed CV results when selection ratios retain identical rows under the same settings; disabled by default.')
+    reuse = parser.add_mutually_exclusive_group()
+    reuse.add_argument('--reuse-equivalent-folds', dest='reuse_equivalent_folds',
+                       action='store_const', const=True,
+                       help='Enable exact completed-fold reuse for supported equivalent selection ratios (automatic by default).')
+    reuse.add_argument('--no-reuse-equivalent-folds', dest='reuse_equivalent_folds',
+                       action='store_const', const=False,
+                       help='Fit every candidate/fold independently, disabling automatic equivalent-ratio reuse.')
+    parser.set_defaults(reuse_equivalent_folds='auto')
     cache = parser.add_mutually_exclusive_group()
     cache.add_argument('--cache-dir', type=Path,
                        help='Shared base-stage cache; defaults to the new run directory/base-cache.')

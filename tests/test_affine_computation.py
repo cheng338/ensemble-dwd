@@ -1,4 +1,4 @@
-"""Optional joint affine scores across learners, fitted state and base caches."""
+"""Explicit joint affine scores across learners, fitted state and base caches."""
 
 from fractions import Fraction
 import pickle
@@ -24,7 +24,8 @@ class AffineComputationTests(unittest.TestCase):
 
     def model(self, **overrides):
         options = dict(M=2, theta=.5, sv_selection_ratio=1., lambd=.05,
-                       gamma=.2, max_iter=3, stopping='fixed', random_state=17)
+                       gamma=.2, max_iter=3, stopping='fixed', random_state=17,
+                       affine_computation='standard')
         options.update(overrides)
         return EnsembleKernelDWD(**options)
 
@@ -162,7 +163,7 @@ class AffineComputationTests(unittest.TestCase):
         y = np.array([-3, 7])
         options = dict(M=1, theta=1., sv_selection_ratio=1., kernel='linear',
                        lambd=.1, max_iter=5, stopping='fixed', random_state=7)
-        standard = EnsembleKernelDWD(**options).fit(X, y)
+        standard = EnsembleKernelDWD(**options, affine_computation='standard').fit(X, y)
         joint = EnsembleKernelDWD(**options, affine_computation='joint').fit(X, y)
         query = np.array([[np.nextafter(.5, np.inf)]])
         model = joint.final_estimator_

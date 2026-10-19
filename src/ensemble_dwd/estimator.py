@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from fractions import Fraction
+from inspect import Parameter, signature
 from numbers import Integral, Real
 from os import PathLike
 
@@ -92,14 +93,34 @@ def _sample_subsets(y_encoded, size, M, rng):
     return subsets
 
 
-def _binary_scores(model, X):
-    scores = model.decision_function(X)
+def _binary_scores(model, X, **prediction_options):
+    scores = model.decision_function(X, **prediction_options)
     _reject_complex(scores, "DWD decision values")
     scores = np.asarray(scores, dtype=np.float64)
     if scores.shape == (X.shape[0], 1):
         scores = scores[:, 0]
     if scores.shape != (X.shape[0],) or not np.isfinite(scores).all():
         raise FloatingPointError("DWD must return one finite decision value per observation.")
+    return scores
+
+
+def _prediction_scores(model, X, batch_size):
+    """Use a per-call child override, or bound calls to an older estimator."""
+    try:
+        option = signature(model.decision_function).parameters.get("prediction_batch_size")
+    except (TypeError, ValueError):
+        option = None
+    if option is not None and option.kind in (
+            Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY):
+        return _binary_scores(model, X, prediction_batch_size=batch_size)
+    # Older dependencies and custom estimators have no override. Keep their
+    # state intact; they may retain a tighter internal bound than this wrapper.
+    if batch_size is None or batch_size >= len(X):
+        return _binary_scores(model, X)
+    scores = np.empty(len(X), dtype=np.float64)
+    for start in range(0, len(X), batch_size):
+        stop = min(start + batch_size, len(X))
+        scores[start:stop] = _binary_scores(model, X[start:stop])
     return scores
 
 
@@ -134,7 +155,7 @@ _SOLVER_DIAGNOSTIC_FIELDS = (
     "score_reconstruction_max_error", "objective_reconstruction_error",
     "optimality_criterion", "optimality_tolerance", "coefficient_representation",
     "returned_state_uses_certified_columns", "residual_check_order",
-    "requested_residual_check_order",
+    "requested_residual_check_order", "initial_residual_check_order",
     ("linear_system_diagnostics", (
         "linear_system", "factor_representation", "linear_solves", "linear_recoveries",
         "refinement_steps", "max_linear_residual", "max_constraint_residual",
@@ -179,7 +200,10 @@ _SOLVER_DIAGNOSTIC_FIELDS = (
                             "optimization_seconds", "elapsed_seconds", "failed_backend",
                             "mm_function_recovery_attempted",
                             "mm_function_recovery_accepted_actions",
-                            "mm_function_certificate_status")))),
+                            "mm_function_certificate_status",
+                            ("acceleration_counts", (
+                                "acceleration_restarts", "acceleration_numerical_restarts",
+                                "acceleration_proposals", "acceleration_accepted_updates")))))),
 )
 
 
@@ -270,8 +294,15 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         Direct requires named RBF with no extra kernel_kws beyond top-level gamma.
         It is opt-in, may change numerical scores and retained observations,
         and may cost more. Sampling, selection and final-refit rules are unchanged.
-    affine_computation : {'standard', 'joint'}, default='standard'
+    affine_computation : {'auto', 'standard', 'joint'}, default='auto'
         Decision-score arithmetic, forwarded to every base and final learner.
+        Auto selects joint when the DWD constructor explicitly supports this
+        parameter; an older dependency without it keeps standard scoring.
+        Explicit standard remains standard with either dependency default.
+        The concrete fitted policy is stored separately; changing this parameter
+        affects a later fit, not an existing predictor. An older serialized
+        object's missing parameter falls back to standard; this does not
+        migrate any other historical state fields.
         Joint includes the intercept in cancellation-aware summation of
         K @ alpha + b. It can change rounded scores, selected rows and labels,
         and can be expensive for many uncertain or exactly zero scores.
@@ -300,7 +331,9 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         candidates. A supplied RandomState is copied; global RNG is not changed.
     prediction_batch_size : positive int or None, default=1024
         Kernel prediction batch size for base scoring and final predictions.
-        None permits the dependency to process the whole query at once.
+        Changes after fitting take effect on subsequent final predictions.
+        None permits the dependency to process the whole query at once. Older
+        dependencies without per-call overrides may retain a tighter limit.
     cache_dir : str, path-like or None, default=None
         Optional trusted directory for sharing deterministic base fits across
         selection ratios. Keys include training data, subsets, base parameters,
@@ -309,19 +342,34 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     store_base_estimators : bool, default=True
         Retain fitted base models for inspection. False stores only their
         diagnostic arrays and consensus, reducing model and cache storage.
+    base_jobs : positive int, default=1
+        Concurrent base learners, bounded by M. Values above one use one native
+        numerical thread per worker, restore the caller's native limits before
+        the final fit, and preserve ordered consensus accumulation. This changes
+        scheduling and can change floating-point results. The caller must own
+        native-thread configuration throughout fit; unrelated Python threads
+        must not concurrently use or change the same numerical runtime. A main
+        Python thread caller alone does not establish that ownership. Custom
+        learner factories, callable kernels and calls from a Python worker keep
+        sequential execution. base_execution_ records the effective setting.
+        When CV already runs parallel processes, account for base_jobs across
+        those processes or leave it at one to avoid nested oversubscription.
     backend : {'auto', 'spectral', 'cholesky', 'lbfgs'}, default='auto'
         Shared optimized DWD backend for every base and final fit. 'auto'
         retains the dependency's default choice; 'spectral' and 'cholesky'
         select MM representations, and 'lbfgs' selects its alternative optimizer.
         Different backends can produce different finite-budget decision scores
         and selected rows. Backend choices have separate base-cache entries.
-    residual_check_order : {'refinement_first', 'adaptive'}, default='refinement_first'
-        Residual-check ordering forwarded to every optimized DWD learner.
-        The default preserves the existing order; 'adaptive' is an opt-in
-        ordering policy with separate base-cache entries. Acceptance criteria
-        are unchanged, but finite-budget outputs need not be bitwise identical.
-        Optimized Cholesky MM supports the policy with or without restart
-        acceleration with the paired DWD 1.3.14 dependency.
+    residual_check_order : {'auto', 'refinement_first', 'adaptive'}, default='auto'
+        Auto forwards adaptive ordering to fresh optimized Cholesky MM fits
+        (including restart acceleration), and refinement_first to spectral or
+        L-BFGS fits. Explicit values retain their supported routes. Acceptance
+        criteria are unchanged, but finite-budget outputs need not be bitwise
+        identical. Constructor requests have separate base-cache entries.
+        requested_residual_check_order_ records this ensemble's request;
+        residual_check_order_ records its final learner's effective policy.
+        Base diagnostics separately retain each learner's forwarded request,
+        initial order and successful order, including any spectral restart.
 
     Attributes
     ----------
@@ -338,6 +386,12 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     selected_indices_ : integer array
         Final training positions, ordered by absolute consensus score. Exact
         ties retain the current input row order.
+    training_class_counts_, selected_class_counts_ : integer arrays of shape (2,)
+        Original and selected training counts, in ``classes_`` order.
+    selection_composition_ : dict
+        Original labels, class counts and fractions for the completed selection,
+        including each class's retained fraction and the realized global ratio.
+        These observations do not impose balancing or alter row selection.
     consensus_scores_ : ndarray of shape (n_samples,)
         Mean raw base decision scores on the current training data.
     gamma_ : float or None
@@ -367,21 +421,26 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     Each learner has an unregularized intercept and identical kernel, loss,
     regularization and stopping parameters. This estimator performs no CV,
     voting, score normalization, or silent substitution of a different model.
-    Base fits run sequentially; parallelize outer CV fits according to memory.
+    Base fits run sequentially by default. Explicit ``base_jobs`` enables
+    bounded parallel base fits when the caller owns the native runtime.
+    Budget memory and total workers across outer CV and base fitting to avoid
+    nested oversubscription.
     """
 
     # Old serialized estimators retain the standard DWD policy.
     rbf_computation = "standard"
+    residual_check_order = "refinement_first"
     affine_computation = "standard"
     exact_recovery = "standard"
+    base_jobs = 1
 
     def __init__(self, M=5, theta=0.1, sv_selection_ratio=0.3, lambd=1e-6,
                  q=1.0, kernel="rbf", gamma="scale", kernel_kws=None,
                  max_iter=100, obj_tol=1e-5, stopping="objective", tol=1e-6,
                  acceleration=None, random_state=42, prediction_batch_size=1024,
                  cache_dir=None, store_base_estimators=True, backend="auto",
-                 residual_check_order="refinement_first", rbf_computation="standard",
-                 affine_computation="standard", exact_recovery="standard"):
+                 residual_check_order="auto", rbf_computation="standard",
+                 affine_computation="auto", exact_recovery="standard", base_jobs=1):
         self.M = M
         self.theta = theta
         self.sv_selection_ratio = sv_selection_ratio
@@ -404,6 +463,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         self.rbf_computation = rbf_computation
         self.affine_computation = affine_computation
         self.exact_recovery = exact_recovery
+        self.base_jobs = base_jobs
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -420,12 +480,13 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 delattr(self, name)
 
     def _validate_options(self):
+        _positive_integer(self.base_jobs, "base_jobs")
         if not isinstance(self.exact_recovery, str) or self.exact_recovery not in (
                 "standard", "extended"):
             raise ValueError("exact_recovery must be 'standard' or 'extended'.")
         if not isinstance(self.affine_computation, str) or self.affine_computation not in (
-                "standard", "joint"):
-            raise ValueError("affine_computation must be 'standard' or 'joint'.")
+                "auto", "standard", "joint"):
+            raise ValueError("affine_computation must be 'auto', 'standard' or 'joint'.")
         if not isinstance(self.rbf_computation, str) or self.rbf_computation not in (
                 "standard", "direct"):
             raise ValueError("rbf_computation must be 'standard' or 'direct'.")
@@ -464,8 +525,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 "auto", "spectral", "cholesky", "lbfgs"):
             raise ValueError("backend must be 'auto', 'spectral', 'cholesky', or 'lbfgs'.")
         if not isinstance(self.residual_check_order, str) or self.residual_check_order not in (
-                "refinement_first", "adaptive"):
-            raise ValueError("residual_check_order must be 'refinement_first' or 'adaptive'.")
+                "auto", "refinement_first", "adaptive"):
+            raise ValueError("residual_check_order must be 'auto', 'refinement_first' or 'adaptive'.")
         if self.residual_check_order == "adaptive" and (
                 self.backend not in ("auto", "cholesky")):
             raise ValueError("Adaptive residual ordering requires optimized Cholesky MM.")
@@ -500,24 +561,54 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         kws["gamma"] = gamma
         return gamma, kws
 
+    def _affine_dependency_policy(self):
+        """Resolve auto from the dependency's declared constructor capability."""
+        try:
+            parameter = signature(KernGDWD).parameters.get("affine_computation")
+        except (TypeError, ValueError):
+            parameter = None
+        supported = parameter is not None and parameter.kind in (
+            Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
+        policy = self.affine_computation
+        if policy == "auto":
+            policy = "joint" if supported else "standard"
+        return policy, supported
+
     def _make_estimator(self, kernel_kws):
-        # Avoid adding a dependency keyword to the unchanged standard route.
+        # Explicit standard must remain standard even when a newer dependency
+        # defaults to auto. Unadvertised/older dependencies retain their former
+        # constructor route; a returned modern estimator is normalized below.
+        affine_policy, affine_supported = self._affine_dependency_policy()
         numerical_options = {}
         if self.rbf_computation == "direct":
             numerical_options["rbf_computation"] = "direct"
-        if self.affine_computation == "joint":
-            numerical_options["affine_computation"] = "joint"
+        if affine_policy == "joint" or affine_supported:
+            numerical_options["affine_computation"] = affine_policy
         if self.exact_recovery == "extended":
             numerical_options["exact_recovery"] = "extended"
+        # These learners are fresh optimized Schur fits without a supplied
+        # eigenbasis. Forward a concrete value understood by the pinned DWD
+        # dependency, including versions that do not yet accept auto here.
+        residual_order = self.residual_check_order
+        if residual_order == "auto":
+            residual_order = ("adaptive" if self.backend in ("auto", "cholesky")
+                              else "refinement_first")
         try:
-            return KernGDWD(
+            learner = KernGDWD(
                 lambd=self.lambd, q=self.q, kernel=self.kernel,
                 kernel_kws=deepcopy(kernel_kws), max_iter=self.max_iter,
                 obj_tol=self.obj_tol, stopping=self.stopping, tol=self.tol,
                 acceleration=self.acceleration, prediction_batch_size=self.prediction_batch_size,
                 implementation="optimized", solver_mode="schur", backend=self.backend,
                 initialization="zero", random_state=0,
-                residual_check_order=self.residual_check_order, **numerical_options)
+                residual_check_order=residual_order, **numerical_options)
+            # A wrapper may hide its modern constructor signature. Do not let
+            # its changed default silently reinterpret explicit standard or
+            # the documented conservative auto fallback.
+            if (affine_policy == "standard" and
+                    getattr(learner, "affine_computation", "standard") != "standard"):
+                learner.set_params(affine_computation="standard")
+            return learner
         except TypeError as error:
             if numerical_options:
                 raise ImportError(
@@ -542,6 +633,10 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
 
     @_profiled("base_stage")
     def _base_stage(self, X, y, classes, subsets, kernel_kws):
+        from ._parallel_base import eligibility, parallel_base_stage
+        parallel, reason = eligibility(self, kernel_kws, EnsembleKernelDWD._make_estimator)
+        if parallel:
+            return parallel_base_stage(self, X, y, classes, subsets, kernel_kws)
         context = dict(family="ensemble_dwd", stage="base_setup", base_position=None,
                        base_fit_calls_completed=0, base_score_calls_completed=0,
                        cached_base_learners=0, final_fit_calls_completed=0,
@@ -615,6 +710,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 reason = "bypassed: callable kernel or keyword"
             elif type(self) is not EnsembleKernelDWD:
                 reason = "bypassed: custom estimator subclass"
+            elif not uses_implementation(self, "_make_estimator", EnsembleKernelDWD._make_estimator):
+                reason = "bypassed: custom learner factory"
             else:
                 try:
                     provenance = _runtime_provenance(KernGDWD)
@@ -624,6 +721,18 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma", "kernel_kws"):
                     parameters.pop(name)
                 parameters["kernel_kws"] = kernel_kws
+                parameters["affine_computation_resolved"] = self._affine_dependency_policy()[0]
+                if self.base_jobs > 1:
+                    # The same requested jobs can dispatch native-one workers
+                    # on the main thread but preserve the caller's native
+                    # runtime in a background thread. Bind the effective path
+                    # before lookup, not only the requested worker count.
+                    from ._parallel_base import eligibility
+                    parallel, _ = eligibility(self, kernel_kws, EnsembleKernelDWD._make_estimator)
+                    parameters["base_execution_resolved"] = dict(
+                        policy="ordered-native-one-v1" if parallel else "sequential-caller-native-v1",
+                        effective_jobs=min(self.base_jobs, len(subsets)) if parallel else 1,
+                        native_threads=1 if parallel else "caller")
                 key_data = dict(sampling=_SAMPLING_SCHEME,
                                 X=X, y=y, classes=classes, subsets=subsets, parameters=parameters,
                                 provenance=provenance)
@@ -708,12 +817,15 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
             context["stage"] = "finalization"
             self.classes_ = classes
             self.gamma_ = gamma
-            self.affine_computation_ = self.affine_computation
+            self.affine_computation_ = getattr(final_model, "affine_computation_", "standard")
             self.exact_recovery_ = self.exact_recovery
             self.kernel_kws_ = kernel_kws
             self.subset_indices_ = subsets
             self.selected_indices_ = selected
             self.consensus_scores_ = consensus
+            self.base_execution_ = deepcopy(base.get("execution", dict(
+                requested_jobs=self.base_jobs, effective_jobs=1,
+                policy="sequential", reason="requested or preserved custom/caller behavior")))
             self.estimators_ = base["models"]
             context["stage"] = "final_diagnostics"
             with _stage("final_diagnostics"):
@@ -722,9 +834,30 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 self.converged_ = np.append(base["converged"], bool(final_model.converged_))
             context["stage"] = "finalization"
             self.final_estimator_ = final_model
+            self.requested_residual_check_order_ = self.residual_check_order
+            # This is the successful final learner's order; base histories may
+            # differ after recovery and remain in base_diagnostics_.
+            self.residual_check_order_ = getattr(final_model, 'residual_check_order_',
+                getattr(final_model, 'diagnostics_', {}).get('residual_check_order', 'refinement_first'))
             self.cache_hit_ = cache_hit
             self.cache_key_ = cache_key
             self.cache_status_ = cache_status
+            self.training_class_counts_ = np.bincount(encoded, minlength=2)
+            self.selected_class_counts_ = np.bincount(encoded[selected], minlength=2)
+            self.selection_composition_ = {
+                "training_size": n,
+                "selected_size": len(selected),
+                "selection_ratio_realized": len(selected) / n,
+                "classes": [
+                    {"label": label.item() if isinstance(label, np.generic) else label,
+                     "training_count": int(count), "selected_count": int(retained),
+                     "training_fraction": int(count) / n,
+                     "selected_fraction": int(retained) / len(selected),
+                     "class_retention_fraction": int(retained) / int(count)}
+                    for label, count, retained in zip(
+                        classes, self.training_class_counts_, self.selected_class_counts_)
+                ],
+            }
             return self
         except BaseException as error:
             try:
@@ -736,9 +869,11 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     def decision_function(self, X):
         """Return final-model scores, positive for classes_[1]."""
         check_is_fitted(self)
+        if self.prediction_batch_size is not None:
+            _positive_integer(self.prediction_batch_size, "prediction_batch_size")
         _reject_complex(X, "Features")
         X = validate_data(self, X, reset=False, accept_sparse=False, dtype=np.float64)
-        return _binary_scores(self.final_estimator_, X)
+        return _prediction_scores(self.final_estimator_, X, self.prediction_batch_size)
 
     def predict(self, X):
         """Return original labels using the final DWD's decision boundary."""

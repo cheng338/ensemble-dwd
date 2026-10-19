@@ -72,22 +72,27 @@ def write_json_atomic(path, payload, *, replace=False):
     io_path = _io_path(path)
     if io_path.exists() and not replace:
         raise FileExistsError(path)
+    # Serialization errors should not leave even an unpublished temporary file.
+    serialized = json.dumps(json_safe(payload), indent=2, allow_nan=False, sort_keys=True) + '\n'
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=io_path.parent,
                                          prefix='.record-', suffix='.tmp', delete=False) as stream:
             temporary = _io_path(stream.name)
-            json.dump(json_safe(payload), stream, indent=2, allow_nan=False, sort_keys=True)
-            stream.write('\n')
+            stream.write(serialized)
             stream.flush()
             os.fsync(stream.fileno())
         if io_path.exists() and not replace:
             raise FileExistsError(path)
         os.replace(temporary, io_path)
         temporary = None
-    finally:
+    except BaseException:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException:
+                pass
+        raise
     return path
 
 

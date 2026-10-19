@@ -162,8 +162,7 @@ class PairRecoveryIntegrationTests(unittest.TestCase):
             self.assertNotIn('pair_recovery', read(path)['payload'])
 
     def test_unsupported_combinations_reject_before_fitting(self):
-        for options in ({'reuse_equivalent_folds': True},
-                        {'cv_seeds': [42, 43], 'seed_parameter': 'model__estimator__random_state'},
+        for options in ({'cv_seeds': [42, 43], 'seed_parameter': 'model__estimator__random_state'},
                         {'pair_recovery_max_bytes': -1},
                         {'pair_recovery_max_bytes': True}):
             with self.subTest(options=options), self.assertRaises(ValueError):
@@ -640,8 +639,7 @@ class PairRecoveryCliTests(unittest.TestCase):
                  {'pair_recovery': True, 'pair_recovery_max_bytes': -1},
                  {'pair_recovery': True, 'pair_recovery_max_bytes': True},
                  {'pair_recovery': 1},
-                 {'pair_recovery': True, 'cv_seeds': [42]},
-                 {'pair_recovery': True, 'reuse_equivalent_folds': True})
+                 {'pair_recovery': True, 'cv_seeds': [42]})
         for values in cases:
             with self.subTest(values=values), self.assertRaises(ValueError):
                 run_numerical_confirmation(**{**options, **values})
@@ -650,7 +648,6 @@ class PairRecoveryCliTests(unittest.TestCase):
         import tune_mnist_multiclass as example
         cases = (['--pair-recovery'], ['--pair-recovery-max-bytes', '1'],
                  ['--pair-recovery', '--no-cache', '--pair-recovery-max-bytes', '-1'],
-                 ['--pair-recovery', '--no-cache', '--reuse-equivalent-folds'],
                  ['--pair-recovery', '--no-cache', '--cv-seeds', '42', '43'])
         with patch.object(example, 'load_local_multiclass_data', side_effect=AssertionError('data loaded')):
             for arguments in cases:
@@ -664,7 +661,8 @@ class PairRecoveryCliTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(example, 'load_local_multiclass_data', side_effect=AssertionError('data loaded')), \
                 redirect_stdout(output):
-            example.main(['--pair-recovery', '--no-cache', '--pair-recovery-max-bytes', '0'])
+            example.main(['--pair-recovery', '--no-cache', '--pair-recovery-max-bytes', '0',
+                          '--reuse-equivalent-folds'])
         self.assertIn('Optional completed-pair recovery', output.getvalue())
         self.assertIn('Prepared only', output.getvalue())
 

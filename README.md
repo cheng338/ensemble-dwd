@@ -32,13 +32,13 @@ Reserved.** A software license has not yet been selected or granted. See
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.11 requires DWD 1.3.15 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.15).
+Python 3.11 or later is required. Version 0.3.12 requires DWD 1.3.16 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.16).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.15 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.16 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -55,7 +55,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.11-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.12-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -75,23 +75,29 @@ on Linux, a different processor or free-threaded Python.
 Python 3.10 is no longer supported. Previously released companion wheels
 remain available as historical artifacts and will not receive updates.
 
-DWD 1.3.15 accelerates eligible dense compensated score sums on Windows
-CPython 3.12 x86-64. Other runtimes and unsupported inputs keep the Python
-calculation and its numerical checks. Wheel installation compatibility does
-not guarantee that a compiled scoring path is active. See DWD's
-[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.15/docs/compiled_residual.md)
-for eligibility and fallback behavior.
+DWD 1.3.16 qualifies guarded compiled residual checks and dense compensated
+score sums on conventional Windows x86-64 CPython 3.11 through 3.13. Unsupported
+inputs or runtimes retain guarded fallback arithmetic. Wheel installation
+compatibility does not guarantee that a compiled scoring path is active. See
+DWD's [compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.16/docs/compiled_residual.md).
 
-The CI workflow uses the same lock and the explicit DWD 1.3.15 release asset
-page. This keeps its dependency source fixed independently of repository
-variables used by older release branches.
+The dependency also reuses bounded temporary buffers and avoids repeated work
+within eligible prediction calls. These changes apply to base and final DWD
+estimators without altering disjoint sampling, selection or the fitted objective.
+The CI workflow uses the same dependency lock and explicit DWD 1.3.16 release
+asset page.
 
-The default numerical policies remain unchanged. DWD 1.3.15 also provides the
-optional `rbf_computation='direct'`, `affine_computation='joint'` and
-`exact_recovery='extended'` settings used by this release. See
+Version 0.3.12 uses automatic affine scoring and residual ordering for new
+ensembles and enables eligible equivalent-ratio fold reuse in the examples.
+Explicit historical numerical policies and `--no-reuse-equivalent-folds` remain
+available. Existing saved models retain their fitted scoring behavior. Direct
+RBF computation, extended exact recovery and parallel base fitting remain
+optional; sequential base fitting (`base_jobs=1`) and the SVM comparator's RBF
+kernel remain the defaults. See
 [direct RBF computation](docs/method.md#optional-direct-rbf-computation),
-[joint affine scoring](docs/method.md#optional-joint-affine-scoring) and
-[extended exact recovery](docs/method.md#optional-extended-exact-recovery) before use.
+[joint affine scoring](docs/method.md#optional-joint-affine-scoring),
+[extended exact recovery](docs/method.md#optional-extended-exact-recovery) and
+[parallel base fitting](docs/parallel-base-fitting.md) for their scope.
 
 # Basic use
 
@@ -129,13 +135,15 @@ DWD ensemble inside `OvOClassifier`.
 | Parameter | Default | Meaning |
 |---|---:|---|
 | `M` | `5` | Number of base learners. |
+| `base_jobs` | `1` | Sequential bases; explicit larger values request eligible bounded parallel fitting. |
 | `theta` | `0.1` | Base subset fraction; size is `max(2, floor(theta * n))`. |
 | `sv_selection_ratio` | `0.3` | Fraction of training rows retained for the final refit. |
 | `lambd` | `1e-6` | Shared package DWD regularization parameter. |
 | `q` | `1.0` | Ordinary DWD loss exponent. |
 | `kernel` | `'rbf'` | Kernel used by every learner. |
 | `rbf_computation` | `'standard'` | RBF arithmetic; opt-in `'direct'` uses coordinate differences. |
-| `affine_computation` | `'standard'` | Decision-score arithmetic; opt-in `'joint'` includes the intercept in cancellation-aware summation. |
+| `affine_computation` | `'auto'` | Joint affine protection when supported; explicit `'standard'` preserves historical scoring. |
+| `residual_check_order` | `'auto'` | Adaptive checks on eligible optimized Cholesky paths; applicable historical ordering elsewhere. |
 | `exact_recovery` | `'standard'` | Exact-recovery budget; opt-in `'extended'` permits rank 32 and 8192-bit arithmetic for eligible small kernels. |
 | `gamma` | `'scale'` | Resolved once per binary fit and shared by its base and final learners. |
 | `max_iter`, `obj_tol` | `100`, `1e-5` | Default objective-change stopping controls. |
@@ -172,10 +180,9 @@ policy remains the default. Direct computation preserves the ensemble method
 but can change rounded scores and selected rows and can be substantially
 slower. See [its scope, dependency requirement and measured cost](docs/method.md#optional-direct-rbf-computation).
 
-For cancellation in `K @ alpha + b`, use
-`EnsembleKernelDWD(affine_computation='joint')`. It includes the intercept in
-the numerical refinement of each base and final decision score, with the
-current `'standard'` policy retained by default. It preserves the mathematical
+The default `affine_computation='auto'` includes the intercept in joint
+evaluation of `K @ alpha + b` for each base and final learner when the
+dependency supports it. Explicit `'standard'` preserves historical scoring. It preserves the mathematical
 score and selection rule, but corrected rounding can change close rankings,
 selected rows and labels. Its cost depends on how many scores need refinement;
 see [joint affine scoring](docs/method.md#optional-joint-affine-scoring).
@@ -273,11 +280,13 @@ estimator's configured seed (42 in the commands). Both seed choices are saved
 and must remain unchanged on resume. See the
 [seed aggregation and records](docs/method.md#multiple-cv-seeds).
 
-The optional `--reuse-equivalent-folds` flag also reuses a completed CV result
+The examples automatically reuse an eligible completed CV result
 when two retention ratios select exactly the same rows under identical
 settings. Each candidate keeps its original ratio and record. This is useful
 for closely spaced custom ratios; the default MNIST grids may gain nothing.
-The selected ratio still receives a fresh fit on all training rows. See the
+Use `--no-reuse-equivalent-folds` to disable this optimization. Pair recovery
+remains optional and can be combined with eligible reuse. The selected ratio
+still receives a fresh fit on all training rows. See the
 [reuse conditions and records](docs/method.md#equivalent-fold-reuse).
 
 The policy expands lambda/gamma endpoints reached by the best or tied-best
@@ -588,7 +597,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.11 changelog](CHANGELOG.md#0311--2026-10-17) for this release's changes.
+See the [0.3.12 changelog](CHANGELOG.md#0312--2026-10-19) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.
@@ -609,6 +618,11 @@ The package also offers optional
 [`fit_profile()`](docs/method.md#optional-fit-profiling) to measure ensemble-DWD
 fit stages and distinguish new base work from cache reuse. It records timing
 outside the fitted model, with no change to estimator settings or mathematics.
+
+For explicit concurrent base fitting, see
+[`base_jobs` and runtime ownership](docs/parallel-base-fitting.md).
+Sequential base fitting remains the default; the final learner is fitted after
+the base workers finish.
 
 `EnsembleKernelDWD` accepts exactly two classes. Wrap it in `OvOClassifier`
 for two or more classes. Precomputed kernels are unsupported.

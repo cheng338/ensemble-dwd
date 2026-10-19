@@ -84,11 +84,16 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         It is not divided by their sample sizes. In a mean hinge-loss
         objective the corresponding squared-norm coefficient is 1/(2*C*n).
     gamma : {"scale", "auto"} or positive float, default="scale"
-        RBF coefficient, resolved once from the complete supplied training
+        RBF/polynomial coefficient, resolved once from the complete supplied training
         fold and then shared numerically by all learners. ``"scale"`` uses
         1/(n_features * X.var()); ``"auto"`` uses 1/n_features.
-    kernel : {"rbf"}, default="rbf"
-        This comparator currently supports the RBF kernel only.
+    kernel : {"rbf", "linear", "poly"}, default="rbf"
+        Named positive-semidefinite kernel shared by every learner.
+        Linear kernels ignore gamma, degree and coef0.
+    degree : int, default=3
+        Positive polynomial degree. Ignored by RBF and linear kernels.
+    coef0 : float, default=0.0
+        Nonnegative polynomial constant. Ignored by RBF and linear kernels.
     tol : float, default=1e-3
         Positive tolerance passed to every SVC optimizer.
     max_iter : int, default=-1
@@ -121,7 +126,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
     classes_ : ndarray of shape (2,)
         Ordered original labels; positive decision values refer to classes_[1].
     gamma_ : float
-        Shared numeric RBF coefficient.
+        Shared numeric RBF/polynomial coefficient; ignored for a linear kernel.
     subset_indices_ : list of M ndarrays
         Ordered training-row indices used by the base models.
     selected_indices_ : ndarray
@@ -156,7 +161,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
                  gamma="scale", kernel="rbf", tol=1e-3, max_iter=-1,
                  shrinking=True, cache_size=200.0, random_state=42,
                  prediction_batch_size=1024, cache_dir=None,
-                 store_base_estimators=True):
+                 store_base_estimators=True, degree=3, coef0=0.0):
         self.M = M
         self.theta = theta
         self.sv_selection_ratio = sv_selection_ratio
@@ -171,6 +176,16 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         self.prediction_batch_size = prediction_batch_size
         self.cache_dir = cache_dir
         self.store_base_estimators = store_base_estimators
+        self.degree = degree
+        self.coef0 = coef0
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        # Older public models supported only RBF and did not store these options.
+        if not hasattr(self, "degree"):
+            self.degree = 3
+        if not hasattr(self, "coef0"):
+            self.coef0 = 0.0
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -193,8 +208,12 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         _finite_real(self.C, "C")
         _finite_real(self.tol, "tol")
         _finite_real(self.cache_size, "cache_size")
-        if not isinstance(self.kernel, str) or self.kernel != "rbf":
-            raise ValueError("kernel must be 'rbf'; other kernels are not supported.")
+        if not isinstance(self.kernel, str) or self.kernel not in ("rbf", "linear", "poly"):
+            raise ValueError("kernel must be 'rbf', 'linear', or 'poly'.")
+        _positive_integer(self.degree, "degree")
+        _finite_real(self.coef0, "coef0", allow_zero=True)
+        if self.coef0 < 0:
+            raise ValueError("coef0 must be nonnegative for a polynomial PSD kernel.")
         if isinstance(self.gamma, str):
             if self.gamma not in ("scale", "auto"):
                 raise ValueError("gamma must be 'scale', 'auto', or a finite positive number.")
@@ -214,6 +233,8 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
             raise TypeError("store_base_estimators must be boolean.")
 
     def _resolve_gamma(self, X):
+        if self.kernel == "linear":
+            return 1.0  # SVC ignores gamma for the linear kernel.
         if isinstance(self.gamma, str):
             if self.gamma == "auto":
                 return 1.0 / X.shape[1]
@@ -229,7 +250,8 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         return float(self.gamma)
 
     def _make_estimator(self, gamma):
-        return SVC(C=self.C, gamma=gamma, kernel=self.kernel, tol=self.tol,
+        return SVC(C=self.C, gamma=gamma, kernel=self.kernel,
+                   degree=self.degree, coef0=self.coef0, tol=self.tol,
                    max_iter=self.max_iter, shrinking=self.shrinking,
                    cache_size=self.cache_size, random_state=0)
 
@@ -326,7 +348,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
                 for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma"):
                     parameters.pop(name)
                 parameters["gamma"] = gamma
-                key_data = dict(family="ensemble-kernel-svm-signed-margin-v1",
+                key_data = dict(family="ensemble-kernel-svm-signed-margin-v2-named-kernels",
                                 sampling=_SAMPLING_SCHEME,
                                 X=X, y=y, classes=classes, subsets=subsets,
                                 parameters=parameters, provenance=provenance)

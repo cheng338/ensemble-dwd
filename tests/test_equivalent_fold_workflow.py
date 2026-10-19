@@ -1,4 +1,4 @@
-"""Equivalent-fold reuse remains opt-in and never replaces the final refit."""
+"""Qualified automatic reuse preserves candidate labels and the final refit."""
 import contextlib
 import io
 import json
@@ -50,7 +50,7 @@ class EquivalentFoldWorkflowTests(unittest.TestCase):
         self.runtime.start()
         self.addCleanup(self.runtime.stop)
 
-    def execute(self, folder, enabled, *, resume=False):
+    def execute(self, folder, enabled='auto', *, resume=False):
         # Exercise the actual folds, candidate selection and final refit. Only
         # parameter-review acceptance is controlled to keep this lifecycle test
         # independent of the separately tested expansion/refinement policy.
@@ -108,19 +108,34 @@ class EquivalentFoldWorkflowTests(unittest.TestCase):
                 self.execute(folder, False, resume=True)
             self.assertEqual((folder / 'run.json').read_bytes(), saved_run)
 
-    def test_reuse_setting_is_a_boolean(self):
+    def test_default_auto_is_recorded_and_is_distinct_from_explicit_enable(self):
+        folder = new_run_directory(self.root / 'automatic')
+        result = self.execute(folder)
+        facts = json.loads((folder / 'run.json').read_text(encoding='utf-8'))
+        self.assertEqual(facts['settings']['reuse_equivalent_folds'], 'auto')
+        self.assertEqual(result['stages'][0]['checkpoint']['executed_folds'], 2)
+        self.assertEqual(result['stages'][0]['checkpoint']['equivalent_reused_folds'], 2)
+        self.assertTrue(self.execute(folder, resume=True)['resumed_completed'])
+        before = (folder / 'run.json').read_bytes()
+        with self.assertRaises(cv_checkpoint.CheckpointError):
+            self.execute(folder, True, resume=True)
+        self.assertEqual(before, (folder / 'run.json').read_bytes())
+
+    def test_reuse_setting_accepts_only_auto_or_boolean(self):
         for value in (1, 'yes', None):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'must be boolean'):
                 self.execute(self.root / 'unused', value)
 
-    def test_three_command_lines_forward_only_explicit_opt_in(self):
+    def test_three_command_lines_forward_auto_and_explicit_overrides(self):
         for module in (tune_mnist, tune_mnist_svm, tune_mnist_multiclass):
-            for enabled in (False, True):
+            for enabled in ('auto', False, True):
                 with self.subTest(module=module.__name__, enabled=enabled):
                     folder = self.root / (module.__name__ + str(enabled))
                     arguments = ['--data', 'unused.npz', '--run', '--no-cache', '--output-dir', str(folder)]
-                    if enabled:
+                    if enabled is True:
                         arguments.append('--reuse-equivalent-folds')
+                    elif enabled is False:
+                        arguments.append('--no-reuse-equivalent-folds')
                     if module is tune_mnist_multiclass:
                         arguments.extend(['--folds', '2', '--train-size', '20'])
                         y = np.repeat(np.arange(10), 2)
@@ -135,7 +150,7 @@ class EquivalentFoldWorkflowTests(unittest.TestCase):
                             patch.object(adaptive_search, 'run_adaptive_search', return_value=held) as run, \
                             contextlib.redirect_stdout(io.StringIO()):
                         module.main(arguments)
-                    self.assertIs(run.call_args.kwargs['reuse_equivalent_folds'], enabled)
+                    self.assertEqual(run.call_args.kwargs['reuse_equivalent_folds'], enabled)
 
 
 if __name__ == '__main__':

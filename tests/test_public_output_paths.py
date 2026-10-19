@@ -85,7 +85,7 @@ class PublicOutputPathTests(unittest.TestCase):
 
     def test_serialization_failure_cleans_temporary_without_publishing(self):
         path = self.root / 'status.json'
-        with patch.object(support.json, 'dump', side_effect=ValueError('injected JSON failure')):
+        with patch.object(support.json, 'dumps', side_effect=ValueError('injected JSON failure')):
             with self.assertRaisesRegex(ValueError, 'injected JSON failure'):
                 support.write_json_atomic(path, {'state': 'running'})
         self.assertFalse(support._io_path(path).exists())

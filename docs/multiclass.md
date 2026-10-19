@@ -216,8 +216,9 @@ with bounded detail samples. Coordinate closeness alone does not establish
 equivalent multiclass fits. All candidates and checkpoint identities remain
 separate; see [reporting details](method.md#work-and-timing-summaries).
 
-`--reuse-equivalent-folds` optionally shares completed CV results between
-retention ratios only when the retained count agrees for every class pair.
+Eligible completed CV results are automatically shared between retention
+ratios only when the retained count agrees for every class pair. Use
+`--no-reuse-equivalent-folds` to disable this reuse.
 Candidate labels and full-training refitting remain unchanged. See the
 [reuse conditions](method.md#equivalent-fold-reuse).
 
@@ -255,9 +256,11 @@ dense, finite numeric arrays. Each evaluated candidate must use a named RBF kern
 gamma supplied as a plain Python `int` or `float`, a Python integer random
 seed, and `OvOClassifier.n_jobs=1`.
 Both retained and discarded ensemble base models are supported. Custom
-subclasses, mutable random generators, the separate ensemble base-fit cache,
-multiple CV seeds and equivalent-fold reuse are not supported together with
-this option. Ordinary fitting retains its existing supported settings.
+subclasses, mutable random generators, the separate ensemble base-fit cache
+and multiple CV seeds are not supported together with this option.
+Equivalent-fold reuse is supported with the identity and partial-work checks
+described in [equivalent-fold reuse](method.md#equivalent-fold-reuse).
+Ordinary fitting retains its existing supported settings.
 
 Completed models are saved as trusted local pickle files. Only reuse files
 created by a trusted run: checksums detect corruption but do not make an

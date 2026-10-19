@@ -112,6 +112,7 @@ class _FitProfile:
         self._stages = {}
         self._cache_outcomes = {}
         self._reused_learners = 0
+        self._parallel_profiles = []
         self._wall_seconds = 0.0
 
     def __enter__(self):
@@ -144,11 +145,16 @@ class _FitProfile:
         stages = deepcopy(self._stages)
         counts = {name + "_completed": stages.get(name, {}).get("completed_calls", 0)
                   for name in ("fit", "base_fit", "base_scoring", "final_fit")}
+        for worker in self._parallel_profiles:
+            for key in ("base_fit_completed", "base_scoring_completed"):
+                counts[key] += worker["counts"].get(key, 0)
         counts["reused_base_learners"] = self._reused_learners
         return {"schema_version": 1, "state": self._state,
                 "scope": "binary_ensemble_dwd_fit_in_current_execution_context",
                 "context_wall_seconds": elapsed, "stages": stages,
                 "counts": counts, "cache_outcomes": dict(self._cache_outcomes),
+                "parallel_worker_profiles": deepcopy(self._parallel_profiles),
+                "parallel_timing_semantics": "Worker times overlap; never add their self times to parent wall-clock stages.",
                 "timing_semantics": {
                     "inclusive_seconds": "includes nested stages; do not sum across stages",
                     "child_seconds": "direct child stage wall time",
@@ -161,7 +167,14 @@ def fit_profile():
     """Create a single-use context for optional ensemble DWD fit-stage profiling.
 
     Profiling is off unless this context is entered. Disabled instrumentation
-    makes no clock calls. Use a separate context inside each worker when fitting
-    in parallel; this collector does not combine worker profiles automatically.
+    makes no clock calls. Managed base-fit workers attach their individual
+    profiles to the parent collector. For independent parallel fits, use a
+    separate context in each worker and collect those profiles explicitly.
     """
     return _FitProfile()
+
+
+def _record_parallel_profiles(profiles):
+    profile = _active_profile()
+    if profile is not None:
+        profile._parallel_profiles.extend(deepcopy(profiles))

@@ -3,6 +3,54 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.12 — 2026-10-19
+
+- Pair this release with DWD 1.3.16; Python 3.11 or later remains required.
+
+- Add optional `base_jobs` to `EnsembleKernelDWD`, with sequential fitting as
+  the default (`base_jobs=1`). Eligible parallel bases use one native thread
+  each and preserve base order, disjoint subsets and selection. Restore the
+  caller's native-thread allocation for the final fit; callers must own the
+  process-wide numerical runtime settings throughout fitting.
+- Distinguish effective parallel eligibility in base-cache identity so a
+  sequential fallback cannot reuse bases fitted under a different thread policy.
+  Instance-level custom learner factories bypass base caching.
+- Support explicit `kernel='linear'` and `kernel='poly'` in `EnsembleKernelSVM`,
+  retaining RBF as the default. Require a positive integer polynomial degree,
+  positive gamma and nonnegative `coef0`. Forward the resolved kernel to every
+  base and final learner and include its settings in cache/checkpoint identity.
+  Signed-margin selection and the final SVC refit remain unchanged.
+- Default new ensembles to automatic joint affine scoring and eligible adaptive
+  residual ordering. Forward concrete policies to every base and final learner,
+  preserve explicit choices and historical fitted behavior, and distinguish the
+  resolved dependency policy in cache identity. Sampling, raw-score selection,
+  objectives and numerical acceptance remain unchanged; rounded results can differ.
+- Automatically reuse eligible equivalent-ratio CV folds in the examples, with
+  `--no-reuse-equivalent-folds` to disable reuse. Preserve all candidate labels,
+  exact source/data/runtime checks, original tie ordering and a fresh final refit.
+  Integrate reuse with optional pair recovery; pair recovery remains opt-in.
+- Create pair-evidence and pair-cleanup directories before best-effort writes.
+  Reporting failures retain successful models and the original interruption.
+- Add sign-orientation and automatic-policy regression coverage alongside the
+  existing selected-set objective and sampling checks.
+
+- Document the paired development DWD build's wider guarded native-runtime
+  eligibility and internal scoring/basis-validation reuse. Ensemble sampling,
+  selection and objectives are unchanged; the dependency lock identifies the
+  DWD 1.3.16 native and portable wheels.
+- Apply the current `prediction_batch_size` after fitting without mutating the
+  final DWD estimator. Forward a per-call limit when supported; otherwise batch
+  calls externally, retaining any tighter limit inside an older child model.
+- Store original and selected class counts and retention fractions after a
+  successful fit, including lean storage and cached base stages. These describe
+  the actual selection and introduce no balancing quotas or row changes.
+- Preserve the original checkpoint failure or interruption when temporary-file
+  cleanup also fails; serialize strict JSON before creating the temporary file.
+- Verify exact installed ensemble/DWD wheel payloads and the actual DWD backend
+  before CI runs copied tests outside the package source tree.
+- Add regression tests for selected-set loss normalization, post-fit batching,
+  selection metadata, failed refits and serialization.
+
 ## 0.3.11 — 2026-10-17
 
 - Preserve clear rejection of unsupported sparse inputs with NumPy 1.26 and

@@ -2,16 +2,17 @@ cff-version: 1.2.0
 message: "Please cite this software and the dissertation describing its ensemble method."
 type: software
 title: "ensemble-dwd: Ensemble Kernel Distance Weighted Discrimination"
-version: 0.3.11
-date-released: 2026-10-17
+version: 0.3.12
+date-released: 2026-10-19
 authors:
   - family-names: Cheng
     given-names: Chang
 abstract: >-
   Binary and one-versus-one multiclass classification using uniform subsampling without replacement,
   kernel DWD fits, raw decision-value consensus selection, and a final
-  kernel DWD refit. Includes an RBF SVM comparator with signed-margin
-  selection and a final SVC refit.
+  kernel DWD refit. Includes an SVM comparator with an RBF default and explicit
+  linear or nonnegative-polynomial kernels, signed-margin selection, and a final
+  SVC refit.
 references:
   - type: thesis
     title: "Ensemble Kernel Distance-Weighted Discrimination and Supervised Nonnegative Matrix Factorization for Classification"

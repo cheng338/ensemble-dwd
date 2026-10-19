@@ -222,6 +222,7 @@ class FoldContext:
         destination = self.folder / 'pair-evidence' / (self.attempt['attempt'] + '.json')
         self.assert_owner()
         try:
+            destination.parent.mkdir(exist_ok=True)
             cp._write_receipt(destination, payload)
         except Exception as error:
             self.reporting_errors.append({'phase': 'pair_evidence', 'type': type(error).__name__})
@@ -392,7 +393,10 @@ def cleanup_context(context, *, already_validated=None):
     record = cp._valid_fold(path, context.identity, context.task,
                            parameters=context.parameters, fold=context.fold,
                            validation_size=len(context.validation))
-    validate_summary(record)
+    # An already validated whole-fold alias has no new pair work.
+    # Its own unfinished pair store may still need reclamation.
+    if 'equivalent_reuse' not in record:
+        validate_summary(record)
     if already_validated is not None and record != already_validated:
         raise cp.CheckpointError('Fold receipt changed before cleanup')
     try:
@@ -404,6 +408,7 @@ def cleanup_context(context, *, already_validated=None):
     destination = context.folder / 'pair-cleanup' / (context.task + '.json')
     context.assert_owner()
     try:
+        destination.parent.mkdir(exist_ok=True)
         cp._write_receipt(destination, {'identity_sha256': context.identity,
             'task_sha256': context.task, 'fold': context.fold,
             'authoritative_receipt_sha256': cp._digest(record), **result})
@@ -423,5 +428,6 @@ def cleanup_saved_fold(folder, identity, runtime, token, task, parameters, fold,
                                 parameters=parameters, fold=fold, validation_size=len(validation))
         result = cleanup_context(context, already_validated=record)
         returned = deepcopy(record)
-        returned['pair_recovery']['cleanup_status'] = result['status']
+        if 'pair_recovery' in returned:
+            returned['pair_recovery']['cleanup_status'] = result['status']
         return returned

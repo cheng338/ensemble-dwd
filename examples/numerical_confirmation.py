@@ -231,8 +231,8 @@ def run_numerical_confirmation(*, pipeline, results, rows, searches, folds, X, y
             raise ValueError('pair_recovery_max_bytes requires pair_recovery.')
         if type(pair_recovery_max_bytes) is not int or pair_recovery_max_bytes < 0:
             raise ValueError('pair_recovery_max_bytes must be a nonnegative integer or None.')
-    if pair_recovery and (reuse_equivalent_folds or cv_seeds is not None):
-        raise ValueError('Pair recovery does not support equivalent-fold reuse or multi-seed CV.')
+    if pair_recovery and cv_seeds is not None:
+        raise ValueError('Pair recovery does not support multi-seed CV.')
     started = perf_counter()
     profile = validate_confirmation(pipeline, {}, search_config, config)
     indices = [int(index) for index in ranked_valid_indices(results)[:config.top_k]]

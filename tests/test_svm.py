@@ -383,7 +383,7 @@ class SVMCacheAndIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             restored.predict(self.X[:, :-1])
         for options in ({'M': 0}, {'C': 0.}, {'gamma': 0.}, {'theta': 1.1},
-                        {'max_iter': 0}, {'tol': 0.}, {'kernel': 'linear'}):
+                        {'max_iter': 0}, {'tol': 0.}, {'kernel': 'sigmoid'}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.model(**options).fit(self.X, self.y)
 

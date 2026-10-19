@@ -1,5 +1,71 @@
 # ensemble-dwd validation
 
+## 0.3.12: optional parallel bases and named SVM kernels
+
+`EnsembleKernelDWD(base_jobs=1)` retains sequential base fitting. Explicit
+parallel requests use one native thread per eligible base worker, accumulate
+consensus in original base order and restore the caller's native-thread limits
+before the final fit. The caller must own the process-wide numerical runtime
+settings during fitting. Custom factories, callable kernels and execution
+from a Python worker thread retain sequential behavior. Requested scheduling
+and effective execution eligibility participate in cache identity. Sampling,
+selection, learner objectives and numerical acceptance are unchanged; different
+native-thread allocations can change floating-point results. See the
+[parallel fitting guide](docs/parallel-base-fitting.md).
+
+`EnsembleKernelSVM` now supports explicit linear and polynomial kernels while
+retaining RBF as the default. The polynomial option requires positive gamma,
+a positive integer degree and nonnegative `coef0`. Base and final learners
+use the same resolved settings. Named-kernel settings enter cache/checkpoint
+identity; old saved RBF predictors remain readable. Signed-margin selection
+and the final SVC refit are unchanged. Callable, precomputed and sigmoid
+kernels remain unsupported. See the [SVM guide](docs/ensemble-svm.md).
+
+Application checks on 2026-10-19 ran 937 test methods with the isolated native
+wheel in local `py12_df_aocl`: zero failures, zero errors and one POSIX path
+behavior skip. Another 28 focused tests passed on each of Python 3.11, 3.12 and
+3.13 using both native and portable DWD wheels, with zero failures, errors or
+skips in every configuration. These overlapping runs are not distinct counts
+of unique tests. The exact installed runtime payloads were verified; focused
+Python 3.11/3.13 environments were isolated from the working environments.
+
+The checks cover numerical parity on the tested fixtures, base ordering,
+profiling, interruption cleanup, effective cache identity, custom-factory
+bypass, named-kernel forwarding, serialization and independent SVC
+reconstruction. They do not establish universal bitwise equality or a speedup.
+No new performance benchmark or hosted CI run is claimed by these application
+checks.
+
+## 0.3.12: automatic policies and equivalent-fold reuse
+
+New ensembles request automatic affine scoring and residual ordering, passing
+the concrete supported policy to every DWD learner. Explicit choices and old
+fitted behavior remain supported. The example searches now request eligible
+equivalent-fold reuse automatically, with `--no-reuse-equivalent-folds` as the
+opt-out. Completed-pair recovery remains optional. Earlier sections record
+historical validation and do not override these current defaults.
+
+Local `py12_df_aocl` checks passed 60 focused ratio/recovery tests and 13
+multi-seed compatibility tests, with no skips. Coverage includes exact retained
+counts for every class pair, candidate and runtime identity, interrupted pair
+and orphan-fold adoption, parallel publication, higher-budget confirmation
+separation, zero new fit/score times for aliases, and a fresh final refit.
+Injected sidecar directory failures preserve the original interruption.
+Automatic and explicitly enabled reuse remain distinct resume settings.
+
+Twenty-one policy and dependency tests also passed against the released DWD
+1.3.15 artifact, with no skips. New sign-orientation regressions passed on
+actual Python 3.11, 3.12 and 3.13. They protect DWD absolute-consensus and SVM
+signed-margin selection under global class reversal; they do not establish
+that an earlier production sign bug existed. Sampling remains disjoint, and
+selection, objectives and numerical acceptance rules are unchanged.
+
+These are correctness checks using small fixtures, generally one native
+thread and two workers for designated parallel tests. Concurrent checks are
+not performance benchmarks. These dated checks precede the release version
+and dependency-lock changes; release-artifact verification and hosted CI have
+separate records. Version 0.3.12 is paired with DWD 1.3.16.
+
 ## 0.3.11: sparse-input validation on older dependencies
 
 The public validation path was checked on local Windows Python 3.12 with

@@ -212,8 +212,14 @@ def main(argv=None):
     parser.add_argument('--output-dir', type=Path, help='Fresh directory for a new run, or the original directory with --resume.')
     parser.add_argument('--resume', action='store_true',
                         help='Reuse completed folds from --output-dir with identical settings, budgets and runtime; requires --run.')
-    parser.add_argument('--reuse-equivalent-folds', action='store_true',
-                        help='Reuse completed CV results when selection ratios retain identical rows in every class pair; disabled by default.')
+    reuse = parser.add_mutually_exclusive_group()
+    reuse.add_argument('--reuse-equivalent-folds', dest='reuse_equivalent_folds',
+                       action='store_const', const=True,
+                       help='Enable exact completed-fold reuse for supported equivalent selection ratios (automatic by default).')
+    reuse.add_argument('--no-reuse-equivalent-folds', dest='reuse_equivalent_folds',
+                       action='store_const', const=False,
+                       help='Fit every candidate/fold independently, disabling automatic equivalent-ratio reuse.')
+    parser.set_defaults(reuse_equivalent_folds='auto')
     parser.add_argument('--pair-recovery', action='store_true',
                         help='Save completed binary pair models inside unfinished CV folds; disabled by default. Requires --no-cache and trusted local output storage.')
     parser.add_argument('--pair-recovery-max-bytes', type=int,
@@ -245,8 +251,8 @@ def main(argv=None):
     if args.pair_recovery:
         if not args.no_cache:
             parser.error('--pair-recovery requires --no-cache; separate base-stage caching is not supported together.')
-        if args.reuse_equivalent_folds or seed_options:
-            parser.error('--pair-recovery cannot be combined with equivalent-fold reuse or multi-seed CV.')
+        if seed_options:
+            parser.error('--pair-recovery cannot be combined with multi-seed CV.')
     pair_options = ({'pair_recovery': True,
                      'pair_recovery_max_bytes': args.pair_recovery_max_bytes}
                     if args.pair_recovery else {})

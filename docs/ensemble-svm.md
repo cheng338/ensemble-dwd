@@ -1,6 +1,6 @@
 # Ensemble kernel SVM comparator
 
-`EnsembleKernelSVM` provides a binary RBF SVM comparison method alongside Chang
+`EnsembleKernelSVM` provides a binary kernel SVM comparison method alongside Chang
 Cheng's ensemble kernel DWD. It uses scikit-learn's compiled LIBSVM `SVC`
 implementation for every base learner and the final fit. No new numerical
 dependency is required.
@@ -18,12 +18,12 @@ See [multiclass use](#multiclass-use) for an example and
    size. This is the same label-independent sampler as ensemble DWD. Every
    block must contain both classes; an ineligible draw is reported without
    resampling. See [sampling constraints](method.md#sampling-and-invalid-selections).
-2. Fit one RBF SVC to each subset and calculate their arithmetic mean raw
+2. Fit one SVC to each subset using the chosen kernel and calculate their arithmetic mean raw
    decision value g on every row supplied to this fit.
 3. Encode the ordered binary labels as -1 and +1 and rank by
    `abs(y_signed * g - 1)`. Keep `floor(sv_selection_ratio * n)` observations,
    resolving exact ties by input row order.
-4. Fit a fresh RBF SVC on the selected observations. Its predictions are the
+4. Fit a fresh SVC with the same kernel on the selected observations. Its predictions are the
    ensemble's predictions; the base models are used for selection only.
 
 The signed score implements a ranking around Mao et al.'s condition
@@ -58,6 +58,9 @@ fit base classifiers, select rows, and fit a final classifier of the same family
 | theta | 0.1 | Same |
 | sv_selection_ratio | 0.3 | Same |
 | random_state | 42 | Same sampler and repeatable subsets |
+| kernel | `"rbf"` | Explicit alternatives: `"linear"` and `"poly"` |
+| degree | 3 | Positive integer polynomial degree; ignored by other kernels |
+| coef0 | 0.0 | Nonnegative polynomial constant; ignored by other kernels |
 | gamma | `"scale"` | Resolve once from this fit's input, then share |
 | prediction_batch_size | 1024 | Same |
 | store_base_estimators | True | Same inspectable default |
@@ -79,9 +82,18 @@ mean-loss norm coefficient. [SVC mathematical formulation](https://scikit-learn.
 `gamma="scale"` is calculated from the full input of the current binary fit,
 which must be a training fold during CV. It is not recalculated on the sampled
 or selected subsets. In OvO, it resolves separately in each binary pair;
-specify a numerical gamma to share it across pairs. The first SVM release
-supports dense RBF feature inputs; precomputed and other kernels are excluded
-from this estimator's contract.
+specify a numerical gamma to share it across pairs. The linear kernel ignores
+gamma; its internal placeholder is 1. The polynomial kernel is
+`(gamma * dot(x, z) + coef0)**degree`, with positive gamma, positive integer
+degree, and nonnegative coef0. Every base and final learner uses the same
+resolved kernel settings. These restrictions retain positive-semidefinite
+named kernels. Callable, precomputed, and sigmoid kernels are unsupported.
+Feature inputs remain dense. RBF remains the default, and the MNIST examples
+and parameter grids continue to use RBF.
+
+Kernel, degree, and coef0 are part of base-cache and CV-checkpoint identities.
+Changing them requires new fits. Previously saved RBF models remain readable;
+missing polynomial settings receive their ignored RBF defaults on loading.
 
 ## External tuning and matched budgets
 
@@ -193,8 +205,9 @@ keeps worker timing sums distinct from elapsed time and stored receipt timings.
 See [work and timing summaries](method.md#work-and-timing-summaries) for the
 completed-replay and interruption rules.
 
-`--reuse-equivalent-folds` optionally shares completed CV results between
-retention ratios that select identical rows. It preserves every candidate
+Eligible completed CV results are automatically shared between retention
+ratios that select identical rows. Use `--no-reuse-equivalent-folds` to disable
+reuse. It preserves every candidate
 and the separate full-training refit; see the
 [reuse conditions](method.md#equivalent-fold-reuse).
 

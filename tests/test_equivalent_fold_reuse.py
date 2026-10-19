@@ -273,14 +273,20 @@ class EquivalentFoldReuseTests(unittest.TestCase):
                     self.assertEqual(row['score'], source['score'])
                     self.assertNotEqual(row['task_sha256'], source['task_sha256'])
 
-    def test_default_is_disabled_and_option_is_strict_boolean(self):
+    def test_default_is_auto_and_explicit_false_disables_reuse(self):
         args = dict(run_dir=self.base / 'default', estimator=pipeline('svm'),
                     X=self.X, y=self.y, folds=self.folds)
         with checkpoint.CheckpointedCV(**args) as store:
             result = store.search({'model__sv_selection_ratio': [.875, .88]})
         self.assertEqual(result.checkpoint_summary_['new_folds'], 4)
-        self.assertNotIn('equivalent_reused_folds', result.checkpoint_summary_)
-        self.assertTrue(all('equivalent_reuse' not in row for _, row in self.receipts('default')))
+        self.assertEqual(result.checkpoint_summary_['executed_folds'], 2)
+        self.assertEqual(result.checkpoint_summary_['equivalent_reused_folds'], 2)
+        self.assertEqual(sum('equivalent_reuse' in row for _, row in self.receipts('default')), 2)
+        with checkpoint.CheckpointedCV(**{**args, 'run_dir': self.base / 'disabled'},
+                                        reuse_equivalent_folds=False) as store:
+            disabled = store.search({'model__sv_selection_ratio': [.875, .88]})
+        self.assertNotIn('equivalent_reused_folds', disabled.checkpoint_summary_)
+        self.assertTrue(all('equivalent_reuse' not in row for _, row in self.receipts('disabled')))
         for value in (None, 0, 1, 'yes', np.bool_(True)):
             with self.subTest(value=value), self.assertRaises((TypeError, ValueError)):
                 checkpoint.CheckpointedCV(**args, reuse_equivalent_folds=value)

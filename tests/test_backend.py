@@ -156,7 +156,7 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(learner.params['backend'], 'spectral')
 
     def test_residual_check_order_clones_and_reaches_all_learners(self):
-        self.assertEqual(self.model().get_params()['residual_check_order'], 'refinement_first')
+        self.assertEqual(self.model().get_params()['residual_check_order'], 'auto')
         for order in ('refinement_first', 'adaptive'):
             with self.subTest(order=order):
                 original = self.model(residual_check_order=order)

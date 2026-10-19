@@ -577,6 +577,9 @@ def _reuse_parameter_types(value):
     if value is None or type(value) in (str, bool, int, float, type(Path())):
         return True
     if type(value) in _REUSE_METHODS:
+        # Decline altered built-in methods before querying their parameters.
+        if not _unchanged_methods(value):
+            return False
         return _reuse_parameter_types(value.get_params(deep=False))
     if type(value) is dict:
         return all(type(key) is str and _reuse_parameter_types(item)
@@ -960,18 +963,28 @@ def _reuse_fold(folder, identity, runtime, token, task, parameters, fold, proof,
 
 
 def _fit_fold_group(folder, identity, runtime, token, estimator, X, y, error_policy,
-                    failure_dir, members, source_task=None):
+                    failure_dir, members, source_task=None, *, pair_recovery=None):
     """Dispatch one representative, then commit aliases; never reuse failures."""
     completed = []
+    if pair_recovery is not None and source_task is None:
+        # Scheduling hint only: fit_pipeline still validates every parent/pair
+        # identity under its task lease before restoring any model. Keep the
+        # caller's candidate indices, so tie order and candidate labels survive.
+        members = sorted(members, key=lambda member: not
+                         (folder / 'pair-stores' / member[2]).exists())
     for ci, fi, task, parameters, train, validation, proof in members:
         if source_task is not None and proof is not None:
             result = _reuse_fold(folder, identity, runtime, token, task, parameters, fi, proof, source_task,
                                  validation_size=len(validation))
         else:
             result = _fit_fold(folder, identity, runtime, token, task, estimator, parameters,
-                               X, y, train, validation, fi, error_policy, failure_dir, equivalent_fold=proof)
+                               X, y, train, validation, fi, error_policy, failure_dir, equivalent_fold=proof, pair_recovery=pair_recovery)
             if proof is not None and result[0]['state'] == 'complete':
                 source_task = task
+        if pair_recovery is not None and 'equivalent_reuse' in result[0]:
+            from pair_recovery import cleanup_saved_fold
+            result = (cleanup_saved_fold(folder, identity, runtime, token, task, parameters, fi,
+                       train, validation, X, y, pair_recovery), result[1])
         completed.append((ci, fi, result))
     return completed
 
@@ -989,12 +1002,13 @@ class CheckpointedCV:
     use a new run directory. Custom scalar/container subclasses and object,
     structured or metadata-bearing array parameters are unsupported here.
 
-    ``reuse_equivalent_folds=True`` reuses successful folds for exact built-in
+    ``reuse_equivalent_folds='auto'`` (the default) or True
+    reuses successful folds for exact built-in
     ensembles with identical retained counts and all other inputs unchanged.
     Supported wrappers are the package's OvOClassifier and a two-step Pipeline
     containing exact StandardScaler or UnitPixelScaler followed by a supported classifier. Python
     float/int ratios and fixed integer seeds are required; unsupported cases
-    retain ordinary fitting and validation. The default is disabled.
+    retain ordinary fitting and validation. Explicit False disables reuse.
 
     ``new_folds`` counts newly committed candidate/fold receipts, including
     aliases. When enabled, ``executed_folds`` counts actual new fits and
@@ -1022,25 +1036,30 @@ class CheckpointedCV:
     unfinished multiclass fold. This requires a plain StandardScaler or UnitPixelScaler/OvO
     pipeline, one inner pair worker, exact KernGDWD or EnsembleKernelDWD, fixed
     integer seeds, named RBF and a positive numeric gamma for every candidate.
-    It cannot combine equivalent-fold reuse, multi-seed CV or ensemble caches.
+    It cannot combine multi-seed CV or ensemble caches. Equivalent-fold reuse
+    preserves the representative's pair recovery and records aliases separately.
     ``pair_recovery_max_bytes`` limits committed pair payloads/manifests per
     fold; zero keeps fitting while saving no pairs. Trusted local checkpoints
     only: integrity checks do not make untrusted pickle loading safe. Pair work
-    and restored historical fit times are reported separately. Both options
-    default to disabled/unlimited and do not affect ordinary fitting.
+    and restored historical fit times are reported separately. Pair recovery
+    defaults to disabled and its size limit defaults to unlimited.
     """
     diagnostics = staticmethod(diagnostics)
 
     def __init__(self, run_dir, estimator, X, y, folds, *, jobs=1, error_policy='nan',
-                 resume=False, provenance=None, reuse_equivalent_folds=False,
+                 resume=False, provenance=None, reuse_equivalent_folds='auto',
                  cv_seeds=None, seed_parameter=None, pair_recovery=False,
                  pair_recovery_max_bytes=None):
         if isinstance(jobs, bool) or not isinstance(jobs, (int, np.integer)) or jobs < 1:
             raise ValueError('jobs must be a positive integer')
         if error_policy not in ('nan', 'raise'):
             raise ValueError('error_policy must be nan or raise')
+        requested_reuse_mode = reuse_equivalent_folds
+        if type(reuse_equivalent_folds) is str and reuse_equivalent_folds == 'auto':
+            reuse_equivalent_folds = True
+        self.requested_reuse_mode = requested_reuse_mode
         if type(reuse_equivalent_folds) is not bool:
-            raise ValueError('reuse_equivalent_folds must be boolean')
+            raise ValueError('reuse_equivalent_folds must be boolean or auto')
         if type(pair_recovery) is not bool:
             raise ValueError('pair_recovery must be boolean')
         if pair_recovery_max_bytes is not None and (
@@ -1052,8 +1071,8 @@ class CheckpointedCV:
         self._pair_recovery_config = None
         if pair_recovery:
             from pair_recovery import normalize_config, validate_supported
-            if reuse_equivalent_folds or cv_seeds is not None:
-                raise ValueError('Pair recovery cannot combine equivalent-fold reuse or multi-seed CV')
+            if cv_seeds is not None:
+                raise ValueError('Pair recovery cannot combine multi-seed CV')
             validate_supported(estimator, require_numeric_gamma=False)
             self._pair_recovery_config = normalize_config(True, pair_recovery_max_bytes)
         self.folder = _io_path(Path(run_dir) / 'cv-checkpoints')
@@ -1104,6 +1123,7 @@ class CheckpointedCV:
                 self.identity['pair_recovery'] = deepcopy(self._pair_recovery_config)
             if self.reuse_equivalent_folds:
                 self.identity['equivalent_fold_policy'] = _EQUIVALENT_POLICY
+                self.identity['equivalent_fold_mode'] = self.requested_reuse_mode
             if self.cv_seeds is not None:
                 self.identity['seed_policy'] = self._seed_policy()
             self.identity_sha256 = _digest(self.identity)
@@ -1356,11 +1376,11 @@ class CheckpointedCV:
                              str(self.folder.parent / 'failures'))
                 if self.jobs == 1:
                     for key, members in groups.items():
-                        for ci, fi, result in _fit_fold_group(*arguments, members, sources.get(key)):
+                        for ci, fi, result in _fit_fold_group(*arguments, members, sources.get(key), pair_recovery=self._pair_recovery_config):
                             records[ci, fi] = result
                 else:
                     completed = Parallel(n_jobs=self.jobs, pre_dispatch=self.jobs, batch_size=1)(
-                        delayed(_fit_fold_group)(*arguments, members, sources.get(key))
+                        delayed(_fit_fold_group)(*arguments, members, sources.get(key), pair_recovery=self._pair_recovery_config)
                         for key, members in groups.items())
                     for group in completed:
                         for ci, fi, result in group:

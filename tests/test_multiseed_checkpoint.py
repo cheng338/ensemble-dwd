@@ -270,10 +270,12 @@ class MultiSeedCheckpointTests(unittest.TestCase):
 
     def test_one_explicit_seed_matches_old_path_and_old_results_stay_unextended(self):
         pipeline = clone(self.pipeline).set_params(model__random_state=4)
-        with self.session(estimator=pipeline, cv_seeds=None, seed_parameter=None) as store:
+        with self.session(estimator=pipeline, cv_seeds=None, seed_parameter=None,
+                          reuse_equivalent_folds=False) as store:
             original = store.search(self.grid)
             self.assertNotIn('seed_policy', store.identity)
-        with self.session(run_dir=self.run.parent / 'explicit', estimator=pipeline, cv_seeds=[4]) as store:
+        with self.session(run_dir=self.run.parent / 'explicit', estimator=pipeline, cv_seeds=[4],
+                          reuse_equivalent_folds=False) as store:
             explicit = store.search(self.grid)
         for key in ('params', 'mean_test_score', 'std_test_score', 'split0_test_score',
                     'split1_test_score', 'rank_test_score', 'param_estimator__model__offset'):

@@ -668,7 +668,7 @@ def _check_folds(folds, n_rows):
 def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         run_dir, *, config=None, jobs=1, error_policy='nan',
                         settings=None, verbose=0, resume=False,
-                        reuse_equivalent_folds=False, cv_seeds=None, refit_seed=None,
+                        reuse_equivalent_folds='auto', cv_seeds=None, refit_seed=None,
                         ratio_refinement=None, numerical_confirmation=None, final_native_threads=1,
                         pair_recovery=False, pair_recovery_max_bytes=None):
     """Evaluate only new candidates on fixed training folds, then refit once.
@@ -678,8 +678,9 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     end outward checks at a tied edge; local bracketing and stability still
     apply. Explicit resume reuses only completed, verified candidate/fold fits
     under the same data, folds, parameters, policy and runtime identity.
-    Optional equivalent-fold reuse also shares completed results between
+    Automatic equivalent-fold reuse shares completed results between
     supported selection ratios that retain exactly the same training rows.
+    Explicit reuse_equivalent_folds=False disables this optimization.
     All candidate labels remain visible, and final fitting uses the selected
     original ratio on the complete training set.
     Optional cv_seeds repeat each candidate on the same folds with the specified
@@ -689,8 +690,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     These options are recorded in the run identity and cannot change on resume.
     Optional pair_recovery restores completed binary pair models inside an
     unfinished multiclass CV fold. It requires the supported deterministic DWD
-    pipeline without a base-stage cache; equivalent-fold reuse and multi-seed
-    CV are not supported together with it. The optional per-fold byte quota
+    pipeline without a base-stage cache. Equivalent-fold reuse preserves
+    pair recovery; multi-seed CV is not supported together with it. The optional per-fold byte quota
     limits committed pair payloads and metadata, not transient memory. Final
     refitting is unaffected. Pair recovery is disabled by default.
     Optional ratio_refinement adds bounded joint local rounds after the original
@@ -716,9 +717,12 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
         raise ValueError('jobs must be a positive integer.')
     if error_policy not in ('nan', 'raise'):
         raise ValueError('error_policy must be nan or raise.')
-    if not isinstance(reuse_equivalent_folds, (bool, np.bool_)):
-        raise ValueError('reuse_equivalent_folds must be boolean.')
-    reuse_equivalent_folds = bool(reuse_equivalent_folds)
+    if type(reuse_equivalent_folds) is str and reuse_equivalent_folds == 'auto':
+        pass
+    elif isinstance(reuse_equivalent_folds, (bool, np.bool_)):
+        reuse_equivalent_folds = bool(reuse_equivalent_folds)
+    else:
+        raise ValueError('reuse_equivalent_folds must be boolean or auto.')
     if type(pair_recovery) is not bool:
         raise ValueError('pair_recovery must be boolean.')
     if pair_recovery_max_bytes is not None:
@@ -728,8 +732,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 or not isinstance(pair_recovery_max_bytes, Integral) or pair_recovery_max_bytes < 0):
             raise ValueError('pair_recovery_max_bytes must be a nonnegative integer or None.')
         pair_recovery_max_bytes = int(pair_recovery_max_bytes)
-    if pair_recovery and (reuse_equivalent_folds or cv_seeds is not None):
-        raise ValueError('Pair recovery does not support equivalent-fold reuse or multi-seed CV.')
+    if pair_recovery and cv_seeds is not None:
+        raise ValueError('Pair recovery does not support multi-seed CV.')
     pair_options = ({'pair_recovery': True, 'pair_recovery_max_bytes': pair_recovery_max_bytes}
                     if pair_recovery else {})
     grid = _initial_grid(grid, config)
@@ -783,7 +787,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                              'error_policy': error_policy, 'parameters': parameter_snapshot(pipeline),
                              'user': {} if settings is None else settings}}
     if reuse_equivalent_folds:
-        metadata['settings']['reuse_equivalent_folds'] = True
+        metadata['settings']['reuse_equivalent_folds'] = reuse_equivalent_folds
     if pair_recovery:
         metadata['settings']['pair_recovery'] = {'enabled': True, 'max_bytes': pair_recovery_max_bytes,
                                                 'scope': 'unfinished_cv_folds'}
