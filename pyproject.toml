@@ -14,7 +14,7 @@ dependencies = [
     "scipy",
     "scikit-learn>=1.6",
     "joblib>=1.3",
-    "dwd==1.3.17",
+    "dwd==1.3.18",
 ]
 classifiers = [
     "Private :: Do Not Upload",

@@ -162,7 +162,8 @@ class AffineComputationTests(unittest.TestCase):
         X = np.array([[0.], [1.]])
         y = np.array([-3, 7])
         options = dict(M=1, theta=1., sv_selection_ratio=1., kernel='linear',
-                       lambd=.1, max_iter=5, stopping='fixed', random_state=7)
+                       lambd=.1, max_iter=5, stopping='fixed', random_state=7,
+                       acceleration=None)
         standard = EnsembleKernelDWD(**options, affine_computation='standard').fit(X, y)
         joint = EnsembleKernelDWD(**options, affine_computation='joint').fit(X, y)
         query = np.array([[np.nextafter(.5, np.inf)]])
@@ -181,6 +182,32 @@ class AffineComputationTests(unittest.TestCase):
         assert_array_equal(joint.decision_function(repeated), np.repeat(float(exact), 3))
         assert_array_equal(joint.final_estimator_.dual_coef_, standard.final_estimator_.dual_coef_)
         assert_array_equal(joint.final_estimator_.intercept_, standard.final_estimator_.intercept_)
+
+    def test_restart_default_final_affine_scores_match_exact_returned_state(self):
+        X = np.array([[0.], [1.]])
+        y = np.array([-3, 7])
+        query = np.array([[np.nextafter(.5, np.inf)]])
+        options = dict(M=1, theta=1., sv_selection_ratio=1., kernel='linear',
+                       lambd=.1, max_iter=5, stopping='fixed', random_state=7)
+        models = {}
+        for acceleration in ('auto', 'restart'):
+            model = EnsembleKernelDWD(**options, acceleration=acceleration).fit(X, y)
+            models[acceleration] = model
+            final = model.final_estimator_
+            self.assertEqual(model.acceleration_, 'restart')
+            self.assertEqual(final.affine_computation_, 'joint')
+            row = final._compute_kernel(query).T[0]
+            exact = sum((Fraction(float(k)) * Fraction(float(a))
+                         for k, a in zip(row, final.dual_coef_[0])),
+                        Fraction(float(final.intercept_[0])))
+            self.assertEqual(model.decision_function(query)[0], float(exact))
+            self.assertEqual(model.predict(query)[0], model.classes_[int(exact > 0)])
+        a, b = models['auto'], models['restart']
+        for name in ('subset_indices_', 'selected_indices_', 'consensus_scores_'):
+            assert_array_equal(getattr(a, name), getattr(b, name))
+        for name in ('dual_coef_', 'intercept_', 'objective_history_'):
+            assert_array_equal(getattr(a.final_estimator_, name), getattr(b.final_estimator_, name))
+        assert_array_equal(a.decision_function(query), b.decision_function(query))
 
 
 if __name__ == '__main__':

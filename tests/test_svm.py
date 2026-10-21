@@ -73,6 +73,41 @@ class SVMMathematicalTests(unittest.TestCase):
         parameters.update(overrides)
         return EnsembleKernelSVM(**parameters)
 
+    def test_defaults_and_explicit_previous_settings_survive_clone_and_pickle(self):
+        default = EnsembleKernelSVM()
+        self.assertEqual(default.cache_size, 1024.)
+        self.assertIsNone(default.prediction_batch_size)
+        for original in (default, EnsembleKernelSVM(cache_size=200., prediction_batch_size=1024)):
+            with self.subTest(cache_size=original.cache_size, batch=original.prediction_batch_size):
+                model = clone(original).set_params(M=1, theta=1, sv_selection_ratio=1)
+                self.assertEqual(model.cache_size, original.cache_size)
+                self.assertEqual(model.prediction_batch_size, original.prediction_batch_size)
+                model.fit(self.X, self.y)
+                self.assertTrue(all(child.cache_size == original.cache_size
+                                    for child in [*model.estimators_, model.final_estimator_]))
+                restored = pickle.loads(pickle.dumps(model))
+                self.assertEqual(restored.get_params(), model.get_params())
+                assert_array_equal(restored.decision_function(self.X), model.decision_function(self.X))
+                assert_array_equal(restored.predict(self.X), model.predict(self.X))
+                restored.set_params(cache_size=16., prediction_batch_size=1)
+                self.assertEqual(clone(restored).cache_size, 16.)
+                self.assertEqual(clone(restored).prediction_batch_size, 1)
+                assert_array_equal(restored.predict(self.X), model.predict(self.X))
+                self.assertEqual(restored.final_estimator_.cache_size, original.cache_size)
+
+    def test_unbatched_input_conversion_preserves_native_scores_and_input(self):
+        model = self.model(prediction_batch_size=None).fit(self.X, self.y)
+        query = self.X[:17].astype(np.float32)
+        expanded = np.repeat(query, 2, axis=1)
+        for values in (query, np.asfortranarray(query.astype(np.float64)), expanded[:, ::2]):
+            with self.subTest(dtype=str(values.dtype), strides=values.strides):
+                before = values.copy()
+                contiguous = np.ascontiguousarray(values, dtype=np.float64)
+                assert_array_equal(model.decision_function(values),
+                                   model.final_estimator_.decision_function(contiguous))
+                assert_array_equal(model.predict(values), model.final_estimator_.predict(contiguous))
+                assert_array_equal(values, before)
+
     def test_manual_string_label_reconstruction_and_fresh_final_svc(self):
         subsets = fixed_subsets(self.y)
         bases, scores, distances, selected, final = manual_svc(
@@ -319,6 +354,8 @@ class SVMCacheAndIntegrationTests(unittest.TestCase):
     def test_cache_separates_C_gamma_row_order_labels_and_different_folds(self):
         baseline = self.model().fit(self.X, self.y)
         cases = [({'C': 2.}, self.X, self.y), ({'gamma': .3}, self.X, self.y),
+                 ({'cache_size': 200.}, self.X, self.y),
+                 ({'prediction_batch_size': 1024}, self.X, self.y),
                  ({}, self.X[::-1], self.y[::-1]), ({}, self.X, np.where(self.y == 'ant', 'left', 'right')),
                  ({}, self.X[:48], self.y[:48])]
         for options, X, y in cases:

@@ -2,7 +2,8 @@
 
 The audit improvements are implemented and validated using the optimized
 cheng338/dwd 1.3.2 dependency. All 85 unittest methods passed against
-the installed wheel in py12_df, with no failed or skipped unittest methods.
+the installed wheel under CPython 3.12 with MKL, with no failed or skipped
+unittest methods.
 The original 0.1.0 release artifacts remain unchanged. Validation preceded publication to the private repository.
 
 ## Changes
@@ -36,7 +37,7 @@ max_iter=100 and acceleration=None. This release does not change DWD itself.
 ## Dependency and artifact identity
 
 Python 3.12.14, NumPy 2.5.2, SciPy 1.18.0, scikit-learn 1.9.0,
-joblib 1.5.3 and MKL 2025.3 were used through the py12_df interpreter.
+joblib 1.5.3 and MKL 2025.3 were used for validation.
 The wheel was installed in an isolated validation directory; the environment's
 installed packages were not modified.
 

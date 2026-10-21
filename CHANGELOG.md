@@ -3,6 +3,40 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.14 — 2026-10-21
+
+- Target Python 3.11 and 3.12 for routine complete-suite validation. Retain
+  Python 3.13 and later Python 3.x support without dedicated full-suite runs;
+  earlier 3.13 results remain historical evidence.
+
+- Require DWD 1.3.18 and document its forward CPython 3 eligibility. Its guarded scalar residual route accepts 3.12 and later 3.x releases;
+  independent Windows x86-64 compiled residual and dense-score routes accept
+  3.11 and later 3.x releases. GIL-enabled builds and existing arithmetic guards
+  remain required. Recorded 3.11–3.13 validation is distinct from future-version
+  eligibility; ensemble sampling, selection and objectives are unchanged.
+
+- Forward explicit DWD `linear_action="inverse"` to base and final fits,
+  include it in fitted-base cache identity, and retain bounded policy
+  diagnostics in lean models. Older dependencies refuse this request.
+
+- Default DWD acceleration to `'auto'`, forwarding restarted MM on compatible
+  backends and ordinary updates to L-BFGS. Preserve explicit `None` and older
+  serialized objects. Report requested/effective policies and retain concrete
+  learner policies in lean and cached diagnostics without storing arrays.
+- Default new `EnsembleKernelSVM` instances to unbatched native prediction
+  (`prediction_batch_size=None`) and a 1024 MiB temporary LIBSVM kernel-cache
+  capacity per active fit. Match the SVM example's `--cache-size` default.
+  Explicit batching/cache settings and previously serialized settings remain
+  unchanged. Document input-conversion memory and concurrent cache capacity;
+  the example reports guidance without enforcing memory admission.
+- Validate DWD's guard-scan optimization through complete ensemble fits and a
+  frozen MNIST replay. Disjoint subsets, consensus, selected rows and final
+  numerical outputs matched the preceding corrected implementation; the
+  ensemble estimator itself is unchanged.
+- Recognize DWD's new fitted RBF construction modes in the integration tests.
+  The ensemble procedure and implementation are unchanged. Corrected DWD
+  distances can change scores and selected observations on affected inputs.
+
 ## 0.3.13 — 2026-10-19
 
 - Include all changes listed under the unpublished 0.3.12 candidate below,

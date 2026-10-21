@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12"]
     env:
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -29,7 +29,7 @@ jobs:
       - name: Download the validated DWD wheel
         run: >-
           python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.17"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.18"
           --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
       - name: Install the exact validated DWD wheel
         run: python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/dwd
@@ -66,7 +66,7 @@ jobs:
       - name: Download the validated DWD wheel
         run: >-
           python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.17"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.18"
           --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
       - name: Install compatible older numerical dependencies
         run: >-

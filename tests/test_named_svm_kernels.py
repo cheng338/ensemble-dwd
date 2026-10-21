@@ -15,6 +15,7 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
+from threadpoolctl import threadpool_limits
 
 from ensemble_dwd import EnsembleKernelSVM, OvOClassifier
 
@@ -83,6 +84,57 @@ class NamedKernelSVMTests(unittest.TestCase):
                     self.assertNotEqual(first.cache_key_, changed.cache_key_)
                 lean = clone(first).set_params(store_base_estimators=False).fit(self.X, self.y)
                 self.assertIsNone(lean.estimators_)
+
+    def test_default_and_explicit_batching_cross_training_and_query_boundary(self):
+        rng = np.random.RandomState(20261015)
+        X = rng.normal(size=(1025, 8))
+        query = rng.normal(size=(1025, 8))
+        y = np.where(X[:, 0] + .2 * X[:, 1] > 0, 1, -1)
+        original_decision = SVC.decision_function
+        with threadpool_limits(limits=1):
+            for kernel in ('rbf', 'linear', 'poly'):
+                models = []
+                for batch in (None, 1024):
+                    with self.subTest(kernel=kernel, batch=batch):
+                        model = EnsembleKernelSVM(
+                            M=5, theta=.1, sv_selection_ratio=.3, kernel=kernel,
+                            C=1., gamma=.125, random_state=20261015)
+                        if batch is not None:
+                            model.set_params(prediction_batch_size=batch)
+                        calls = []
+
+                        def observed(child, values):
+                            calls.append(len(values))
+                            return original_decision(child, values)
+
+                        with patch.object(SVC, 'decision_function', observed):
+                            model.fit(X, y)
+                        self.assertEqual(calls, [1025] * 5 if batch is None else [1024, 1] * 5)
+                        manual = np.zeros(len(X))
+                        for child in model.estimators_:
+                            manual += child.decision_function(X)
+                        manual /= model.M
+                        selected = np.argsort(abs(y * manual - 1.), kind='stable')[:307]
+                        assert_array_equal(manual, model.consensus_scores_)
+                        assert_array_equal(selected, model.selected_indices_)
+                        for n in (1023, 1024, 1025):
+                            calls.clear()
+                            with patch.object(SVC, 'decision_function', observed):
+                                scores = model.decision_function(query[:n])
+                            self.assertEqual(calls, [n] if batch is None or n <= 1024 else [1024, 1])
+                            assert_array_equal(scores, model.final_estimator_.decision_function(query[:n]))
+                            assert_array_equal(model.predict(query[:n]), model.final_estimator_.predict(query[:n]))
+                        models.append(model)
+                full, batched = models
+                assert_array_equal(full.consensus_scores_, batched.consensus_scores_)
+                assert_array_equal(full.selected_indices_, batched.selected_indices_)
+                for left, right in zip(full.subset_indices_, batched.subset_indices_):
+                    assert_array_equal(left, right)
+                for left, right in zip([*full.estimators_, full.final_estimator_],
+                                       [*batched.estimators_, batched.final_estimator_]):
+                    for name in ('classes_', 'support_', 'support_vectors_', 'dual_coef_',
+                                 'intercept_', '_dual_coef_', '_intercept_', 'n_iter_'):
+                        assert_array_equal(getattr(left, name), getattr(right, name))
 
     def test_invalid_named_kernel_options_clear_fitted_state(self):
         for changes in ({'kernel': 'sigmoid'}, {'kernel': lambda a, b: a @ b.T},
@@ -166,7 +218,8 @@ class NamedKernelSVMTests(unittest.TestCase):
                     with checkpoint.CheckpointedCV(**options, resume=True) as store:
                         again = store.search({'C': [1., .1]})
                 self.assertEqual(again.checkpoint_summary_['reused_folds'], 6)
-                for changes in ({'degree': 3}, {'coef0': 1.},
+                for changes in ({'degree': 3}, {'coef0': 1.}, {'cache_size': 200.},
+                                {'prediction_batch_size': 1024},
                                 {'kernel': 'rbf' if kernel != 'rbf' else 'linear'}):
                     changed = clone(model).set_params(**changes)
                     with self.assertRaises(checkpoint.CheckpointError):

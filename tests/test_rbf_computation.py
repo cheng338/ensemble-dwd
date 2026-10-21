@@ -48,7 +48,7 @@ class RBFComputationTests(unittest.TestCase):
         for call in construct.call_args_list:
             self.assertNotIn('rbf_computation', call.kwargs)
         for learner in [*model.estimators_, model.final_estimator_]:
-            self.assertIn(learner.kernel_computation_, ('sklearn', 'norm_sum'))
+            self.assertIn(learner.kernel_computation_, ('sklearn', 'norm_sum', 'guarded_sklearn_rel_v1', 'guarded_norm_sum_rel_v1'))
 
     def test_direct_reaches_real_base_and_fresh_final_learners(self):
         model = self.model(rbf_computation='direct').fit(self.X, self.y)

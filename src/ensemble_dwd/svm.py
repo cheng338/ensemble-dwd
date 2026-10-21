@@ -101,14 +101,20 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         SVC's warning behavior and is recorded in the fitted diagnostics.
     shrinking : bool, default=True
         Whether each SVC uses the shrinking heuristic.
-    cache_size : float, default=200.0
-        Kernel memory cache in MB for each active SVC fit. This is separate
-        from the reusable disk cache specified by ``cache_dir``.
+    cache_size : float, default=1024.0
+        Temporary kernel-cache capacity target in MiB for each active SVC fit.
+        LIBSVM allocates entries as needed and frees them after fitting. Its
+        metadata and minimum two-column cache prevent a strict byte cap. Concurrent
+        fits each have this allowance; it is not a total-memory limit or an
+        admission check. Separate from the reusable disk cache in ``cache_dir``.
     random_state : int, RandomState, or None, default=42
         Private subset RNG. An input RandomState is copied, not consumed.
         None uses a fresh RNG and bypasses the reusable disk cache.
-    prediction_batch_size : int or None, default=1024
-        Maximum rows per decision or prediction call; None uses all rows.
+    prediction_batch_size : int or None, default=None
+        Maximum rows per decision or prediction call; None uses all rows in
+        one native call. Also controls base scores during consensus formation.
+        Named-kernel prediction does not form a full query-by-support Gram
+        matrix, but noncontiguous inputs can require a contiguous copy.
         Revalidated at prediction time when changed after fitting.
     cache_dir : path-like or None, default=None
         Trusted private directory for checksummed base-stage results. Data,
@@ -159,8 +165,8 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
 
     def __init__(self, M=5, theta=0.1, sv_selection_ratio=0.3, C=1.0,
                  gamma="scale", kernel="rbf", tol=1e-3, max_iter=-1,
-                 shrinking=True, cache_size=200.0, random_state=42,
-                 prediction_batch_size=1024, cache_dir=None,
+                 shrinking=True, cache_size=1024.0, random_state=42,
+                 prediction_batch_size=None, cache_dir=None,
                  store_base_estimators=True, degree=3, coef0=0.0):
         self.M = M
         self.theta = theta

@@ -23,6 +23,8 @@ class SVMCacheOptionTests(unittest.TestCase):
         self.assertIn('1024 MiB per active fit', output.getvalue())
         self.assertIn('4096 MiB across 4 CV workers', output.getvalue())
         self.assertIn('additional memory', output.getvalue())
+        self.assertIn('Allocated as needed and released after each fit', output.getvalue())
+        self.assertIn('does not enforce memory admission', output.getvalue())
 
     def test_invalid_cli_values_are_rejected(self):
         for value in ('0', '-1', 'nan', 'inf', 'bad'):
@@ -36,14 +38,15 @@ class SVMCacheOptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             X = np.arange(40.).reshape(20, 2)
             y = np.tile([0, 1], 10)
-            for position, args in enumerate(([], ['--cache-size', '1024'])):
+            for position, args in enumerate(([], ['--cache-size', '200'])):
                 with patch.object(example, 'load_local_data', return_value=(X, X, y, y)), \
                      patch.object(adaptive_search, 'run_adaptive_search', side_effect=BeforeFit) as run, \
                      redirect_stdout(io.StringIO()), self.assertRaises(BeforeFit):
                     example.main(['--data', 'fixture.npz', '--run', '--no-cache',
                                   '--output-dir', str(Path(directory) / str(position))] + args)
-                value = 200. if position == 0 else 1024.
+                value = 1024. if position == 0 else 200.
                 self.assertEqual(run.call_args.args[0].get_params()['ensemble__cache_size'], value)
+                self.assertIsNone(run.call_args.args[0].get_params()['ensemble__prediction_batch_size'])
                 self.assertEqual(run.call_args.kwargs['settings']['svc_cache_size_mib'], value)
                 grids.append(run.call_args.args[1])
         self.assertEqual(grids[0], grids[1])

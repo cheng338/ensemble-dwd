@@ -32,13 +32,13 @@ Reserved.** A software license has not yet been selected or granted. See
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.13 requires DWD 1.3.17 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.17).
+Python 3.11 or later is required. Version 0.3.14 requires DWD 1.3.18 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.18).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.17 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.18 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -55,7 +55,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.13-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.14-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -75,16 +75,25 @@ on Linux, a different processor or free-threaded Python.
 Python 3.10 is no longer supported. Previously released companion wheels
 remain available as historical artifacts and will not receive updates.
 
-DWD 1.3.17 qualifies guarded compiled residual checks and dense compensated
-score sums on conventional Windows x86-64 CPython 3.11 through 3.13. Unsupported
-inputs or runtimes retain guarded fallback arithmetic. Wheel installation
-compatibility does not guarantee that a compiled scoring path is active. See
-DWD's [compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.17/docs/compiled_residual.md).
+DWD 1.3.18 admits later CPython 3 minor releases without a version ceiling.
+Its independent compiled residual and dense-score routes accept GIL-enabled
+Windows x86-64 CPython 3.11 and later 3.x releases. Its built-in `math.sumprod`
+residual route accepts GIL-enabled CPython 3.12 and later 3.x releases under the
+existing binary64 and arithmetic guards. Unsupported inputs or runtimes retain
+guarded fallback arithmetic. Wheel compatibility does not guarantee that a
+compiled scoring path is active. See DWD's
+[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.18/docs/compiled_residual.md).
+
+Complete-suite validation targets Python 3.11 and 3.12. Python 3.13 and later
+Python 3.x releases are supported without dedicated complete-suite runs.
+Recorded numerical checks cover 3.11 through 3.13; forward eligibility does not
+claim testing on future interpreters. Earlier 3.13 results retain their
+historical scope. This runtime change leaves the ensemble method unchanged.
 
 The dependency also reuses bounded temporary buffers and avoids repeated work
 within eligible prediction calls. These changes apply to base and final DWD
 estimators without altering disjoint sampling, selection or the fitted objective.
-The CI workflow uses the same dependency lock and explicit DWD 1.3.17 release
+The CI workflow uses the same dependency lock and explicit DWD 1.3.18 release
 asset page.
 
 Version 0.3.13 uses automatic affine scoring and residual ordering for new
@@ -148,7 +157,8 @@ DWD ensemble inside `OvOClassifier`.
 | `gamma` | `'scale'` | Resolved once per binary fit and shared by its base and final learners. |
 | `max_iter`, `obj_tol` | `100`, `1e-5` | Default objective-change stopping controls. |
 | `stopping`, `tol` | `'objective'`, `1e-6` | Stopping policy and optional optimality tolerance. |
-| `acceleration` | `None` | Ordinary MM updates. |
+| `acceleration` | `'auto'` | Restarted MM on compatible backends; ordinary updates for L-BFGS. Use `None` for ordinary MM explicitly. |
+| `linear_action` | `'factor'` | DWD shifted-system action; explicit `'inverse'` trades setup and additional dense storage for repeated matrix-vector actions, with unchanged acceptance/recovery. |
 | `random_state` | `42` | Reproducible subset sampling. |
 | `prediction_batch_size` | `1024` | Query-row batch size for decision evaluation. |
 | `cache_dir` | `None` | Optional local directory for reusing identical base fits. |
@@ -511,8 +521,13 @@ batches controls some allocations but does not guarantee a fixed memory limit.
 Choose `--jobs` for the available memory. Changes to DWD constructor parameters,
 including `prediction_batch_size`, take effect on the next fit. For
 `EnsembleKernelSVM`, `prediction_batch_size` can also be changed after fitting:
-every prediction call validates it as `None` or a positive integer. Other
-SVM fitting parameters take effect on the next fit.
+every prediction call validates it as `None` or a positive integer. Its default
+is `None`, using one native call for the supplied rows. The SVM's temporary
+kernel-cache capacity target defaults to 1024 MiB per active fit, allocated as needed; concurrent
+fits each have their own allowance. Choose `cache_size` and worker counts
+together. The SVM example prints capacity guidance, without enforcing memory
+admission. Other SVM fitting parameters take effect on the next fit. See the
+[SVM memory and prediction notes](docs/ensemble-svm.md#parallel-work-caching-and-diagnostics).
 
 # Multiclass use
 
@@ -597,7 +612,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.13 changelog](CHANGELOG.md#0313--2026-10-19) for this release's changes.
+See the [0.3.14 changelog](CHANGELOG.md#0314--2026-10-21) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.
@@ -636,6 +651,16 @@ score. It raises an error if that set has fewer than two rows or only one
 class; it does not substitute another classifier or expand the retained set.
 
 See [the method and parameter conventions](docs/method.md) for details.
+
+Explicit DWD `linear_action="inverse"` uses a full per-solve shifted-system
+inverse action while retaining original-kernel acceptance and recovery. Factor
+remains the default. The inverse requires a DWD version providing this option;
+released older dependencies raise a clear ImportError rather than substitute
+another action. Each active fit adds 8*n*n bytes for B, and construction can
+temporarily hold three B-sized arrays plus native workspace; budget every
+concurrent learner. The inverse is not persisted in cached models. Requested
+and effective policies survive lean/cache diagnostics. This option may help
+long repeated solves but is not a universal speedup or memory-saving path.
 
 # Attribution
 

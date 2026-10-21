@@ -1,7 +1,7 @@
 # Private ensemble-dwd 0.2.0 validation
 
 The multiclass extension of Chang Cheng's ensemble kernel DWD was tested with
-Anaconda CPython 3.12 in `py12_df`, using the optimized `cheng338/dwd` 1.3.4
+Anaconda CPython 3.12 with MKL, using the optimized `cheng338/dwd` 1.3.4
 compiled Windows wheel. The wrapper uses one binary estimator per class
 pair; the binary estimator, cache implementation, and parameter-grid helper
 matched version 0.1.1.
@@ -27,7 +27,7 @@ Private status, Chang Cheng's authorship and the undecided license remain.
 
 ## Tests
 
-All 117 unittest methods passed against the isolated installed wheel in py12_df:
+All 117 unittest methods passed against the isolated installed wheel on Windows:
 the existing 85 tests plus 19 multiclass estimator tests and 13 example tests. These cover
 45 pairwise fits, pair isolation, binary label orientation, zero margins,
 cyclic vote ties, string and large-integer labels, feature validation,

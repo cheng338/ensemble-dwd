@@ -156,8 +156,13 @@ _SOLVER_DIAGNOSTIC_FIELDS = (
     "optimality_criterion", "optimality_tolerance", "coefficient_representation",
     "returned_state_uses_certified_columns", "residual_check_order",
     "requested_residual_check_order", "initial_residual_check_order",
+    "requested_linear_action", "linear_action", "initial_linear_action",
+    "requested_acceleration", "acceleration",
     ("linear_system_diagnostics", (
         "linear_system", "factor_representation", "linear_solves", "linear_recoveries",
+        "requested_linear_action", "effective_linear_action", "inverse_ever_built",
+        "inverse_matrix_bytes", "inverse_build_attempts", "inverse_build_seconds",
+        "inverse_build_failure", "inverse_candidate_calls",
         "refinement_steps", "max_linear_residual", "max_constraint_residual",
         "max_estimated_rkhs_solve_error", "added_objective_regularization",
         "positive_eigenvalues_discarded", "residual_checks_are_interval_certificates",
@@ -324,8 +329,10 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         validation provisioning and is not supported by this estimator.
     tol : positive float, default=1e-6
         Shared optimality tolerance, forwarded to optimized DWD.
-    acceleration : {None, 'restart'}, default=None
-        Optional optimized MM acceleration. Ordinary MM is the default.
+    acceleration : {'auto', None, 'restart'}, default='auto'
+        Auto uses restart for optimized MM and no acceleration with L-BFGS.
+        Explicit None retains ordinary MM; explicit restart retains existing
+        backend restrictions. Resolution never depends on stopping or data.
     random_state : int, RandomState or None, default=42
         Subset randomness. Integer seeds give repeatable subsets across CV
         candidates. A supplied RandomState is copied; global RNG is not changed.
@@ -342,6 +349,16 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     store_base_estimators : bool, default=True
         Retain fitted base models for inspection. False stores only their
         diagnostic arrays and consensus, reducing model and cache storage.
+    linear_action : {"factor", "inverse"}, default="factor"
+        DWD shifted-system action, forwarded to every base and final fit.
+        Inverse requires a DWD dependency advertising this option; an older
+        dependency raises ImportError rather than silently using factor.
+        Each active inverse fit adds a dense 8*n*n-byte action and setup
+        temporaries; concurrent learners multiply this additional storage.
+        The persistent cache key includes this policy, but caches fitted
+        models and consensus, never an inverse workspace. Requested/effective
+        final policies and bounded base diagnostics remain inspectable.
+
     base_jobs : positive int, default=1
         Concurrent base learners, bounded by M. Values above one use one native
         numerical thread per worker, restore the caller's native limits before
@@ -430,17 +447,19 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     # Old serialized estimators retain the standard DWD policy.
     rbf_computation = "standard"
     residual_check_order = "refinement_first"
+    acceleration = None
     affine_computation = "standard"
     exact_recovery = "standard"
     base_jobs = 1
+    linear_action = "factor"
 
     def __init__(self, M=5, theta=0.1, sv_selection_ratio=0.3, lambd=1e-6,
                  q=1.0, kernel="rbf", gamma="scale", kernel_kws=None,
                  max_iter=100, obj_tol=1e-5, stopping="objective", tol=1e-6,
-                 acceleration=None, random_state=42, prediction_batch_size=1024,
+                 acceleration="auto", random_state=42, prediction_batch_size=1024,
                  cache_dir=None, store_base_estimators=True, backend="auto",
                  residual_check_order="auto", rbf_computation="standard",
-                 affine_computation="auto", exact_recovery="standard", base_jobs=1):
+                 affine_computation="auto", exact_recovery="standard", base_jobs=1, linear_action="factor"):
         self.M = M
         self.theta = theta
         self.sv_selection_ratio = sv_selection_ratio
@@ -464,6 +483,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         self.affine_computation = affine_computation
         self.exact_recovery = exact_recovery
         self.base_jobs = base_jobs
+        self.linear_action = linear_action
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -481,6 +501,10 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
 
     def _validate_options(self):
         _positive_integer(self.base_jobs, "base_jobs")
+        if not isinstance(self.linear_action, str) or self.linear_action not in ("factor", "inverse"):
+            raise ValueError("linear_action must be factor or inverse.")
+        if self.linear_action == "inverse" and self.backend not in ("auto", "cholesky"):
+            raise ValueError("inverse requires an auto or Cholesky DWD backend.")
         if not isinstance(self.exact_recovery, str) or self.exact_recovery not in (
                 "standard", "extended"):
             raise ValueError("exact_recovery must be 'standard' or 'extended'.")
@@ -519,8 +543,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 "objective", "fixed", "optimality"):
             raise ValueError("stopping must be 'objective', 'fixed', or 'optimality'.")
         if self.acceleration is not None and (
-                not isinstance(self.acceleration, str) or self.acceleration != "restart"):
-            raise ValueError("acceleration must be None or 'restart'.")
+                not isinstance(self.acceleration, str) or self.acceleration not in ("auto", "restart")):
+            raise ValueError("acceleration must be None, 'auto' or 'restart'.")
         if not isinstance(self.backend, str) or self.backend not in (
                 "auto", "spectral", "cholesky", "lbfgs"):
             raise ValueError("backend must be 'auto', 'spectral', 'cholesky', or 'lbfgs'.")
@@ -580,6 +604,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         # constructor route; a returned modern estimator is normalized below.
         affine_policy, affine_supported = self._affine_dependency_policy()
         numerical_options = {}
+        if self.linear_action == "inverse":
+            numerical_options["linear_action"] = "inverse"
         if self.rbf_computation == "direct":
             numerical_options["rbf_computation"] = "direct"
         if affine_policy == "joint" or affine_supported:
@@ -593,12 +619,17 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         if residual_order == "auto":
             residual_order = ("adaptive" if self.backend in ("auto", "cholesky")
                               else "refinement_first")
+        # Forward a concrete policy supported by the existing dependency.
+        # Raw request and backend already participate in cache/checkpoint keys.
+        acceleration = self.acceleration
+        if acceleration == "auto":
+            acceleration = None if self.backend == "lbfgs" else "restart"
         try:
             learner = KernGDWD(
                 lambd=self.lambd, q=self.q, kernel=self.kernel,
                 kernel_kws=deepcopy(kernel_kws), max_iter=self.max_iter,
                 obj_tol=self.obj_tol, stopping=self.stopping, tol=self.tol,
-                acceleration=self.acceleration, prediction_batch_size=self.prediction_batch_size,
+                acceleration=acceleration, prediction_batch_size=self.prediction_batch_size,
                 implementation="optimized", solver_mode="schur", backend=self.backend,
                 initialization="zero", random_state=0,
                 residual_check_order=residual_order, **numerical_options)
@@ -834,6 +865,11 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 self.converged_ = np.append(base["converged"], bool(final_model.converged_))
             context["stage"] = "finalization"
             self.final_estimator_ = final_model
+            self.requested_linear_action_ = self.linear_action
+            self.linear_action_ = getattr(final_model, "linear_action_", "factor")
+            self.requested_acceleration_ = self.acceleration
+            self.acceleration_ = getattr(final_model, 'acceleration_',
+                getattr(final_model, 'diagnostics_', {}).get('acceleration', None))
             self.requested_residual_check_order_ = self.residual_check_order
             # This is the successful final learner's order; base histories may
             # differ after recovery and remain in base_diagnostics_.

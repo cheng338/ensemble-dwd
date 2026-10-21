@@ -62,14 +62,14 @@ fit base classifiers, select rows, and fit a final classifier of the same family
 | degree | 3 | Positive integer polynomial degree; ignored by other kernels |
 | coef0 | 0.0 | Nonnegative polynomial constant; ignored by other kernels |
 | gamma | `"scale"` | Resolve once from this fit's input, then share |
-| prediction_batch_size | 1024 | Same |
+| prediction_batch_size | None | One native call for the supplied rows; explicit batching remains available |
 | store_base_estimators | True | Same inspectable default |
 | cache_dir | None | Optional reuse of deterministic base fits |
 | C | 1.0 | Native SVC convention; independently tuned |
 | tol | 1e-3 | LIBSVM stopping tolerance |
 | max_iter | -1 | No iteration cap; standard SVC default |
 | shrinking | True | LIBSVM optimization heuristic |
-| cache_size | 200 MB | Per-active-SVC kernel cache |
+| cache_size | 1024 MiB | Temporary per-active-SVC kernel-cache capacity |
 
 SVC minimizes `0.5 * ||f||_H**2 + C * sum(hinge_loss)`, with a separate,
 unregularized intercept. The same numerical C is passed to every base and
@@ -310,10 +310,14 @@ Changing preprocessing or its declared range requires new tuning and a
 fresh run directory. See
 [MNIST pixel preprocessing](method.md#mnist-pixel-preprocessing).
 
-The tuning command exposes SVC's in-memory cache as `--cache-size MIB`, with the unchanged
-default of 200 MiB per active SVC. For example, `--jobs 4 --cache-size 1024`
-allows up to 4096 MiB of kernel-cache capacity across four concurrent CV fits.
-The example prints this allowance before loading data. Bases and the final SVC
+The tuning command exposes SVC's in-memory cache as `--cache-size MIB`, with the
+same default as the estimator: 1024 MiB per active SVC. LIBSVM allocates cache
+entries as needed using this capacity target, and releases them after each fit.
+Metadata and LIBSVM's minimum two-column cache prevent a strict byte cap. The
+cache is not retained in a fitted or serialized model. For example, `--jobs 4 --cache-size 1024`
+configures about 4096 MiB of kernel-cache capacity across four concurrent CV fits.
+The example prints this allowance before loading data; it does not enforce
+cache-aware memory admission. Bases and the final SVC
 fit sequentially within each ensemble, so the cache allowance is not multiplied
 by `M + 1`. This is not a total-memory bound: data copies, models, scoring
 buffers and other processes require additional memory. Choose worker count and
@@ -327,12 +331,32 @@ base-fit reuse on disk and does not disable libsvm's kernel cache.
 
 Budget worker memory for feature copies, retained models, scoring buffers
 and each active SVC's cache. `store_base_estimators=False` reduces retained
-models while preserving selection and diagnostic arrays. Prediction batches
-limit transient query storage. `prediction_batch_size` accepts `None` or a
-positive integer and can be changed after fitting. Both `predict` and
+models while preserving selection and diagnostic arrays.
+
+`prediction_batch_size=None` is the SVM default: consensus scoring and final
+prediction send all supplied rows to each native call. The supported named
+kernels do not allocate a full query-by-support Gram matrix during prediction.
+Validation still converts the complete query to float64 if needed, and SVC can
+copy a noncontiguous or Fortran-ordered query into C order. Thus an unbatched
+call can need a temporary `8 * n_query * n_features` bytes for this copy, in
+addition to the wrapper's conversion, outputs and native workspace. Supplying
+C-contiguous float64 input avoids that layout conversion. An explicit positive
+batch size bounds the per-call layout copy, but does not avoid the wrapper's
+full-query float64 validation or result allocation. Batching can add native
+call overhead; choose it for a specific workload rather than assuming a speedup.
+The outer `OvOClassifier` retains its independent vote-batching setting.
+
+`prediction_batch_size` accepts `None` or a positive integer and can be changed
+after fitting. Both `predict` and
 `decision_function` revalidate it before allocating output or calling the
 final SVC. Invalid values raise `ValueError` without invalidating the fitted
 model; set a valid value to resume prediction.
+
+Explicit `cache_size=200` and `prediction_batch_size=1024` retain their meanings.
+Loading an older pickle preserves its stored settings rather than adopting the
+new constructor defaults. Cache capacity and prediction batching are included
+in base-cache and workflow-checkpoint identity; a changed fitting configuration
+requires fresh compatible cache entries and a new workflow run directory.
 
 `n_iter_`, `fit_status_` and `converged_` record each of the M base fits and
 the final fit, with the final fit last. `support_counts_` and `n_support_`

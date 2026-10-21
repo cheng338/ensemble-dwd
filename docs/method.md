@@ -125,7 +125,14 @@ fitting and subsequent query evaluation require explicit row correspondence.
 and `stopping='optimality'` are explicit alternatives; `tol` controls the latter.
 There is no automatic validation split or validation-based early stopping.
 
-For MM backends, `acceleration=None` retains ordinary MM updates. Changing stopping or
+The default `acceleration='auto'` resolves to restarted MM on compatible MM
+backends and to ordinary updates for L-BFGS. Resolution does not depend on the
+data or stopping policy. `acceleration=None` retains ordinary MM updates.
+The constructor keeps the requested policy; `requested_acceleration_` and
+`acceleration_` report its fitted request and effective value. Each learner
+receives the concrete effective policy, which is also retained as bounded
+scalar metadata in lean and cached base diagnostics. Older serialized objects
+without the parameter retain ordinary MM. Changing stopping or
 acceleration can change raw decision values and therefore the consensus set,
 even when base classification signs agree. Evaluate such changes through the
 complete estimator. `converged_` reports the dependency's checked numerical
@@ -155,8 +162,10 @@ it does not omit the accurate assessment needed to accept the original state.
 
 Prediction is evaluated in batches to limit query-kernel allocations.
 Training still uses dense kernel matrices. At `M=5`, an uncached successful fit
-consists of six DWD fits; the wrapper trains them sequentially. Parallelize
-outer cross-validation jobs within an explicit memory budget. A single largest
+consists of six DWD fits. The default `base_jobs=1` trains them sequentially;
+optional [parallel base fitting](parallel-base-fitting.md) can run eligible
+base learners concurrently, followed by the final refit. Parallelize outer
+cross-validation jobs within an explicit memory budget. A single largest
 training kernel needs at least
 `8 * max(floor(theta*n), floor(sv_selection_ratio*n), 2)**2` bytes in float64;
 factorization, recovery, feature storage and other workers require additional
@@ -164,11 +173,15 @@ memory. This formula is a lower bound, not an estimate of peak RAM.
 
 ### Optional direct RBF computation
 
-`EnsembleKernelDWD(rbf_computation='direct')` selects the DWD dependency's
-direct coordinate-difference calculation for every base model and the final
-refit. The default is `'standard'`, which retains the existing norm/dot
-construction and its documented extreme-input limitations. The option requires
-the paired DWD 1.3.14 dependency.
+`EnsembleKernelDWD(rbf_computation='direct')` selects direct coordinate
+differences for every kernel pair in each base model and the final refit.
+For eligible new fits, the default `'standard'` selectively recomputes
+cancellation-sensitive distances using coordinate differences while retaining
+the original arithmetic for unflagged pairs. Other standard routes retain
+their existing construction. Neither policy guarantees universally correct
+rounding or identical predictions for every batch shape. These policies are
+provided by the paired DWD dependency; the package currently requires
+`dwd==1.3.18`.
 
 Direct computation supports the named `kernel='rbf'` with the corrected Schur
 solver used by this estimator. Set gamma through the usual top-level `gamma`
@@ -188,12 +201,14 @@ selected rows and predictions. Sequential distance sums are not universally
 correctly rounded, and ordinary score/intercept rounding remains possible
 with the default affine computation policy.
 
-This option improves numerical accuracy at a cost. In ten paired MNIST 2-vs-3
-prediction measurements per estimator with one native thread, direct
-computation took about 6 times as long for the complete ensemble prediction
-pipeline and 18 times as long for standalone full-kernel DWD. Four pairs had
-background-CPU flags; the unflagged results retained the same conclusion.
-These ratios are specific to those workloads. Six saved MNIST fits retained
+Direct computation can improve sensitive kernel calculations at a cost. In a
+historical comparison with standard arithmetic before selective distance repair
+was added, ten paired MNIST 2-vs-3 prediction measurements per estimator used
+one native thread. Direct computation took about 6 times as long for the
+complete ensemble prediction pipeline and 18 times as long for standalone
+full-kernel DWD. Four pairs had background-CPU flags; the unflagged results
+retained the same conclusion. These ratios describe that earlier build and
+those workloads, not the current selective policy. Six saved MNIST fits retained
 test labels and accuracies and the three ensembles retained selected rows;
 sensitive synthetic cases did change selections and labels.
 
@@ -269,7 +284,7 @@ grids. This scoring policy applies to ensemble DWD, not `EnsembleKernelSVM`.
 `EnsembleKernelDWD(exact_recovery='extended')` gives every base learner and
 the fresh final model the DWD dependency's extended exact-recovery budget.
 `OvOClassifier` clones the setting into every class pair. The default remains
-`'standard'`. The option requires the paired DWD 1.3.14 dependency.
+`'standard'`. Both recovery profiles are provided by the paired DWD dependency.
 
 The standard limits are exact rank 16 and 4096-bit rational arithmetic.
 Extended recovery raises those limits to 32 and 8192 bits for both exact

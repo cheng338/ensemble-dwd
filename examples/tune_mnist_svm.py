@@ -60,9 +60,10 @@ def main(argv=None):
     parser.add_argument("--digits", type=int, nargs=2, default=(7, 9))
     parser.add_argument("--jobs", type=positive_int, default=1,
                         help="Concurrent outer CV workers; pre_dispatch equals this count.")
-    parser.add_argument('--cache-size', type=positive_cache_size, default=200.0,
-                        help='Kernel cache per active SVC in MiB (default: 200). '
-                             'This is separate from the reusable base-fit disk cache.')
+    parser.add_argument('--cache-size', type=positive_cache_size, default=1024.0,
+                        help='Kernel-cache capacity target per active SVC in MiB (default: 1024), '
+                             'allocated as needed during fitting. Separate from the '
+                             'reusable base-fit disk cache; no memory admission is enforced.')
     parser.add_argument("--error-score", choices=("raise", "nan"), default="nan",
                         help="nan skips only ineligible subsets or selections; unexpected failures stop.")
     parser.add_argument("--output-dir", type=Path,
@@ -96,8 +97,11 @@ def main(argv=None):
     preprocessor, preprocessing = preprocessing_options(parser, args)
     report_final_threads(args.final_native_threads)
     print(f'SVC kernel cache: {args.cache_size:g} MiB per active fit; '
-          f'up to {args.cache_size * args.jobs:g} MiB across {args.jobs} CV workers. '
-          'Allow additional memory for data, models and scoring buffers.')
+          f'about {args.cache_size * args.jobs:g} MiB across {args.jobs} CV workers. '
+          'Allocated as needed and released after each fit. '
+          'Metadata and the minimum two-column cache prevent a strict byte cap. '
+          'Allow additional memory for data, models and scoring buffers. '
+          'This is capacity guidance only; the example does not enforce memory admission.')
     seed_options = seed_search_options(parser, args)
     seed_count = len(seed_options.get('cv_seeds', (42,)))
     if args.resume and (not args.run or args.output_dir is None):

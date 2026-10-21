@@ -1,5 +1,82 @@
 # ensemble-dwd validation
 
+## 0.3.14: automatic acceleration and SVM defaults
+
+The applied changes passed 947 ensemble-DWD test methods under Windows CPython
+3.12 with AOCL, with zero failures or errors and one POSIX-only path skip. The
+paired DWD suite collected 1,069 methods, with zero failures or errors and five
+runtime, floating-point-format or file-symlink privilege skips. These checks
+precede the final version metadata and forward-runtime changes; they are not
+new full-suite results for the release artifacts.
+
+Coverage includes automatic and explicit DWD acceleration, dependency dispatch,
+cache identity, lean diagnostics and optional inverse action. Disjoint subset
+sampling, absolute-consensus selection and the final DWD objective are unchanged.
+Automatic restarted MM can change a finite stopping result relative to ordinary
+MM; explicit `acceleration=None` remains available. `linear_action='factor'`
+remains the default, and inverse action remains explicit.
+
+The SVM comparator now defaults to unbatched native prediction and a 1024 MiB
+temporary LIBSVM kernel-cache capacity per active fit. Explicit and saved batch
+or cache settings remain honored. Tests preserve the comparator's estimator,
+signed-margin selection and final refit; the cache capacity is not a measured
+memory peak. Documented input-conversion and concurrent-fit memory costs still
+apply. These changes do not claim a universal speedup. Release artifact checks
+and hosted CI are recorded separately.
+
+## 0.3.14: forward Python 3 runtime support
+
+The paired DWD change passed a focused 48-method selection in four Windows
+configurations, each including one 48-row ensemble integration fit. Passed/skipped
+counts were 48/0 for Python 3.12 with the compiled helper, 46/2 for Python 3.11
+with the helper, 32/16 for portable Python 3.12 and 27/21 for portable Python
+3.11. All configurations had zero failures or errors. Skips concern unavailable
+compiled arithmetic and Python 3.11's absent `math.sumprod`.
+
+Checks used isolated source copies and the unchanged compiled helper, with
+current C and build-source hashes verified. Simulated 3.14, 3.15 and 3.99
+identities tested dispatch on actual 3.11/3.12 interpreters, not future arithmetic.
+These were focused checks, not complete suites or large benchmarks; that check
+performed no new 3.13 run, installation, build or release. Routine complete-suite
+validation targets 3.11/3.12, while Python 3.13 and later Python 3.x releases remain
+supported. Ensemble sampling,
+selection and objectives are unchanged.
+
+## 0.3.14: DWD dependency integration
+
+The integration tests recognize DWD's new fitted RBF construction modes.
+The ensemble estimator implementation, disjoint sampling, selection rule and
+objectives are unchanged. Corrected distance calculations in DWD can change
+scores and selected observations on affected inputs, so historical fitted
+results are not rewritten. Old fitted construction policies remain identifiable.
+
+Local paired checks against released 0.3.13 preserve coefficients, predictions,
+selected rows and subset identities on the ordinary control problems. Both
+packages are checked with isolated native and portable artifacts; Python 3.12
+is the primary runtime, with focused 3.11/3.13 checks. Dependency corrections
+and their numerical/resource limits are documented in DWD's kernel guide and
+validation record. These checks do not change the ensemble methodology or
+establish a general accuracy or speed advantage.
+
+A subsequent local Python 3.12/AOCL comparison kept those correctness fixes in
+both arms and changed only DWD's guard scanning and sparse prediction reuse.
+Ensemble input remains dense; it benefits from the guard-scan change, not the
+sparse-input path. Six alternating fresh-process pairs per ensemble case
+preserved all saved numerical arrays, including consensus, disjoint subsets,
+selected rows, coefficients and predictions. The median paired fit-time change
+was -2.55% in the base-heavy case, with ordinary and larger ensemble controls
+approximately unchanged. Each trial ran alone with 16 native threads. These
+modest measurements do not establish a general speed advantage or remove all
+correctness-check overhead.
+
+An additional untimed replay of the frozen MNIST case preserved its original
+preprocessing and settings and matched all saved numerical arrays exactly.
+The final dependency payload passed the full ensemble suite: 938 methods collected,
+zero failures or errors and one POSIX path behavior skip on Windows. DWD's
+full and focused runtime checks, including their explicit skip limitations,
+are documented in its validation record. No ensemble estimator changes,
+environment installation or release were made by this follow-up.
+
 ## 0.3.13: portable selection-order regression tests
 
 Version 0.3.13 includes the accumulated changes documented for the unpublished
@@ -38,9 +115,9 @@ and the final SVC refit are unchanged. Callable, precomputed and sigmoid
 kernels remain unsupported. See the [SVM guide](docs/ensemble-svm.md).
 
 Application checks on 2026-10-19 ran 937 test methods with the isolated native
-wheel in local `py12_df_aocl`: zero failures, zero errors and one POSIX path
-behavior skip. Another 28 focused tests passed on each of Python 3.11, 3.12 and
-3.13 using both native and portable DWD wheels, with zero failures, errors or
+wheel under Windows CPython 3.12 with AOCL: zero failures, zero errors and one
+POSIX path behavior skip. Another 28 focused tests passed on each of Python
+3.11, 3.12 and 3.13 using both native and portable DWD wheels, with zero failures, errors or
 skips in every configuration. These overlapping runs are not distinct counts
 of unique tests. The exact installed runtime payloads were verified; focused
 Python 3.11/3.13 environments were isolated from the working environments.
@@ -61,7 +138,7 @@ equivalent-fold reuse automatically, with `--no-reuse-equivalent-folds` as the
 opt-out. Completed-pair recovery remains optional. Earlier sections record
 historical validation and do not override these current defaults.
 
-Local `py12_df_aocl` checks passed 60 focused ratio/recovery tests and 13
+Windows CPython 3.12/AOCL checks passed 60 focused ratio/recovery tests and 13
 multi-seed compatibility tests, with no skips. Coverage includes exact retained
 counts for every class pair, candidate and runtime identity, interrupted pair
 and orphan-fold adoption, parallel publication, higher-budget confirmation
@@ -252,8 +329,8 @@ for the numerical and timing scope of that dependency change.
 ## 0.3.6: installed release artifacts
 
 The standard wheel retains Python 3.11 or later. All runtime source files match
-the preceding approved development source byte for byte, except the release
-version value. Examples are unchanged. The separately approved legacy
+the preceding development source byte for byte, except the release
+version value. Examples are unchanged. The separate legacy
 interruption-test correction checks the final-runtime metadata already returned
 by the phase-thread workflow; it does not change runtime behavior.
 
@@ -296,7 +373,7 @@ and restoration. An isolated helper-file replacement verified the live guard.
 
 After adoption, the canonical local source passed the same 23 focused and
 99 existing tests with no failures or skips. Imported DWD and ensemble modules
-came from the canonical source directories; the approved example and test
+came from the canonical source directories; the example and test
 files matched the validated candidate, and core estimator source was unchanged.
 
 These were correctness checks conducted alongside other validation work, not
@@ -366,7 +443,7 @@ fractions: 405 candidates. CV boundary review still applies only to
 regularization and gamma. Selection fractions keep their specified range.
 
 All 180 package tests passed against each released DWD 1.3.7 wheel (native
-and portable) under Anaconda `py12_df`, with no failures or skips. Coverage
+and portable) under Anaconda CPython 3.12, with no failures or skips. Coverage
 includes exhaustive small-population allocation checks, global uniqueness,
 unused remainders, block-size/capacity constraints, label-independent draws,
 no redraw after an ineligible proposal, pre-fit failure cleanup, shared DWD/SVM
@@ -398,7 +475,7 @@ Neither estimator performs cross-validation internally.
 
 ### Environment and dependency
 
-Local validation uses Windows, Anaconda CPython 3.12.14 in `py12_df`, NumPy
+Local validation uses Windows, Anaconda CPython 3.12.14, NumPy
 2.5.2, SciPy 1.18.0, scikit-learn 1.9.0, joblib 1.5.3, and the published
 optimized cheng338/dwd 1.3.5 dependency with its compiled Windows helper.
 Imports are isolated from older ensemble installations in that environment.

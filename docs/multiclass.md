@@ -66,9 +66,11 @@ mean-loss objective with the dissertation's one-half penalty convention.
 
 The optional RBF calculation is also shared through cloning:
 `OvOClassifier(EnsembleKernelDWD(rbf_computation='direct'))`. In the README's
-pipeline its parameter name is `ovo__estimator__rbf_computation`. The default
-remains `'standard'`; direct computation requires the paired DWD 1.3.14
-dependency, can change rounded scores and selected rows, and can cost more.
+pipeline its parameter name is `ovo__estimator__rbf_computation`. For eligible
+new fits, the default `'standard'` selectively repairs cancellation-sensitive
+distances; `'direct'` uses coordinate differences for every pair. Both policies
+are supplied by the paired DWD dependency. Direct computation can change
+rounded scores and selected rows, and can cost more.
 See [supported settings and costs](method.md#optional-direct-rbf-computation).
 
 The default grid is `mnist_param_grid(prefix='ovo__estimator__')`, with
