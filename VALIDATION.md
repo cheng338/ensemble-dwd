@@ -1,5 +1,89 @@
 # ensemble-dwd validation
 
+## 0.3.15: current source coverage and acceleration-policy test
+
+The current production source and filesystem/test-support changes passed the
+complete Python 3.12 source suites on both current targets: 966 passed and two
+platform skips on local AOCL 5.3, and 959 passed and nine platform skips on
+Robust MKL 2026.2. Each suite collected 968 unique test items across 77 modules,
+with no failures or unresolved items and direct exit zero. The matched source
+snapshots were unchanged. Platform-specific errno parameters were matched by
+their named error conditions; skips remain excluded coverage. These suites
+used an initial native-thread budget of 16 while preserving test-specific
+thread clamps.
+
+Those complete suites contained the preceding acceleration-policy test. Its
+replacement was then validated separately on both targets: 25 pytest items
+and 33 subtests passed on each, with direct exit zero, no monitor error and
+unchanged tested sources. This focused selection included the replacement,
+existing backend and selected-objective tests, and validation-only controls.
+It used a portable DWD source snapshot and does not newly qualify a compiled
+DWD route.
+
+The replacement observes each real learner's fit call and checks exact policy,
+parameters and training-data forwarding for auto, spectral, Cholesky and
+L-BFGS backends. Each final fit is checked against its own selected rows.
+It does not replay eigensystems or compare independently solved coefficients,
+histories or scores bitwise. Existing cache and pickle checks are unchanged.
+Synthetic accepted eigenpair variation reproduced the old assertion failure;
+the replacement passed while rejecting wrong policies, penalties, data and
+missing or reused learners. Injected exceptions and malformed provider tuples
+confirmed that the original eigensolver fallback remained in charge. These
+controls do not claim a spontaneous AOCL failure or alter scientific acceptance.
+
+The saved results establish source regression and focused test coverage, not
+performance, universal necessity of historical changes, or qualification of
+the final built wheels and minimum-dependency installation. Release-artifact
+checks are separate from these source records.
+
+## 2026-10-26 follow-up: actual Robust NFS contention
+
+The original blocking-lock code reproduced two failures on Robust's home NFS
+filesystem: a four-process timeout and a three-process ENOLCK error. The other
+20 selected items passed. Simple lock acquisition, exclusion and owner-exit
+checks had passed, so those alone did not establish reliable cache contention.
+The failed receipts are preserved.
+
+The revised POSIX path requests the same exclusive OS lock nonblockingly and
+retries EACCES/EAGAIN every 50 ms. All 34 focused cache items then passed on the
+same NFS mount, including the unchanged three-/four-process compute-once tests
+with their original 20-second deadlines, and a real killed-owner/reacquisition
+test. Local AOCL checks passed 33 items plus 26 subtests; only the real POSIX
+owner-exit test was skipped on Windows. Injected non-contention failures and
+cancellation checks also passed. Psutil observed owned test processes; Robust
+recorded direct exit zero, no cleanup errors and unchanged tested sources.
+
+This resolves the observed package contention failure without moving the cache,
+extending deadlines or changing server configuration. It does not establish
+general NFS server health, cross-host test coverage, fairness or bounded RPC
+duration. ENOLCK and other unsupported/error conditions still fail before cache
+computation. No performance claim is inferred from these correctness tests.
+
+## 2026-10-26: filesystem locks and temporary test paths
+
+The final isolated source artifact passed 130 pytest test items on local
+Python 3.12.15/AOCL 5.3 (one POSIX-only skip), and 122 on Robust
+Python 3.12.15/MKL 2026.2 (nine Windows-only skips). Neither run had failures
+or errors. Pytest 9.1.1 ran existing unittest cases as well as new pytest tests;
+JUnit's extra subtest records are not additional independent test items.
+Psutil 7.2.2 tracked validation processes and observed CPU/RSS samples, while
+direct waits supplied actual exit codes. Source hashes remained unchanged.
+
+Four independent cache workers proved compute-once and shared-key behavior.
+Injected unavailable-lock errors proved that computation and publication remain
+blocked and that errno/cause are retained. Robust used explicitly selected
+private scratch under /tmp; this does not repair or qualify the home NFS lock
+service. No lock bypass, automatic cache relocation or timeout extension was
+introduced. The chosen cache filesystem must still provide working locks.
+
+Windows checks include a fresh process with a requested temporary root longer
+than 260 characters, helper reads and cleanup, environment restoration, and all
+39 workflow methods previously affected by deep paths. No OS path setting was
+changed. The paired DWD selection passed 304 local and 295 Robust test items;
+its nine Robust skips are Windows-specific. These are focused correctness and
+integration checks, not a complete suite, performance comparison or new wheel
+release. The discarded Resource18 timing remainder remains canceled.
+
 ## 0.3.14: automatic acceleration and SVM defaults
 
 The applied changes passed 947 ensemble-DWD test methods under Windows CPython

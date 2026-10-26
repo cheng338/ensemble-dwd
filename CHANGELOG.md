@@ -3,6 +3,24 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.3.15 — 2026-10-26
+
+- Require the paired DWD 1.3.19 dependency release.
+- Test automatic acceleration through exact policy and training-data forwarding
+  to real learners, without requiring bitwise equality between independently
+  solved fits. Preserve native solving, validation and recovery behavior.
+- Poll POSIX exclusive cache locks nonblockingly, retrying only actual lock
+  contention. This avoids the blocking NFS waiter failure reproduced on Robust
+  while retaining the requested directory, OS exclusion and error handling.
+- Explain unavailable filesystem cache locks with an actionable error, retaining
+  the original errno and cause. Keep computation blocked until the lock is held;
+  never bypass locks or silently relocate an explicitly selected cache.
+- Normalize Windows temporary-path candidates before pytest probes them, and
+  restore caller settings after tests. Deep test-helper reads and cleanup use
+  extended paths without changing the requested location or system settings.
+- Use pytest for CI, including existing unittest cases, and psutil for explicit
+  test-process ownership. These are optional test dependencies only.
+
 ## 0.3.14 — 2026-10-21
 
 - Target Python 3.11 and 3.12 for routine complete-suite validation. Retain

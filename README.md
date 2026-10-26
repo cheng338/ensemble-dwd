@@ -32,13 +32,13 @@ Reserved.** A software license has not yet been selected or granted. See
 
 # Installation
 
-Python 3.11 or later is required. Version 0.3.14 requires DWD 1.3.18 from the
-[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.18).
+Python 3.11 or later is required. Version 0.3.15 requires DWD 1.3.19 from the
+[DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.19).
 From the extracted ensemble-dwd source directory, install that dependency with
 hash verification before this package:
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.18 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.19 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -55,7 +55,7 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.3.14-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.3.15-py3-none-any.whl
 ```
 
 The package metadata pins the DWD version; `requirements-dwd.txt` additionally
@@ -75,14 +75,14 @@ on Linux, a different processor or free-threaded Python.
 Python 3.10 is no longer supported. Previously released companion wheels
 remain available as historical artifacts and will not receive updates.
 
-DWD 1.3.18 admits later CPython 3 minor releases without a version ceiling.
+DWD 1.3.19 admits later CPython 3 minor releases without a version ceiling.
 Its independent compiled residual and dense-score routes accept GIL-enabled
 Windows x86-64 CPython 3.11 and later 3.x releases. Its built-in `math.sumprod`
 residual route accepts GIL-enabled CPython 3.12 and later 3.x releases under the
 existing binary64 and arithmetic guards. Unsupported inputs or runtimes retain
 guarded fallback arithmetic. Wheel compatibility does not guarantee that a
 compiled scoring path is active. See DWD's
-[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.18/docs/compiled_residual.md).
+[compiled-helper guide](https://github.com/cheng338/dwd/blob/v1.3.19/docs/compiled_residual.md).
 
 Complete-suite validation targets Python 3.11 and 3.12. Python 3.13 and later
 Python 3.x releases are supported without dedicated complete-suite runs.
@@ -93,7 +93,7 @@ historical scope. This runtime change leaves the ensemble method unchanged.
 The dependency also reuses bounded temporary buffers and avoids repeated work
 within eligible prediction calls. These changes apply to base and final DWD
 estimators without altering disjoint sampling, selection or the fitted objective.
-The CI workflow uses the same dependency lock and explicit DWD 1.3.18 release
+The CI workflow uses the same dependency lock and explicit DWD 1.3.19 release
 asset page.
 
 Version 0.3.13 uses automatic affine scoring and residual ordering for new
@@ -494,6 +494,20 @@ after fitting to see whether the base stage was reused.
 `cache_dir` accepts strings and path-like objects. Internal cache files and
 locks support long Windows paths, including paths beyond the legacy 260-character limit.
 
+POSIX cache workers poll for the same exclusive operating-system lock every
+50 ms while another owner holds it. They enter the cache only after acquiring
+that lock. This avoids dependence on the NFS blocking-waiter path while keeping
+cross-process filesystem locking and the selected directory.
+
+The selected filesystem must support process locks. If a network mount reports
+`ENOLCK` or unsupported locking, select a trusted, private local directory
+explicitly with `cache_dir` (or `--cache-dir`), or have its administrator restore
+locking. For example, same-host jobs may share a user-created directory under
+local scratch. Local scratch is not a shared cache across hosts. The package
+fails before computing under an unavailable lock; it never bypasses locking or
+silently moves an explicitly selected cache. Increasing timeouts does not fix
+unavailable filesystem locks.
+
 Cache provenance hashes package-owned source/native files, loaded BLAS/OpenMP
 libraries, loaded NumPy/SciPy/scikit-learn native extensions, and an already
 loaded AOCL bridge's source, manifests and libraries. File contents are hashed
@@ -612,7 +626,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.3.14 changelog](CHANGELOG.md#0314--2026-10-21) for this release's changes.
+See the [0.3.15 changelog](CHANGELOG.md#0315--2026-10-26) for this release's changes.
 The [0.3.4 release notes](docs/candidate_changes.md) and
 [validation history](VALIDATION.md) retain the evidence and limitations
 of earlier implementation changes.

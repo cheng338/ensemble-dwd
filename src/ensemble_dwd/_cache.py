@@ -38,6 +38,23 @@ def _cache_path(path):
     return Path(absolute)
 
 
+def _raise_lock_error(error, path):
+    """Explain unavailable filesystem locks without changing other failures."""
+    unavailable = {errno.ENOLCK, errno.ENOSYS, errno.ENOTSUP,
+                   getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)}
+    if error.errno in unavailable:
+        raise OSError(
+            error.errno,
+            "Cannot acquire the base-stage cache lock on this filesystem. "
+            "Set cache_dir (or --cache-dir) explicitly to a trusted directory "
+            "on a filesystem with working process locks, or ask the filesystem "
+            "administrator to restore locking. The cache was not redirected "
+            "and computation has not started under this lock.",
+            os.fspath(path),
+        ) from error
+    raise error
+
+
 @contextmanager
 def _key_lock(path):
     # Operating-system locks are released even if a worker exits unexpectedly.
@@ -54,7 +71,7 @@ def _key_lock(path):
                     break
                 except OSError as error:
                     if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                        raise
+                        _raise_lock_error(error, path)
                     time.sleep(0.05)
             try:
                 yield
@@ -63,7 +80,17 @@ def _key_lock(path):
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            # Poll actual OS-lock acquisition, avoiding the blocking NFS
+            # waiter path. Only contention is retryable; unavailable locks
+            # and other errors must still fail before entering the cache.
+            while True:
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as error:
+                    if error.errno not in (errno.EACCES, errno.EAGAIN):
+                        _raise_lock_error(error, path)
+                    time.sleep(0.05)
             try:
                 yield
             finally:

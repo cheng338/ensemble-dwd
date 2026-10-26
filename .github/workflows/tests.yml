@@ -29,14 +29,14 @@ jobs:
       - name: Download the validated DWD wheel
         run: >-
           python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.18"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.19"
           --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
       - name: Install the exact validated DWD wheel
         run: python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/dwd
       - name: Build and install the ensemble wheel to be tested
         run: |
           python -m pip wheel --no-deps --wheel-dir .ci-wheels/ensemble .
-          python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/ensemble
+          python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/ensemble --extras test
       - name: Prepare tests outside the package source tree
         run: >-
           python -I -B tests/ci_artifacts.py bundle
@@ -49,7 +49,7 @@ jobs:
           --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble" --backend wheel
       - name: Run the complete bundled test suite
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        run: python -I -B -m unittest discover -s tests -v
+        run: python -I -B -m pytest tests -o "python_files=test*.py" -ra
 
   minimum-dependencies:
     name: Lower supported sklearn and joblib release lines
@@ -66,7 +66,7 @@ jobs:
       - name: Download the validated DWD wheel
         run: >-
           python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.18"
+          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.19"
           --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
       - name: Install compatible older numerical dependencies
         run: >-
@@ -78,7 +78,7 @@ jobs:
       - name: Build and install the ensemble wheel to be tested
         run: |
           python -m pip wheel --no-deps --wheel-dir .ci-wheels/ensemble .
-          python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/ensemble
+          python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/ensemble --extras test
       - name: Check installed dependency consistency
         run: python -m pip check
       - name: Prepare tests outside the package source tree
@@ -93,4 +93,4 @@ jobs:
           --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble" --backend wheel
       - name: Run the complete bundled test suite
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        run: python -I -B -m unittest discover -s tests -v
+        run: python -I -B -m pytest tests -o "python_files=test*.py" -ra
