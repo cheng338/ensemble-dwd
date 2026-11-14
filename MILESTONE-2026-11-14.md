@@ -1,14 +1,14 @@
-# Development milestone: November 14, 2026
+# Validated checkpoint: November 14, 2026
 
-This branch preserves the approved development source of **both DWD and
+This checkpoint preserves the approved development source of **both DWD and
 ensemble-DWD** after the accumulated correctness/performance investigation and
 the November 14 shared-fold CV refresh. It is a source milestone, not a new
 stable release or a claim that every third-party review item is finished.
 
-The matching branches are:
+The matching checkpoint tags are:
 
-- [DWD](https://github.com/cheng338/dwd/tree/milestone/validated-2026-11-14)
-- [ensemble-DWD](https://github.com/cheng338/ensemble-dwd/tree/milestone/validated-2026-11-14)
+- [DWD](https://github.com/cheng338/dwd/tree/checkpoint-2026-11-14)
+- [ensemble-DWD](https://github.com/cheng338/ensemble-dwd/tree/checkpoint-2026-11-14)
 
 ## What is included
 

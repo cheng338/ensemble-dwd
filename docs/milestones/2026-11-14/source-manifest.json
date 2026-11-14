@@ -1,8 +1,7 @@
 {
-  "schema": "validated-development-source-milestone-v1",
+  "schema": "validated-development-source-checkpoint-v1",
   "date_indianapolis": "2026-11-14",
-  "branch": "milestone/validated-2026-11-14",
-  "status": "development_source_milestone_not_stable_release",
+  "status": "validated_source_checkpoint_not_stable_release",
   "source_bytes_convention": "SHA256 of approved local bytes before Git line-ending normalization",
   "evidence": {
     "approved_inventory_sha256": "d601bdab3272f05405506277ecd29ad240a9f80f9e80659370e9c3e23841d158",
@@ -2099,5 +2098,6 @@
         }
       }
     }
-  }
+  },
+  "tag": "checkpoint-2026-11-14"
 }
