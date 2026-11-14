@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
@@ -171,7 +172,7 @@ class PublicOutputPathTests(unittest.TestCase):
         folds = [(first, second), (second, first)]
         grid = {'lambd': [1.0], 'gamma': [1.0]}
         config = adaptive_search.AdaptiveSearchConfig(prefix='', refine=False)
-        runtime = {'test_runtime': 'fixed'}
+        runtime = synthetic_runtime(source='public-output-path-test')
 
         # Isolate filesystem behavior from the independently tested search
         # policy and runtime inventory. Exercise real fold and final receipts.

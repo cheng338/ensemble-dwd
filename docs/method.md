@@ -6,6 +6,10 @@ Nonnegative Matrix Factorization for Classification* (Purdue University, 2026).
 `EnsembleKernelDWD` supports binary classification. `OvOClassifier` uses it
 for each class pair, as described in [the multiclass method](multiclass.md).
 
+For practical reasons to select an optional route, including its cost and
+limitations, start with [Choosing Ensemble options](choosing_options.md).
+This page gives the detailed mathematical, numerical and workflow contracts.
+
 ## Fit and prediction
 
 For training rows `(X, y)` of size `n`:
@@ -19,6 +23,16 @@ For training rows `(X, y)` of size `n`:
    by original row order. Keep exactly `floor(sv_selection_ratio * n)` rows.
 4. Fit one optimized kernel DWD on these retained rows. Use this final
    classifier to predict new observations.
+
+For both ensemble DWD and the SVM comparator, the `floor` notation above means
+`int(n * float(ratio))`: validate the original ratio in `(0, 1]`, calculate the
+product in Python-float precision, then round that nonnegative product down.
+It does not mean exact multiplication of the represented binary ratio. For
+example, Python `0.3 * 10` produces a count of three. Normalizing a NumPy scalar
+does not recover precision already lost when it was constructed. A positive
+wider-precision value can underflow to zero on conversion; the existing subset
+minimum and selected-count eligibility checks still apply. Parameter objects
+are retained unchanged for cloning and checkpoint identity.
 
 For base decision functions `f_1, ..., f_M`, the selection score is
 `g(x) = sum(f_m(x) for m in range(M)) / M`. The selected rows minimize
@@ -65,8 +79,8 @@ through cross-validation.
 
 Each base model and the final model receives the same kernel, resolved gamma,
 `lambd`, `q`, stopping controls, acceleration choice, and backend. Fitted coefficients
-and intercepts are learned separately. Every DWD fit explicitly chooses the
-optimized implementation of the pinned dependency. Its intercept remains
+and intercepts are learned separately. Every DWD fit uses the public optimized
+solver of the paired dependency without an `implementation` selector. Its intercept remains
 unregularized.
 All DWD models use zero initialization. `random_state` controls subset
 sampling; no random coefficient initialization is performed by the learners.
@@ -91,6 +105,37 @@ constant kernel term or an intercept penalty to reproduce that proxy.
 
 The default `q=1` matches the dissertation's stated loss. Generalized positive
 `q` values, when requested, describe an extension of that method.
+
+### Public solver API upgrade
+
+DWD removes the public `implementation` and `solver_mode` selectors and
+kernel-only `implicit_P`; its corrected coefficient-MM reference remains
+private regression machinery. Ensemble DWD stops forwarding `implementation`.
+This changes no Ensemble public parameter or default: zero-initialized base
+and final learners, backend/acceleration/residual/stopping choices, sampling,
+selection and regularization remain as documented. Explicit numerical controls
+remain supported because they can materially affect present workloads.
+
+Use compatible paired releases. An older Ensemble that forwards a removed
+keyword cannot construct learners with the new DWD API. The source integration
+does not rewrite published versions, wheel hashes or dependency locks; release
+artifacts and their dependency pins must be produced and validated together.
+
+Persistent base-cache identity includes package sources, so the source upgrade
+creates a miss/new entry rather than promoting an old entry. Checkpoint resume
+rejects changed source/runtime identity. Start a new run directory instead of
+rewriting provenance to force continuation. Old serialized objects have no
+arbitrary cross-version compatibility guarantee; loading one does not correct
+its learned coefficients or historical fitting algebra. Retain original
+artifacts/environments for exact historical reproduction. Refitting an upgraded
+model is new computation on the original training data, not an automatic
+conversion of a saved model.
+
+For callers using DWD directly, dropping a former reference request can select
+different initialization and automatic solver policies and change finite-budget
+scores or labels. See the DWD kernel guide's migration section. Ensemble has
+always selected the optimized route and zero initialization, so it does not
+introduce that reference-to-auto policy switch.
 
 ## Kernel and gamma
 
@@ -131,8 +176,9 @@ data or stopping policy. `acceleration=None` retains ordinary MM updates.
 The constructor keeps the requested policy; `requested_acceleration_` and
 `acceleration_` report its fitted request and effective value. Each learner
 receives the concrete effective policy, which is also retained as bounded
-scalar metadata in lean and cached base diagnostics. Older serialized objects
-without the parameter retain ordinary MM. Changing stopping or
+scalar metadata in lean and cached base diagnostics. Missing requested
+acceleration uses auto for cloning and new fits; explicit None retains ordinary
+MM. Changing stopping or
 acceleration can change raw decision values and therefore the consensus set,
 even when base classification signs agree. Evaluate such changes through the
 complete estimator. `converged_` reports the dependency's checked numerical
@@ -171,6 +217,54 @@ training kernel needs at least
 factorization, recovery, feature storage and other workers require additional
 memory. This formula is a lower bound, not an estimate of peak RAM.
 
+### Choosing optimality stopping
+
+Keep `stopping='objective'` as the practical default when its returned-model
+quality and diagnostics are adequate. Opt into `stopping='optimality'` when
+your application requires a numerical stationarity target, when comparing
+workflows at a common achieved optimization tolerance, or when the default's
+reported residuals are too large for the precision needed downstream.
+Tighter optimization alone does not guarantee better predictive accuracy.
+
+The option is shared by **all `M` base learners and the final learner**. It can
+require substantially more updates and increase full ensemble/CV time, even on
+ordinary workloads. It can also change decision scores, consensus ordering and
+selected rows. Evaluate the complete ensemble with training-fold validation
+when selecting this policy; do not tune it on the heldout test set. The estimator
+does not silently use one stopping policy for the bases and another for the final
+learner.
+
+Choose `tol` in the numerical scale of the problem and an explicit `max_iter`
+budget appropriate to that target. Selecting optimality with the default 100
+updates can still return an unconverged learner. Increasing the budget does not
+guarantee convergence. The kernel budget is per attempt; a permitted automatic
+spectral restart can add work. A successful `fit` call alone is not proof that
+every learner met the tolerance.
+
+```python
+from ensemble_dwd import EnsembleKernelDWD
+
+model = EnsembleKernelDWD(
+    stopping='optimality', tol=1e-6, max_iter=1000,
+).fit(X_train, y_train)
+
+# Entries are the M base learners, followed by the final learner.
+print(model.n_iter_, model.converged_)
+print('Final residual:', model.final_estimator_.stationarity_residual_)
+if not bool(model.converged_.all()):
+    raise RuntimeError('At least one learner did not meet the stationarity target.')
+```
+
+The budget of 1000 is illustrative, not a universal recommendation. Inspect
+`base_diagnostics_` for each base's `converged`, `stationarity_residual` and
+`termination_reason`, and `final_estimator_` for the final model's diagnostics.
+Base diagnostic dictionaries remain available when `store_base_estimators=False`;
+use `.get(...)` for fields that may be absent in older cached records and treat
+missing information as unknown. There is no single aggregate ensemble
+`stationarity_residual_`. These checks assess numerical stationarity, not a
+general prediction-error or global-accuracy certificate. The objective default
+already performs terminal checks and reports a missed target as nonconvergence.
+
 ### Optional direct RBF computation
 
 `EnsembleKernelDWD(rbf_computation='direct')` selects direct coordinate
@@ -181,7 +275,7 @@ the original arithmetic for unflagged pairs. Other standard routes retain
 their existing construction. Neither policy guarantees universally correct
 rounding or identical predictions for every batch shape. These policies are
 provided by the paired DWD dependency; the package currently requires
-`dwd==1.3.18`.
+`dwd==1.3.19`.
 
 Direct computation supports the named `kernel='rbf'` with the corrected Schur
 solver used by this estimator. Set gamma through the usual top-level `gamma`
@@ -226,11 +320,13 @@ option applies to ensemble DWD, not `EnsembleKernelSVM`.
 
 `EnsembleKernelDWD(affine_computation='joint')` forwards the same numerical
 policy to every base learner and the fresh final DWD fit, including each
-pair inside `OvOClassifier`. New ensembles default to `'auto'`, which resolves
-to joint when the dependency explicitly supports affine scoring and otherwise
-to standard. Explicit standard remains standard even with a new-auto DWD
-dependency; explicit joint is never silently downgraded. Concrete policies
-are forwarded without catch-and-retry feature detection.
+pair inside `OvOClassifier`. New ensembles default explicitly to `'joint'`;
+the former affine `'auto'` alias is rejected. Replace it with `'joint'` in
+constructor settings, `set_params` requests and nested search grids.
+The supported package pair already used joint scoring by default, so the
+change adds no numerical work. Both `'joint'` and `'standard'` are forwarded
+explicitly, including through wrappers that hide their constructor signature.
+An incompatible dependency raises a chained error without downgrade or retry.
 
 The policy evaluates the unchanged decision expression `K @ alpha + b`,
 including the intercept in the rounding check and, when needed, in joint
@@ -271,9 +367,10 @@ for sensitive cases without establishing a general accuracy improvement.
 
 The fitted policy is recorded as `affine_computation_`, including in the
 fitted child models. Changing the constructor parameter affects the next
-fit; it does not alter an existing predictor. Old serialized models retain
-standard scoring. Base-cache and example CV identities distinguish requested
-policies; base caches also bind the resolved dependency policy. In the README's binary pipeline use
+fit; it does not alter an existing predictor. Missing fitted affine metadata
+retains standard scoring, while missing requested policy uses joint for new
+fits. Base-cache and example CV identities distinguish requested
+policies; base caches also bind the concrete policy forwarded to the dependency. In the README's binary pipeline use
 `ensemble__affine_computation='joint'`, or
 `ovo__estimator__affine_computation='joint'` in its multiclass pipeline.
 The commands inherit the estimator default while retaining their search
@@ -652,8 +749,10 @@ each outer worker uses one native thread.
 
 New runs require a fresh `--output-dir`. Explicit `--resume --run` reuses
 checksummed completed folds only when data, folds, estimator parameters,
-policy and budgets, job count, and numerical runtime match. The installation
-must remain immutable; mismatched identity or live ownership blocks reuse.
+policy and budgets, job count, and CV-worker runtime match. Common sources and
+libraries must remain unchanged. The coordinator is checked separately under
+[checkpoint runtime identity](#checkpoint-runtime-identity); mismatched identity
+or live ownership blocks reuse.
 Unfinished fits restart by default; supported multiclass runs can enable
 [completed-pair recovery](multiclass.md#completed-pair-recovery).
 Interruptions retain completed evidence and record
@@ -664,17 +763,114 @@ candidate.
 
 The final-refit predictor and unfinished optimizer state are not serialized.
 Optional multiclass recovery saves only completed CV pair models. An
-interrupted final refit starts again. A crash after held-out prediction but before the
-authoritative completion receipt commits can repeat the fit and scoring.
-Once that receipt is committed, a verified resume restores saved summaries
-without fitting or scoring. Its result has `model=None`, `resumed_completed=True`.
-`completed.json` is the public mirror of that saved outcome.
+interrupted final refit can restart before held-out scoring is reserved.
+Adaptive runs reserve scoring before calling `predict`. A shared scoring claim
+without a committed completion blocks automatic fitting and scoring retries,
+even if interruption occurred before prediction actually started. This
+conservative refusal avoids repeating an ambiguous held-out evaluation.
+Once completion is committed, verified replay restores saved summaries
+without fitting or scoring, with `model=None` and `resumed_completed=True`.
+`completed.json` is the public mirror of the original workflow outcome.
+[Explicit final-only recovery](#explicit-final-only-recovery) records its own
+completion without rewriting the original workflow identity.
 
 The dissertation uses the symbol theta for both subset sampling and, in its
 OVO experiment, a retained fraction of 0.3. This API deliberately exposes
 `theta` and `sv_selection_ratio` separately. The numerical learner count and
 the broader search grid are software settings; they are not claimed to be
 universally optimal or mandated by the dissertation.
+
+### Checkpoint runtime identity
+
+The `execution-role-v1` policy separates common source/library identity, the
+exact CV-worker runtime saved in the checkpoint, and the full coordinator
+runtime recorded for each invocation. Runtime artifact paths are resolved to
+physical files with content and raw-path checks. Alternate spellings of the
+same file can agree; retargeting an alias or changing a source or binary cannot
+be used to bypass those checks. This is not permission to relocate an installation.
+
+Package inventories exclude `__pycache__` paths before querying whether they
+are files. This avoids redundant file-type metadata queries and their possible
+errors on paths already excluded from the inventory. Every non-cache path,
+including ordinary directories, retains the same checks and failure behavior.
+Selected source/native hashing, live mutation checks and physical-file guards
+are unchanged. Because helper source is part of checkpoint identity, this
+update still refuses checkpoints created with older helper bytes. Continue
+those with the original frozen workflow or start a new run directory; saved
+identities are not migrated.
+
+Before publishing each new parallel checkpoint identity, one zero-fit,
+estimator-bearing task observes the worker runtime through the actual
+estimator-deserialization and one-native-thread execution path. The same
+awaited dispatch includes `jobs - 1` import-only tasks that prepare the
+checkpoint module's imports. They carry no estimator and create no runtime
+record or fitting work. The real probe remains authoritative; result count
+and the import tasks' `None` results are checked before identity publication.
+Joblib may run multiple tasks in one process, so these tasks do not guarantee
+distinct-worker coverage or that every worker is ready. Every fold and reused
+worker must still match the full runtime record before and after execution.
+
+Equivalent-fold and completed-pair recovery use the same saved worker
+identity. An authenticated complete or partial resume validates its saved
+record without another probe or import tasks; serial entry uses the coordinator
+as its execution runtime. Repeated searches within one live checkpoint context
+add no import tasks. A fresh independent parallel context submits them again,
+even with a reusable worker pool, although modules may already be cached.
+There is no public switch for this preparation. It can add unused startup work
+and earlier worker memory residency in empty contexts; an import-task failure
+can refuse entry before identity publication. Tuning workflows still keep
+`--jobs` in their saved settings.
+
+A compatible parallel coordinator may have additional detected native pools
+that are absent from the worker. Common sources/libraries and every worker pool,
+including metadata, content and native count, must still agree. The complete
+coordinator record is frozen and checked within each invocation, so changes
+during that invocation refuse further work. A later clean session can reuse
+the checkpoint if these role checks pass. Missing or older runtime-policy
+records are not upgraded: use the original frozen workflow or a new run directory.
+Fresh native-pool discovery at runtime checks detects newly visible libraries;
+this is not a guarantee about unobserved transitive libraries or arbitrary
+concurrent modification.
+
+This policy has a measured cost. Against an intermediate implementation with
+physical-path handling but strict coordinator/worker equality, a tiny 32×3
+workflow with two candidates, two folds, two workers and three fixed updates
+per fit added a paired median **3.435 s locally** and **6.241 s on Robust**
+for a new checkpoint, about **46%** and **58%** of the respective baseline
+whole-call times. The probe runs once per new parallel identity; completed
+fresh-process resume ran no fits or probes and added about **73 ms** on each
+host. Recurring shallow runtime checks added **4.883 ms** and **9.552 ms**.
+These are descriptive results from two balanced blocks per host, with matching
+inputs and outputs within each comparison. They are not universal overhead
+bounds; the Robust resume range included both faster and slower blocks.
+Whole-call timings include checkpoint entry, CV and exit, excluding imports,
+input/model construction and process cleanup. Moving worker setup into entry
+does not establish a solver speedup from a shorter search stage.
+
+A later bounded comparison of the cache-directory short-circuit used a small
+two-candidate, three-fold workload on one Windows system, with two fresh
+processes per variant and execution mode. Median whole-call time for checkpoint
+creation and six fits fell by **9.5% serially** and **2.4% with six workers**;
+immediate same-process completed replay fell by **23.3%** and **21.4%**,
+respectively, with no new fits or predictions. These are descriptive results,
+not a general fitting-speed guarantee. Separate native-Linux measurements
+showed lower inventory traversal cost; they did not measure whole checkpoint
+startup. The initial worker probe and required runtime verification still
+dominated fresh parallel startup in the observed workload.
+
+A follow-up comparison of import preparation on one Windows environment and
+one Linux environment supported lower complete checkpoint-call times for the
+tested fitting workloads. An empty Windows context instead added about
+**0.3 s**. These bounded results do not establish a universal speedup or a
+solver improvement. The clocks covered checkpoint entry, requested searches
+and exit, excluding initial imports, input preparation and an earlier fixed
+native-dependency initialization; they were not untouched process-cold startup
+measurements. Serial entry and authenticated resumes add no import tasks.
+
+If a concrete workload exposes substantial remaining setup cost, distinguish
+checkpoint entry and runtime verification from fitting and completed replay.
+Further scheduling or caching changes should target the measured costly
+component while preserving the identity and worker checks above.
 
 ### Native threads by phase
 
@@ -701,19 +897,158 @@ rounding can change scores, stopping decisions, selected rows or labels. More
 threads do not guarantee a faster fit. The SVM comparator accepts the shared
 workflow option; additional BLAS threads do not parallelize its LIBSVM solver.
 
-The requested final budget and helper source are part of workflow identity.
-Nondefault final-fit receipts record observed native runtime before and after
-fitting and check restoration to the CV runtime, including on failure or
-interruption. The default adds no separate final runtime observation or
-inventory scan: its receipt labels the existing workflow scope and references
-frozen CV provenance where available. Base-cache keys already include observed
-thread counts, keeping entries from different budgets separate.
+Before CV, a nondefault requested final budget receives a feasibility dry run:
+enter the requested native scope, verify the observed limits and restore the
+one-thread workflow scope, without fitting. An unavailable request raises
+rather than being silently clamped. The final fit retains its own checks
+because an early probe cannot guarantee later runtime availability.
 
-Changing the final budget rejects resume under the current strict workflow
-identity. Changing the helper source also invalidates reuse; use a fresh run
-directory after this source change. Interrupted final fitting restarts with
-the same budget, while verified completed replay performs no new fit or test
-prediction. These controls do not alter estimator defaults or search grids.
+The nonresumable `run_search_workflow` uses a native-resource policy when
+`final_native_threads > 1`. Its `noncheckpoint-native-scope-v1` receipts retain
+fresh native-pool identities, binary digests and path-alias checks, requested
+thread counts and pool multiplicity, continuity from preflight through CV and
+the actual final fit, and restoration. This policy does not inspect the
+complete installed source tree or attest source, `METADATA`, unloaded files
+and additional callable origins. Receipts explicitly record
+`source_installation_attestation=false`. Installed code must remain unchanged
+during use; this is less provenance coverage than a complete runtime
+fingerprint, and neither policy is a security sandbox. The policy applies
+across workload sizes, not only to the ordinary timing case below.
+
+The public strict helpers in `examples/phase_threads.py`, adaptive search,
+checkpoint/resume and final-only recovery retain their full/frozen runtime
+checks. This includes adaptive search's first preflight, before a runtime has
+been frozen: a missing frozen runtime does not select the noncheckpoint
+policy. The strict preflight retains complete source/runtime identities
+before entering and after restoring its scope. Inside the empty widened scope
+it uses the same native-pool observer as the complete fingerprint, avoiding
+repeated broad source inspection there. These inner observations are
+native-only, not complete runtime snapshots. An unfinished matching resume
+checks again before continuing work; a verified completed replay does not
+probe a budget it will not use.
+
+For resumable workflows, the requested final budget and helper source remain
+part of checkpoint identity. Nondefault final-fit receipts record the observed
+native runtime before and after fitting and check restoration to the CV
+runtime, including on failure or interruption. Default 1 still validates the
+requested value, then skips the separate budget probe, additional runtime
+authority and extra thread-limit scope. Its receipt references the existing
+workflow scope and frozen CV provenance where available. The accepted-handoff
+and scoring checks below still perform their own runtime and data
+verification. Base-cache keys include observed thread counts, keeping entries
+from different budgets separate.
+
+Fixed paired comparisons on 8 November 2026 measured the new noncheckpoint
+policy against the previous complete-fingerprint implementation at the same
+requested final budgets: 16 on the tested Windows AOCL environment and 20 on
+the tested Linux MKL environment. For an ordinary 96-by-8 synthetic workflow,
+the paired geometric new/previous whole-workflow time ratios were 0.0701
+(five eligible pairs) and 0.1108 (six eligible pairs), respectively. These
+descriptive reductions include guard and selection work; they are not pure-fit
+improvements, native-library upgrade effects or universal speedups.
+
+Larger 384-by-32 workflows retained matching scientific results. A separate
+prospective six-pair comparison per host produced no eligible timing pair
+under the declared CPU-noise policy, so larger-workload performance benefit
+remains unquantified. Excluded observations remain excluded; neither a larger
+speedup nor a no-slowdown guarantee follows from these checks.
+
+Earlier comparisons of the strict preflight optimization supported reduced
+setup cost on the tested Windows system and with an already-frozen runtime
+on the tested Linux system. The setup measurements included a checkpoint-style
+CV-entry fingerprint and an empty final guard, rather than a literal breakdown
+of every example. Larger-workflow results in that earlier cohort included
+slowdowns and did not establish an advantage. Those results remain separate
+from the new noncheckpoint comparisons; neither optimization eliminates
+process-startup costs.
+
+Ordinary `--resume` still requires the original budget and identity. Changed
+helper sources, common libraries or the saved worker runtime invalidate reuse;
+use a fresh run after such a change. Coordinator-only pool differences remain
+subject to the runtime-role checks above. A separate explicit final-only attempt may change the final budget
+under the conditions below. Neither path changes estimator defaults, search
+grids, selected parameters or the original completed CV records.
+
+### Explicit final-only recovery
+
+The resumable adaptive workflow commits an accepted handoff before the final
+fit, after coefficient, ratio and any configured confirmation checks have
+authorized the selected model. `examples/final_recovery.py` provides
+`recover_final_fit` for an explicit final-budget correction using that handoff.
+It does no CV search and does not activate completed-pair recovery for the
+final fit. The legacy nonresumable `run_search_workflow` has no such handoff.
+
+Supply the original training and held-out arrays and an unfitted pipeline
+configured exactly as selected, including the original preprocessing, concrete
+parameter types and declared final refit seed. Common sources/libraries and
+the saved CV-worker identity must still match under the runtime-role checks.
+The requested final native budget may differ in a separate attempt; the model,
+data and selection are unchanged. Public `selection.json` or
+`review.json` reports do not replace the checksummed accepted handoff; older
+runs without it cannot be migrated by this API.
+
+With the repository `examples` directory available on the Python import path,
+the call is:
+
+```python
+from pathlib import Path
+from sklearn.base import clone
+from final_recovery import recover_final_fit
+
+# Retain these objects/values from the original workflow configuration.
+final_pipeline = clone(original_pipeline).set_params(**accepted_parameters)
+if cv_seeds is not None:
+    final_pipeline.set_params(**{seed_parameter: refit_seed})
+
+source_run = Path("results/mnist-search").resolve()
+attempt_dir = source_run.with_name(source_run.name + "-final-retry")
+result = recover_final_fit(
+    final_pipeline, X_train, y_train, X_test, y_test,
+    source_run, attempt_dir, final_native_threads=2,
+)
+```
+
+The attempt directory must be new and must not equal, contain, or lie inside
+the source run directory; a sibling is suitable. The helper validates the
+typed pipeline against the handoff rather than reconstructing an estimator
+from JSON. The explicit final budget still requires sequential nested
+estimators when it is wider than one.
+
+Use `resume=True` with the same attempt directory and the same budget to
+continue an unscored failed attempt or replay its completed result. To change
+the budget again after an unscored failure, choose another new attempt
+directory. Each attempt keeps its own immutable identity and receipts; it
+does not relabel the original run as completed under the new budget. A source
+lease excludes competing final jobs, and ordinary resume cannot ignore a
+registered final-only attempt.
+
+Each new attempt freezes the full current one-thread coordinator runtime as its
+final-execution identity, then checks the requested fit scope and restoration.
+An unfinished same-attempt resume requires that exact final runtime. Verified
+completed replay instead retains the historical final-runtime record, validates
+current compatibility with the saved CV-worker identity, and performs no new
+fit or prediction. Normal final fitting remains guarded by its current
+coordinator session; neither path substitutes a reduced worker record for
+checks on a fit that actually executes in the coordinator.
+
+Normal and recovered final fits share the source run's scoring claim. Once
+scoring has been reserved, a missing completion blocks automatic retries
+through the same attempt, a new directory or ordinary resume. This includes
+the ambiguous interval between reserving scoring and actually starting
+prediction. A verified completed attempt returns saved reports with
+`model=None` and `resumed_completed=True`; the successful original call returns
+its fitted model, but the model is not persisted for later restoration.
+
+The prospective handoff and scoring reservation add management work to an
+accepted adaptive run, including with final budget 1. Before the execution-role
+runtime changes above, a bounded study with three fresh processes for each of
+two fixed input sizes measured the combined complete helper calls at **0.72–0.76 s locally** and **1.39–1.86 s on Robust**. Inputs
+were 32×4 training/16×4 held-out and 4096×784 training/1024×784 held-out arrays.
+These descriptive ranges include JSON publication, runtime checks and data
+hashing after the existing workflow boundaries. The fixtures performed no
+CV, fitting or prediction. This cost is separate from the earlier nondefault
+budget preflight; it is not a per-fit slowdown, whole-CV benchmark or guarantee
+about future runtime availability.
 
 ### Work and timing summaries
 
@@ -945,8 +1280,9 @@ default. Omit `ratio_refinement` to preserve the original workflow. The saved
 policy includes these settings, so changing them requires a fresh run.
 
 Every stage uses the same folds and prescribed CV seeds. Each candidate
-keeps its exact ratio; the estimator's existing `int(n * ratio)` retained-row
-count is unchanged. Eligible equivalent-fold reuse still requires the same
+keeps its original ratio parameter; row counts use `int(n * float(ratio))`
+after original-domain validation. This preserves the multiplication and
+truncation rule for the built-in ratios supported by ratio refinement. Eligible equivalent-fold reuse still requires the same
 seed and all existing identity and selected-row checks. It preserves each
 candidate label rather than rounding ratios together. The selected candidate
 receives a separate fresh fit on all training rows with the declared final
@@ -1122,3 +1458,30 @@ models across ratios. It can avoid the remaining duplicate final fold fits
 and validation predictions when supplied ratios are sufficiently close.
 The default MNIST grids keep five well-spaced retention fractions, so this
 option does not imply a speed improvement for their usual training sizes.
+
+### Missing numerical settings on loaded estimators
+
+For objects missing requested `affine_computation`, `acceleration` or
+`residual_check_order` fields, parameter inspection, cloning and new fits use
+the current defaults: `'joint'`, `'auto'` and `'auto'`. This also covers objects
+already in memory; no reload or deserialization rewrite is required. Backend
+and supplied-eigenbasis restrictions still govern automatic policy resolution.
+
+Explicit stored choices are preserved, including `'standard'`, `None` and
+`'refinement_first'`. Values already materialized by an earlier clone cannot be
+distinguished from intentional choices and are not guessed or rewritten.
+An explicit removed affine `'auto'` value still requires caller migration to
+`'joint'` before a new fit; it is not a missing field.
+
+Existing prediction uses fitted scoring metadata and the stored fitted model.
+Missing fitted affine metadata still denotes standard scoring. This preserves
+the interpretation of existing coefficients; it does not endorse their original
+fitting algebra. A new fit uses current solver mathematics and requested
+policies. It may produce different trajectories, scores, selection and costs.
+
+Prepared state and caches must match the newly effective requests and their
+existing source/geometry identity. Incompatible state is rebuilt or refused;
+historical cache or checkpoint provenance is never rewritten to force reuse.
+These rules cover the documented missing settings, not arbitrary damaged or
+cross-version serialized objects. Incompatible states may still require a new
+estimator fitted from the original training data.

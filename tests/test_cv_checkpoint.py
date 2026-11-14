@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
@@ -79,8 +80,7 @@ class CheckpointTests(unittest.TestCase):
         self.folds = list(StratifiedKFold(2, shuffle=True, random_state=42).split(self.X, self.y))
         self.pipeline = Pipeline([('scale', StandardScaler()), ('model', TinyClassifier())])
         self.grid = {'model__offset': [0., .5]}
-        self.runtime = {'python': 'fixed-test-runtime', 'files_sha256': 'a' * 64,
-                        'native_pools': [{'num_threads': 1, 'version': 'test-build'}]}
+        self.runtime = synthetic_runtime(source='fixed-test-runtime')
         self.runtime_patch = patch.object(checkpoint, 'runtime_fingerprint', side_effect=lambda **kwargs: deepcopy(self.runtime))
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
@@ -282,12 +282,48 @@ class CheckpointTests(unittest.TestCase):
                 captured.update(kwargs)
             def __call__(self, work):
                 function, args, kwargs = next(iter(work))
+                if function not in (checkpoint._fit_fold, checkpoint._fit_fold_group):
+                    raise AssertionError('Expected actual fold work before simulated parent loss')
                 function(*args, **kwargs)
                 raise KeyboardInterrupt('parent disappears after worker commit')
-        with patch.object(checkpoint, 'Parallel', LostParent):
+        # Metadata-only managed control; LostParent still receives only real folds.
+        prepared = []
+        class PreparationPool:
+            def __init__(inner, **options):
+                self.assertEqual(options, dict(n_jobs=2, pre_dispatch=2, batch_size=1, return_as='generator'))
+                inner.active = False
+            def __enter__(inner):
+                self.assertFalse(inner.active)
+                inner.active = True
+                return inner
+            def __exit__(inner, *unused):
+                self.assertTrue(inner.active)
+                inner.active = False
+                prepared.append('closed')
+            def __call__(inner, pending):
+                self.assertTrue(inner.active)
+                tasks = list(pending)
+                self.assertEqual(len(tasks), 1)
+                function, args, kwargs = tasks[0]
+                self.assertEqual(kwargs, {})
+                if function is checkpoint._execution_import_probe:
+                    self.assertEqual(args, ())
+                    prepared.append('import')
+                    return (function(*args, **kwargs) for unused in range(1))
+                self.assertIs(function, checkpoint._execution_runtime_probe)
+                self.assertEqual(len(args), 1)
+                prepared.append('authority')
+                return (checkpoint._stable(self.runtime) for unused in range(1))
+        def dispatch(**options):
+            return (PreparationPool(**options) if options.get('return_as') == 'generator'
+                    else LostParent(**options))
+        with patch.object(checkpoint, 'Parallel', side_effect=dispatch):
             with self.assertRaises(KeyboardInterrupt), self.session(jobs=2) as store:
                 store.search(self.grid)
         self.assertEqual(captured, {'n_jobs': 2, 'pre_dispatch': 2, 'batch_size': 1})
+        self.assertEqual(prepared, ['import', 'authority', 'closed'])
+        self.assertEqual(self.fit_count(), 1)
+        self.assertEqual(len(list((self.run / 'cv-checkpoints' / 'folds').glob('*.json'))), 1)
         TinyClassifier.events = []
         with self.session(resume=True) as store:
             result = store.search(self.grid)
@@ -409,7 +445,10 @@ class CheckpointTests(unittest.TestCase):
                      '_RUNTIME_DIGEST': None, '_RUNTIME_NATIVE': None,
                      '_RUNTIME_ACCELERATOR': None, '_RUNTIME_GUARDS': set(),
                      '_RUNTIME_CONTROLLER': None, '_RUNTIME_MODULE_COUNT': None,
-                     '_RESOLVED_PATHS': {}, '_HASHES': {}}
+                     '_RESOLVED_PATHS': {}, '_HASHES': {},
+                     '_RUNTIME_ARTIFACT_ALIASES': {}, '_RUNTIME_CANONICAL_ARTIFACTS': {},
+                     '_RUNTIME_FILE_COUNT': None, '_RUNTIME_COMMON_FILES': None,
+                     '_RUNTIME_COMMON_DIGEST': None, '_RUNTIME_COMMON_FILE_COUNT': None}
         import ensemble_dwd._cache_identity as cache_identity
         real_import = checkpoint.importlib.import_module
         def import_module(name, *args):
@@ -434,7 +473,7 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(opens.call_count, reads)
             self.assertEqual(distributions.call_count, 1)
             self.assertEqual(native.call_count, 1)
-            self.assertEqual(controllers.call_count, 1)
+            self.assertEqual(controllers.call_count, 3)
             metadata.write_text('Name: fake-runtime\nVersion: changed\n')
             with self.assertRaises(checkpoint.CheckpointError):
                 checkpoint.runtime_fingerprint(check_inventory=False)

@@ -47,6 +47,9 @@ jobs:
           python -I -B tests/ci_artifacts.py check
           --dwd-wheel-dir "${{ github.workspace }}/.ci-wheels/dwd"
           --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble" --backend wheel
+          --route-contract released-1.3.19
+          --expected-platform "${{ runner.os == 'Windows' && 'windows' || 'linux' }}"
+          --expected-python "${{ matrix.python-version }}"
       - name: Run the complete bundled test suite
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: python -I -B -m pytest tests -o "python_files=test*.py" -ra
@@ -91,6 +94,9 @@ jobs:
           python -I -B tests/ci_artifacts.py check
           --dwd-wheel-dir "${{ github.workspace }}/.ci-wheels/dwd"
           --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble" --backend wheel
+          --route-contract released-1.3.19
+          --expected-platform linux
+          --expected-python 3.11
       - name: Run the complete bundled test suite
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: python -I -B -m pytest tests -o "python_files=test*.py" -ra

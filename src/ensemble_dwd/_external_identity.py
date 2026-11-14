@@ -7,14 +7,35 @@ not previously mapped machine code or arbitrary same-version Python edits.
 import importlib.machinery
 from numbers import Integral
 import os
+import stat
 from pathlib import Path
 import sys
 import threading
 
-from ._cache_identity import _CacheIdentityError, _file_digest, _is_native, _stamp
+from ._cache_identity import _CacheIdentityError, _file_digest, _is_native
 
 
 _NUMERICAL_PACKAGES = ("numpy", "scipy", "sklearn")
+
+
+def _regular_artifact_stamp(path):
+    """Reuse one live successful stat for classification and its identity stamp.
+
+    No observation is retained across provenance boundaries. Installations must
+    remain immutable: this removes the adjacent second successful stat and does
+    not preserve every possible concurrent-mutation detection cutpoint.
+    """
+    try:
+        info = path.stat()
+    except (OSError, ValueError):
+        # Keep the interpreter/platform's public Path.is_file error policy on
+        # the exceptional path, rather than copying private errno tables.
+        if not path.is_file():
+            raise _CacheIdentityError("loaded native artifact is unavailable: " + str(path))
+        raise
+    if not stat.S_ISREG(info.st_mode):
+        raise _CacheIdentityError("loaded native artifact is unavailable: " + str(path))
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 def _observed_artifacts(pools):
@@ -25,10 +46,9 @@ def _observed_artifacts(pools):
         if not isinstance(origin, (str, os.PathLike)) or not origin:
             raise _CacheIdentityError("loaded native artifact origin is unavailable")
         path = Path(origin).absolute()
-        if not path.is_file():
-            raise _CacheIdentityError("loaded native artifact is unavailable: " + str(path))
+        stamp = _regular_artifact_stamp(path)
         key = str(path)
-        artifacts[key] = (path, _stamp(path))
+        artifacts[key] = (path, stamp)
         roles.setdefault(key, set()).add(role)
         return key
 
@@ -52,6 +72,13 @@ def _observed_artifacts(pools):
             continue
         origin = getattr(module, "__file__", None)
         loader = getattr(getattr(module, "__spec__", None), "loader", None)
+        # Ordinary source/bytecode origins cannot be native. Preserve the full
+        # path route for custom PathLike/string subclasses, extension loaders,
+        # and the existing versioned-ELF '.so.' recognition (even before .py).
+        if type(origin) is str and not isinstance(loader, importlib.machinery.ExtensionFileLoader):
+            spelling = origin.lower()
+            if spelling.endswith((".py", ".pyc")) and ".so." not in spelling:
+                continue
         native = (isinstance(origin, (str, os.PathLike)) and _is_native(Path(origin)))
         if native or isinstance(loader, importlib.machinery.ExtensionFileLoader):
             key = add(origin, "module:" + name)

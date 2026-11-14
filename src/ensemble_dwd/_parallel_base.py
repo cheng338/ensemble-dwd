@@ -34,6 +34,7 @@ def _native_one(runtime):
 def parallel_base_stage(model,X,y,classes,subsets,kernel_kws):
     from .estimator import _binary_scores,_base_diagnostics,_overflow_safe_consensus
     workers=min(model.base_jobs,len(subsets))
+    error_policy=np.geterr();error_handler=np.geterrcall()
     collect=_active_profile() is not None
     before=_runtime()
     lock=Lock();barrier=Barrier(workers)
@@ -44,7 +45,7 @@ def parallel_base_stage(model,X,y,classes,subsets,kernel_kws):
         profile=fit_profile() if collect else None
         row=dict(position=position,fit_done=0,score_done=0,error=None,stage='base_setup')
         try:
-            with profile if collect else nullcontext():
+            with np.errstate(call=error_handler,**error_policy),profile if collect else nullcontext():
                 runtime=_runtime()
                 if not _native_one(runtime):raise RuntimeError('Parallel base worker requires native thread count one.')
                 row['stage']='base_fit'
@@ -53,7 +54,7 @@ def parallel_base_stage(model,X,y,classes,subsets,kernel_kws):
                 with _stage('base_validation'):
                     if not np.array_equal(learner.classes_,classes):raise ValueError('All DWD learners must use the same ordered binary labels.')
                 row['stage']='base_scoring'
-                with _stage('base_scoring'):scores=_binary_scores(learner,X)
+                with _stage('base_scoring'),np.errstate(over='ignore',invalid='ignore'):scores=_binary_scores(learner,X)
                 row['score_done']=1
                 if _runtime()!=runtime:raise RuntimeError('Native runtime changed during parallel base work.')
                 row.update(model=learner,scores=scores,runtime=runtime)

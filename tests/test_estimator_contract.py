@@ -129,14 +129,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(np.shape(model.converged_), (2,))
         self.assertEqual(np.shape(model.decision_function(self.X[:1])), (1,))
 
-    def test_shared_fit_parameters_and_forced_optimized_solver(self):
+    def test_shared_fit_parameters_without_removed_solver_selector(self):
         model = self.fit_spy(self.model(lambd=0.013, q=0.5, max_iter=11,
                                        obj_tol=2e-7, stopping="fixed", tol=3e-7,
                                        acceleration="restart", prediction_batch_size=7))
         for learner in RecordingDWD.instances:
             params = learner.params
-            self.assertEqual(params["implementation"], "optimized")
-            self.assertEqual(params["solver_mode"], "schur")
+            self.assertNotIn("implementation", params)
+            self.assertNotIn("solver_mode", params)
             self.assertEqual(params["backend"], "auto")
             self.assertEqual(params["initialization"], "zero")
             for key in ["lambd", "q", "kernel", "max_iter", "obj_tol",

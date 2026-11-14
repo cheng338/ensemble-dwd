@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.pipeline import Pipeline
 from threadpoolctl import threadpool_info, threadpool_limits
@@ -33,10 +34,26 @@ def observed_counts():
 
 
 def observed_runtime(*, native_threads=1, **kwargs):
-    pools = [dict(filepath=path, num_threads=count) for path, count in observed_counts()]
+    # Actual pool/count observations, with explicitly synthetic source authority.
+    pools = threadpool_info()
     if any(pool['num_threads'] != native_threads for pool in pools):
         raise cv_checkpoint.CheckpointError('Synthetic observer saw the wrong active budget')
-    return dict(source='phase-test-runtime', native_pools=pools)
+    record = synthetic_runtime(source='phase-test-runtime', pools=pools)
+    # Match the production full observer's stable physical-path ordering.
+    # synthetic_runtime copied each row; preserve fields and duplicate rows.
+    return {**record, 'native_pools': sorted(record['native_pools'],
+                                           key=lambda row: row['filepath'])}
+
+
+def synthetic_native_pools(files, *, native_threads):
+    """Native rows for fixtures that explicitly replace the full observer.
+
+    Install alongside that fake only. Resolve it at call time so later source
+    drift/error replacements remain visible; real-observer tests use the actual
+    native helper and never install this synthetic adapter.
+    """
+    return cv_checkpoint.runtime_fingerprint(check_inventory=False,
+                                             native_threads=native_threads)['native_pools']
 
 
 class PhaseTransform(TransformerMixin, BaseEstimator):
@@ -182,9 +199,11 @@ class PhaseWorkflowTests(unittest.TestCase):
         self.pipeline = Pipeline([('transform', PhaseTransform()), ('ensemble', PhaseSurface())])
         self.grid = {'ensemble__lambd': [1., 4., 16.], 'ensemble__gamma': [1., 4., 16.]}
         self.config = adaptive_search.AdaptiveSearchConfig(refine=False, max_candidates=9)
-        context = patch.object(cv_checkpoint, 'runtime_fingerprint', side_effect=observed_runtime)
-        context.start()
-        self.addCleanup(context.stop)
+        contexts = (patch.object(cv_checkpoint, 'runtime_fingerprint', side_effect=observed_runtime),
+                    patch.object(cv_checkpoint, '_native_pool_fingerprint', synthetic_native_pools))
+        for context in contexts:
+            context.start()
+            self.addCleanup(context.stop)
         self.reset_events()
 
     def reset_events(self):

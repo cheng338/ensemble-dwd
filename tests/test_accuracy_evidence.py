@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 EXAMPLES = str(Path(__file__).resolve().parents[1] / 'examples')
@@ -208,7 +209,7 @@ class AccuracyEvidenceTests(unittest.TestCase):
         y = np.arange(10) % 2
         folds = [(np.arange(4, 10), np.arange(4)), (np.arange(4), np.arange(4, 10))]
         CountingClassifier.fits = CountingClassifier.predictions = 0
-        with tempfile.TemporaryDirectory() as folder, patch.object(checkpoint, 'runtime_fingerprint', return_value={'test': 'fixed'}):
+        with tempfile.TemporaryDirectory() as folder, patch.object(checkpoint, 'runtime_fingerprint', return_value=synthetic_runtime(source='accuracy-evidence-test')):
             def session(resume=False):
                 return checkpoint.CheckpointedCV(folder, CountingClassifier(), X, y, folds,
                     cv_seeds=(42, 1729, 2026), seed_parameter='random_state', resume=resume)
@@ -248,7 +249,7 @@ class AccuracyEvidenceTests(unittest.TestCase):
         folds = [(np.arange(4), np.arange(4, 8)), (np.arange(4, 8), np.arange(4))]
         for reuse in (False, True):
             with self.subTest(reuse=reuse), tempfile.TemporaryDirectory() as folder, \
-                    patch.object(checkpoint, 'runtime_fingerprint', return_value={'test': 'fixed'}):
+                    patch.object(checkpoint, 'runtime_fingerprint', return_value=synthetic_runtime(source='accuracy-evidence-test')):
                 def session(resume=False):
                     return checkpoint.CheckpointedCV(folder, CountingClassifier(), X, y, folds,
                                                       resume=resume, reuse_equivalent_folds=reuse)
@@ -273,7 +274,7 @@ class AccuracyEvidenceTests(unittest.TestCase):
             evaluator.accuracy_counts_ = {'correct': 8, 'n_validation': 8}
             return score
         with tempfile.TemporaryDirectory() as folder, \
-                patch.object(checkpoint, 'runtime_fingerprint', return_value={'test': 'fixed'}), \
+                patch.object(checkpoint, 'runtime_fingerprint', return_value=synthetic_runtime(source='accuracy-evidence-test')), \
                 patch.object(checkpoint, 'eligible_accuracy', side_effect=forged):
             with checkpoint.CheckpointedCV(folder, CountingClassifier(), X, y, folds) as store, \
                     self.assertRaisesRegex(checkpoint.CheckpointError, 'accuracy counts'):

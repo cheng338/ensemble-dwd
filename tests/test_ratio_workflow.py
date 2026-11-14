@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.datasets import make_classification
 from sklearn.metrics import accuracy_score
@@ -86,7 +87,7 @@ class RatioWorkflowTests(unittest.TestCase):
             regularization='C', prefix='ensemble__', refine=True, max_candidates=4)
         self.ratio = RatioRefinementConfig(max_rounds=2, ratio_tol=.02, stable_rounds=1)
         self.runtime_patch = patch.object(cv_checkpoint, 'runtime_fingerprint',
-                                          return_value={'test_runtime': 'ratio-lifecycle-v1'})
+                                          return_value=synthetic_runtime(source='ratio-lifecycle-v1'))
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
 

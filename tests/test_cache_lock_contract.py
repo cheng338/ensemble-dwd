@@ -29,7 +29,7 @@ def test_unavailable_lock_explains_explicit_configuration_without_computing(tmp_
         _cached_base_stage(tmp_path, {"key": 1}, lambda: calls.append(True))
     assert caught.value.errno == code
     assert caught.value.__cause__ is failure
-    assert Path(caught.value.filename).parent == tmp_path / _CACHE_DIRECTORY
+    assert Path(caught.value.filename).parent.samefile(tmp_path / _CACHE_DIRECTORY)
     assert not calls
     assert sorted(p.suffix for p in (tmp_path / _CACHE_DIRECTORY).iterdir()) == [".lock"]
 

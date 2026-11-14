@@ -90,8 +90,14 @@ def fresh_real_cache_worker(cache_dir):
         'first_hit': first.cache_hit_, 'second_hit': second.cache_hit_,
         'first_key': first.cache_key_, 'second_key': second.cache_key_,
         'same_predictions': same_predictions, 'same_consensus': same_consensus,
-        'first_implementation': first.final_estimator_.implementation,
-        'second_implementation': second.final_estimator_.implementation,
+        'first_implementation': first.final_estimator_.diagnostics_['implementation'],
+        'second_implementation': second.final_estimator_.diagnostics_['implementation'],
+        'removed_public_parameter_absent': all(
+            'implementation' not in learner.get_params()
+            for model in (first, second)
+            for learner in [*model.estimators_, model.final_estimator_]),
+        'first_backend': first.final_estimator_.backend_,
+        'second_backend': second.final_estimator_.backend_,
         'pool_prefixes_after_first': [item['prefix'] for item in pools_after_first],
         'entry_count': len(list((Path(cache_dir) / 'base-stage-v2').glob('*.joblib'))),
     }))
@@ -130,7 +136,7 @@ class CacheEstimatorTests(unittest.TestCase):
         for a, b in zip(first.subset_indices_, second.subset_indices_):
             assert_array_equal(a, b)
         for model in [*first.estimators_, first.final_estimator_, second.final_estimator_]:
-            self.assertEqual(model.params['implementation'], 'optimized')
+            self.assertNotIn('implementation', model.params)
 
     def test_base_parameter_changes_invalidate_the_entry(self):
         baseline = self.fit_spy(self.model())
@@ -139,7 +145,7 @@ class CacheEstimatorTests(unittest.TestCase):
                    dict(obj_tol=2e-5), dict(stopping='fixed'), dict(tol=2e-6),
                    dict(acceleration='restart'), dict(random_state=19),
                    dict(residual_check_order='adaptive'),
-                   dict(affine_computation='joint'),
+                   dict(affine_computation='standard'),
                    dict(exact_recovery='extended'),
                    dict(prediction_batch_size=3), dict(store_base_estimators=False)]
         for change in changes:
@@ -329,6 +335,9 @@ class CacheStorageTests(unittest.TestCase):
         self.assertTrue(result['same_consensus'], result)
         self.assertEqual(result['first_implementation'], 'optimized')
         self.assertEqual(result['second_implementation'], 'optimized')
+        self.assertTrue(result['removed_public_parameter_absent'])
+        self.assertIn(result['first_backend'], ('cholesky', 'spectral'))
+        self.assertEqual(result['first_backend'], result['second_backend'])
 
     def test_concurrent_processes_compute_one_entry_once(self):
         folder = Path(self.directory.name)

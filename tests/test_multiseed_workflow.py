@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import clone
 from sklearn.datasets import make_classification
 from sklearn.metrics import accuracy_score
@@ -170,7 +171,7 @@ class MultiSeedWorkflowTests(unittest.TestCase):
         self.config = adaptive_search.AdaptiveSearchConfig(
             regularization='C', prefix='ensemble__', refine=False, max_candidates=2)
         runtime = patch.object(cv_checkpoint, 'runtime_fingerprint',
-                               return_value={'test_runtime': 'multiseed-lifecycle-v1'})
+                               return_value=synthetic_runtime(source='multiseed-lifecycle-v1'))
         runtime.start()
         self.addCleanup(runtime.stop)
 

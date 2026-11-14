@@ -46,10 +46,15 @@ def _finite_real(value, name, *, allow_zero=False):
 
 
 def _fraction(value, name):
-    value = _finite_real(value, name)
+    validated = _finite_real(value, name)
     if value > 1:
         raise ValueError(f"{name} must be in (0, 1].")
-    return value
+    return validated
+
+
+def _fraction_rows(size, value, name):
+    ratio = _fraction(value, name)
+    return int(size * ratio)
 
 
 def _private_random_state(seed):
@@ -299,15 +304,15 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         Direct requires named RBF with no extra kernel_kws beyond top-level gamma.
         It is opt-in, may change numerical scores and retained observations,
         and may cost more. Sampling, selection and final-refit rules are unchanged.
-    affine_computation : {'auto', 'standard', 'joint'}, default='auto'
+    affine_computation : {'standard', 'joint'}, default='joint'
         Decision-score arithmetic, forwarded to every base and final learner.
-        Auto selects joint when the DWD constructor explicitly supports this
-        parameter; an older dependency without it keeps standard scoring.
-        Explicit standard remains standard with either dependency default.
+        New models use joint scoring. Both policies are forwarded explicitly;
+        a dependency unable to accept the policy raises instead of silently
+        switching to another scoring method.
         The concrete fitted policy is stored separately; changing this parameter
-        affects a later fit, not an existing predictor. An older serialized
-        object's missing parameter falls back to standard; this does not
-        migrate any other historical state fields.
+        affects a later fit, not an existing predictor. A missing requested
+        parameter uses the current joint default for cloning and new fits.
+        Explicit stored choices and fitted child policies remain unchanged.
         Joint includes the intercept in cancellation-aware summation of
         K @ alpha + b. It can change rounded scores, selected rows and labels,
         and can be expensive for many uncertain or exactly zero scores.
@@ -444,11 +449,12 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
     nested oversubscription.
     """
 
-    # Old serialized estimators retain the standard DWD policy.
+    # Missing requested settings use current constructor defaults.
+    # Existing prediction delegates to the fitted final estimator.
     rbf_computation = "standard"
-    residual_check_order = "refinement_first"
-    acceleration = None
-    affine_computation = "standard"
+    residual_check_order = "auto"
+    acceleration = "auto"
+    affine_computation = "joint"
     exact_recovery = "standard"
     base_jobs = 1
     linear_action = "factor"
@@ -459,7 +465,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                  acceleration="auto", random_state=42, prediction_batch_size=1024,
                  cache_dir=None, store_base_estimators=True, backend="auto",
                  residual_check_order="auto", rbf_computation="standard",
-                 affine_computation="auto", exact_recovery="standard", base_jobs=1, linear_action="factor"):
+                 affine_computation="joint", exact_recovery="standard", base_jobs=1, linear_action="factor"):
         self.M = M
         self.theta = theta
         self.sv_selection_ratio = sv_selection_ratio
@@ -509,8 +515,9 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 "standard", "extended"):
             raise ValueError("exact_recovery must be 'standard' or 'extended'.")
         if not isinstance(self.affine_computation, str) or self.affine_computation not in (
-                "auto", "standard", "joint"):
-            raise ValueError("affine_computation must be 'auto', 'standard' or 'joint'.")
+                "standard", "joint"):
+            raise ValueError("affine_computation must be 'standard' or 'joint'; "
+                             "'auto' was removed; use 'joint' instead.")
         if not isinstance(self.rbf_computation, str) or self.rbf_computation not in (
                 "standard", "direct"):
             raise ValueError("rbf_computation must be 'standard' or 'direct'.")
@@ -585,31 +592,14 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         kws["gamma"] = gamma
         return gamma, kws
 
-    def _affine_dependency_policy(self):
-        """Resolve auto from the dependency's declared constructor capability."""
-        try:
-            parameter = signature(KernGDWD).parameters.get("affine_computation")
-        except (TypeError, ValueError):
-            parameter = None
-        supported = parameter is not None and parameter.kind in (
-            Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
-        policy = self.affine_computation
-        if policy == "auto":
-            policy = "joint" if supported else "standard"
-        return policy, supported
-
     def _make_estimator(self, kernel_kws):
-        # Explicit standard must remain standard even when a newer dependency
-        # defaults to auto. Unadvertised/older dependencies retain their former
-        # constructor route; a returned modern estimator is normalized below.
-        affine_policy, affine_supported = self._affine_dependency_policy()
-        numerical_options = {}
+        # Forward the requested concrete policy to every learner. Unsupported
+        # dependencies fail explicitly; no signature-based downgrade or retry.
+        numerical_options = {"affine_computation": self.affine_computation}
         if self.linear_action == "inverse":
             numerical_options["linear_action"] = "inverse"
         if self.rbf_computation == "direct":
             numerical_options["rbf_computation"] = "direct"
-        if affine_policy == "joint" or affine_supported:
-            numerical_options["affine_computation"] = affine_policy
         if self.exact_recovery == "extended":
             numerical_options["exact_recovery"] = "extended"
         # These learners are fresh optimized Schur fits without a supplied
@@ -630,15 +620,9 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 kernel_kws=deepcopy(kernel_kws), max_iter=self.max_iter,
                 obj_tol=self.obj_tol, stopping=self.stopping, tol=self.tol,
                 acceleration=acceleration, prediction_batch_size=self.prediction_batch_size,
-                implementation="optimized", solver_mode="schur", backend=self.backend,
+                backend=self.backend,
                 initialization="zero", random_state=0,
                 residual_check_order=residual_order, **numerical_options)
-            # A wrapper may hide its modern constructor signature. Do not let
-            # its changed default silently reinterpret explicit standard or
-            # the documented conservative auto fallback.
-            if (affine_policy == "standard" and
-                    getattr(learner, "affine_computation", "standard") != "standard"):
-                learner.set_params(affine_computation="standard")
             return learner
         except TypeError as error:
             if numerical_options:
@@ -752,7 +736,7 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                 for name in ("sv_selection_ratio", "cache_dir", "random_state", "gamma", "kernel_kws"):
                     parameters.pop(name)
                 parameters["kernel_kws"] = kernel_kws
-                parameters["affine_computation_resolved"] = self._affine_dependency_policy()[0]
+                parameters["affine_computation_resolved"] = self.affine_computation
                 if self.base_jobs > 1:
                     # The same requested jobs can dispatch native-one workers
                     # on the main thread but preserve the caller's native
@@ -804,12 +788,12 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
                     raise ValueError("Only binary classification is supported. The input has more than two classes.")
             context["stage"] = "setup"
             n = len(y)
-            selected_size = int(n * self.sv_selection_ratio)
+            selected_size = _fraction_rows(n, self.sv_selection_ratio, "sv_selection_ratio")
             if selected_size < 2:
                 raise IneligibleSelectionError(
                     "sv_selection_ratio selects fewer than two observations. "
                     "Increase the ratio or provide more training observations.")
-            subset_size = max(2, int(n * self.theta))
+            subset_size = max(2, _fraction_rows(n, self.theta, "theta"))
             with _stage("kernel_parameters"):
                 gamma, kernel_kws = self._kernel_parameters(X)
             context["stage"] = "sampling"

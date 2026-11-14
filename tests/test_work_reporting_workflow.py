@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import clone
 from sklearn.datasets import make_classification
 from sklearn.metrics import accuracy_score
@@ -46,7 +47,7 @@ class WorkReportingFixture(unittest.TestCase):
         self.test_y = np.array([0, 0, 1, 1])
         self.folds = list(StratifiedKFold(2, shuffle=True, random_state=42).split(self.X, self.y))
         self.runtime_patch = patch.object(cv_checkpoint, 'runtime_fingerprint',
-                                          return_value={'test_runtime': 'work-reporting-v1'})
+                                          return_value=synthetic_runtime(source='work-reporting-v1'))
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
 

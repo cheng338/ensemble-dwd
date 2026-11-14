@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
@@ -217,7 +218,7 @@ class MidpointGeometryTests(unittest.TestCase):
                             folds=folds, jobs=1, provenance={'geometry': 'fixed-test'})
             CountingClassifier.calls, CountingClassifier.interrupt_at = 0, 3
             try:
-                with patch.object(cv_checkpoint, 'runtime_fingerprint', return_value={'runtime': 'fixed-test'}):
+                with patch.object(cv_checkpoint, 'runtime_fingerprint', return_value=synthetic_runtime(source='midpoint-geometry-test')):
                     with self.assertRaises(KeyboardInterrupt), cv_checkpoint.CheckpointedCV(**settings) as checkpoint:
                         checkpoint.search(grid)
                     self.assertEqual(CountingClassifier.calls, 3)
@@ -255,7 +256,7 @@ class MidpointGeometryTests(unittest.TestCase):
 
             CountingClassifier.calls, CountingClassifier.interrupt_at = 0, None
             try:
-                with patch.object(cv_checkpoint, 'runtime_fingerprint', return_value={'runtime': 'fixed-test'}), redirect_stdout(io.StringIO()):
+                with patch.object(cv_checkpoint, 'runtime_fingerprint', return_value=synthetic_runtime(source='midpoint-geometry-test')), redirect_stdout(io.StringIO()):
                     with patch.object(Path, 'read_bytes', previous_workflow):
                         search.run_adaptive_search(CountingClassifier(), grid, X, y, X, y, folds, root, config=config)
                     previous_status = (root / 'status.json').read_bytes()

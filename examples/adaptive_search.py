@@ -24,7 +24,7 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import ParameterGrid
 from threadpoolctl import threadpool_limits
 from cv_checkpoint import (CheckpointedCV, validate_cv_seeds, validate_seed,
-                           validate_seed_parameters)
+                           validate_seed_parameters, check_selection_state)
 
 from search_support import (_io_path, _resolved_public_path, bare_parameters, data_fingerprint,
                             exception_details, parameter_snapshot,
@@ -44,7 +44,9 @@ from stage_reporting import (candidate_budget, grid_proposal, publish_report,
                              safe_report, workload_plan)
 from near_coordinates import disclose
 from phase_threads import (final_fit_threads, final_thread_policy_sha256,
-                           validate_final_native_threads)
+                           validate_final_native_threads, preflight_final_native_threads)
+from final_recovery import (assert_normal_final_allowed, publish_final_handoff,
+                            reserve_normal_scoring)
 
 
 @dataclass(frozen=True)
@@ -706,6 +708,10 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     and held-out prediction stay at one native thread. It defaults to one
     and is frozen on resume. Wider budgets require explicit n_jobs=1 for
     every exposed nested estimator; runtime observations are recorded.
+    Accepted selection is committed before final fitting. An explicit separate
+    recover_final_fit attempt may change only the final thread budget while
+    preserving the verified CV evidence. Once held-out scoring is reserved,
+    an incomplete scoring attempt is not automatically repeated.
     """
     final_native_threads = validate_final_native_threads(final_native_threads, pipeline)
     invocation_started = perf_counter()
@@ -768,6 +774,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     if not failure_dir.is_dir():
         raise ValueError('Create a fresh run directory with new_run_directory first.')
     folds = _check_folds(folds, len(y_train))
+    if not resume:
+        preflight_final_native_threads(final_native_threads, pipeline)
     # Own the held-out values too: the saved identity must describe what is
     # eventually scored even if a caller modifies its arrays during CV.
     X_test, y_test = np.array(X_test, copy=True), np.array(y_test, copy=True)
@@ -781,6 +789,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'reporting_sha256': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                                      for name in ('evaluation_reporting.py', 'work_reporting.py')},
                 'final_thread_policy_sha256': final_thread_policy_sha256(),
+                'final_recovery_sha256': hashlib.sha256(Path(__file__).with_name('final_recovery.py').read_bytes()).hexdigest(),
                 'data': identity, 'folds': [{'train': t, 'validation': v} for t, v in folds],
                 'settings': {'jobs': jobs, 'native_threads': 1, 'scoring': 'accuracy',
                              'final_native_threads': final_native_threads, 'held_out_native_threads': 1,
@@ -940,9 +949,15 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
 
     def execute():
         nonlocal phase, policy_state, ratio_policy_state, review, active_work, historical_work, final_runtime
+        if resume:
+            phase = 'final_thread_preflight'
+            preflight_final_native_threads(final_native_threads, pipeline,
+                                           frozen_runtime=checkpoint.runtime)
+            phase = 'coarse_cv'
         with parallel_config(backend='loky', inner_max_num_threads=1), threadpool_limits(limits=1):
             while review is None:
                 results = _results(rows, len(folds))
+                check_selection_state()
                 proposal = next_search_stage(results, grid, config, policy_state)
                 policy_state = proposal['state']
                 review = proposal['review']
@@ -961,6 +976,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             ratio_started = ratio_refinement is not None and review['state'] == 'accepted'
             if ratio_started:
                 while True:
+                    check_selection_state()
                     proposal = next_ratio_stage(_results(rows, len(folds)), grid, config,
                                                 ratio_refinement, ratio_policy_state)
                     ratio_policy_state = proposal['state']
@@ -978,6 +994,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                     evaluate(proposal['phase'], proposal['candidates'], proposal.get('proposal_report'))
 
             results = _results(rows, len(folds))
+            check_selection_state()
             ranked = ranked_valid_indices(results) if rows else []
             index = int(ranked[0]) if len(ranked) else None
             selection = None if index is None else {
@@ -1029,6 +1046,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         'confirmation_max_iter': numerical_confirmation.max_iter}, replace=True)
                     active_work = {'kind': 'numerical_confirmation', 'name': 'numerical_confirmation',
                                    'started': perf_counter()}
+                    check_selection_state()
                     confirmation_report = run_numerical_confirmation(
                         pipeline=checkpoint.estimator, results=results, rows=rows, searches=searches,
                         folds=folds, X=checkpoint.X, y=checkpoint.y, run_dir=run_dir,
@@ -1085,6 +1103,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             pipeline_fit_seconds = None
             try:
                 model = clone(checkpoint.estimator).set_params(**refit_parameters)
+                publish_final_handoff(checkpoint, model, X_test, y_test, selection, review)
                 final_runtime = {}
                 with final_fit_threads(final_native_threads, model, final_runtime,
                                        frozen_runtime=checkpoint.runtime):
@@ -1129,6 +1148,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             checkpoint.check_runtime()
             scoring_work.update(state='running', attempted=True)
             active_work = {'kind': 'held_out_scoring', 'started': perf_counter()}
+            reserve_normal_scoring(checkpoint)
             prediction_started = perf_counter()
             predictions = model.predict(X_test)
             prediction_finished = perf_counter()
@@ -1197,6 +1217,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             return {**saved, 'model': None, 'run_dir': run_dir, 'resumed_completed': True,
                     'work_summary': publish_work('completed_replay'),
                     'selected_search': None, 'coarse_search': None, 'last_search': None}
+        assert_normal_final_allowed(checkpoint)
         write_json_atomic(run_dir / 'run.json', {
             **metadata, 'checkpoint_identity_sha256': checkpoint.identity_sha256}, replace=resume)
         try:

@@ -9,9 +9,19 @@ refuses while an old worker is still fitting; it never terminates processes.
 Runtime fingerprints describe disk artifacts and observed loaded native pools.
 They require an installation that is immutable during the process lifetime;
 they are not an attestation of machine code already mapped before import.
+A checkpoint pins the complete worker execution runtime. The current coordinator
+is pinned per session; only additional coordinator pools may differ across
+sessions, with common source/library identity and worker pools unchanged.
 """
 from datetime import datetime, timezone
 from copy import deepcopy
+from contextlib import ExitStack
+from collections import Counter
+import ast
+import csv
+import builtins
+import errno
+from fractions import Fraction
 import hashlib
 import importlib
 import importlib.metadata
@@ -22,10 +32,11 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import sys
 import threading
 from time import perf_counter
-from types import SimpleNamespace
+from types import CodeType, FunctionType, SimpleNamespace
 import uuid
 import warnings
 
@@ -46,6 +57,9 @@ from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
 from work_reporting import summarize_records
 import mnist_preprocessing
 from mnist_preprocessing import UnitPixelScaler
+import tune_mnist
+import search_support as _selection_support
+from tune_mnist import fully_valid_candidate_mask, ranked_valid_indices
 
 SCHEMA = 2
 _HASHES = {}
@@ -61,6 +75,15 @@ _RUNTIME_GUARDS = set()
 _RUNTIME_CONTROLLER = None
 _RUNTIME_MODULE_COUNT = None
 _RESOLVED_PATHS = {}
+_RUNTIME_ARTIFACT_ALIASES = {}
+_RUNTIME_CANONICAL_ARTIFACTS = {}
+_RUNTIME_FILE_COUNT = None
+_RUNTIME_COMMON_FILES = None
+_RUNTIME_COMMON_DIGEST = None
+_RUNTIME_COMMON_FILE_COUNT = None
+_RUNTIME_ROLE_POLICY = 'execution-role-v1'
+_SELECTION_STATE = None
+_SELECTION_COMPILE_EVIDENCE = ()
 _EQUIVALENT_POLICY = 'retained-count-v2'
 _SEED_AGGREGATION_POLICY = 'mean-seeds-within-fold-v1'
 _REUSE_METHODS = {
@@ -227,13 +250,40 @@ class _Lease:
 
 
 def _file_hash(path):
-    # resolve() walks path components on Windows; do that only once per name.
+    # Keep the lexical path: its live stat must detect alias retargeting.
     raw = os.fspath(path)
     if raw not in _RESOLVED_PATHS:
         _RESOLVED_PATHS[raw] = Path(path).absolute()
     path = _RESOLVED_PATHS[raw]
     info = path.stat()
-    stamp = (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino)
+    return _file_hash_observed(path, info)
+
+
+def _inventory_regular_stat(path):
+    """Fresh lexical classification with Path.is_file's primary-target errors.
+
+    This is not DirEntry's cached metadata. Keep the observation before suffix
+    filtering, including error propagation for files outside the inventory.
+    """
+    try:
+        info = path.stat()
+    except OSError as error:
+        if (error.errno in (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+                or getattr(error, 'winerror', None) in (21, 123, 1921)):
+            return None
+        raise
+    except ValueError:
+        return None
+    return info if stat.S_ISREG(info.st_mode) else None
+
+
+def _file_hash_observed(path, info):
+    """Reuse this inventory visit's live stat; later observations stay fresh.
+
+    An installation must remain immutable. Removing the adjacent second stat
+    does not preserve every possible concurrent-mutation detection cutpoint.
+    """
+    stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     with _HASH_LOCK:
         if path in _HASHES:
             previous, digest = _HASHES[path]
@@ -245,11 +295,79 @@ def _file_hash(path):
             for block in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(block)
         after = path.stat()
-        if stamp != (after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_ino):
+        if stamp != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise CheckpointError('Runtime artifact changed while fingerprinting: ' + str(path))
         result = digest.hexdigest()
         _HASHES[path] = (stamp, result)
         return result
+
+
+def _runtime_artifact_identity(path):
+    """Emit a verified physical spelling while retaining the live lexical guard.
+
+    Only first registration resolves the path. Every use still hashes/checks the
+    original lexical name, so a cached resolved target cannot hide retargeting.
+    The identity is for an immutable installation, not mapped-code attestation.
+    """
+    raw = Path(path).absolute()
+    with _HASH_LOCK:
+        digest = _file_hash(raw)
+        stamp = _HASHES[raw][0]
+        previous = _RUNTIME_ARTIFACT_ALIASES.get(str(raw))
+        if previous is not None:
+            if previous[1:] != (stamp, digest):
+                raise CheckpointError('Runtime artifact alias changed: ' + str(raw))
+            return previous
+        # Windows public and extended spellings share one extended I/O form.
+        # resolve(strict=True) supplies the physical spelling; no case folding
+        # or unverified prefix/suffix matching establishes an alias.
+        resolved = _io_path(raw.resolve(strict=True))
+        physical = resolved.stat()
+        physical_stamp = (physical.st_dev, physical.st_ino, physical.st_size,
+                          physical.st_mtime_ns, physical.st_ctime_ns)
+        if stamp[1] == 0 or physical_stamp != stamp:
+            raise CheckpointError('Runtime artifact physical identity is unavailable: ' + str(raw))
+        # Recheck both names around the existing hash guard before caching.
+        verified_digest = _file_hash(raw)
+        after_raw, after_resolved = raw.stat(), resolved.stat()
+        stamps = [(item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns,
+                   item.st_ctime_ns) for item in (after_raw, after_resolved)]
+        if verified_digest != digest or any(item != stamp for item in stamps):
+            raise CheckpointError('Runtime artifact alias changed while identifying: ' + str(raw))
+        canonical = str(resolved)
+        known = _RUNTIME_CANONICAL_ARTIFACTS.get(canonical)
+        if known is not None and known != (stamp, digest):
+            raise CheckpointError('Conflicting physical runtime artifact: ' + canonical)
+        result = (canonical, stamp, digest)
+        _RUNTIME_CANONICAL_ARTIFACTS[canonical] = (stamp, digest)
+        _RUNTIME_ARTIFACT_ALIASES[str(raw)] = result
+        return result
+
+
+def _runtime_mismatch_details(expected, observed):
+    """Bounded field names only; this never normalizes the equality predicate."""
+    def fields(value):
+        if (type(value) is not list or len(value) != 2 or value[0] != 'dict'
+                or type(value[1]) is not list or len(value[1]) > 16):
+            return None
+        result = {}
+        for pair in value[1]:
+            if (type(pair) is not list or len(pair) != 2
+                    or type(pair[0]) is not str or pair[0] in result):
+                return None
+            result[pair[0]] = pair[1]
+        return result
+    left, right = fields(expected), fields(observed)
+    if left is None or right is None:
+        return ' (runtime record structure differs)'
+    names = ('python', 'implementation', 'machine', 'packages', 'package_native',
+             'files_sha256', 'file_count', 'native_pools')
+    changed = [name for name in names
+               if (name in left) != (name in right) or left.get(name) != right.get(name)]
+    if not changed:
+        return ' (runtime field order or structure differs)'
+    shown = changed[:4]
+    return ' (differing fields: ' + ', '.join(shown) + ('; more' if len(changed) > 4 else '') + ')'
 
 
 def _class_identity(value):
@@ -334,12 +452,48 @@ def _runtime_package_names(modules=None):
     return names
 
 
+def _metadata_record_members(installed):
+    """Select ordinary RECORD metadata with metadata-only existence checks.
+
+    This path uses the CPython 3.12+ missing-member policy. Older interpreters,
+    nonstandard providers and non-filesystem roots retain Distribution.files.
+    Validation/performance evidence is limited to the tested interpreters.
+    """
+    if (sys.implementation.name != 'cpython' or sys.version_info[:2] < (3, 12)
+            or type(installed) is not importlib.metadata.PathDistribution):
+        return installed.files or ()
+    try:
+        root = installed.locate_file('')
+    except Exception:
+        return installed.files or ()
+    if type(root) is not type(Path()):
+        return installed.files or ()
+    record = installed.read_text('RECORD')
+    if not record:
+        return installed.files or ()
+
+    def member(name, hash=None, size_str=None):
+        path = importlib.metadata.PackagePath(name)
+        if size_str:
+            int(size_str)
+        return path
+
+    selected = []
+    for row in csv.reader(record.splitlines()):
+        path = member(*row)
+        # B deliberately omits filesystem failure checks for unrelated records.
+        if (str(path).replace('\\', '/').endswith('.dist-info/METADATA')
+                and installed.locate_file(path).exists()):
+            selected.append(path)
+    return selected
+
+
 def _metadata_identity(distribution):
     try:
         installed = importlib.metadata.distribution(distribution)
     except importlib.metadata.PackageNotFoundError:
         return None
-    for member in installed.files or ():
+    for member in _metadata_record_members(installed):
         if str(member).replace('\\', '/').endswith('.dist-info/METADATA'):
             path = Path(installed.locate_file(member)).absolute()
             _file_hash(path)
@@ -376,6 +530,335 @@ def _preprocessing_source():
     return expected
 
 
+def _selection_source():
+    """Bind the eligibility and ranking rules to the adjacent example source."""
+    expected = Path(__file__).with_name('tune_mnist.py').resolve()
+    if (sys.modules.get('tune_mnist') is not tune_mnist
+            or Path(tune_mnist.__file__).resolve() != expected
+            or tune_mnist.fully_valid_candidate_mask is not fully_valid_candidate_mask
+            or tune_mnist.ranked_valid_indices is not ranked_valid_indices
+            or Path(inspect.getsourcefile(fully_valid_candidate_mask)).resolve() != expected
+            or Path(inspect.getsourcefile(ranked_valid_indices)).resolve() != expected):
+        raise CheckpointError('Selection policy loaded outside the frozen example source')
+    check_selection_state()
+    return expected
+
+
+def _selection_failure():
+    raise CheckpointError('Selection policy changed in memory; restart before resuming')
+
+
+def _selection_defaults(function, name):
+    if function.__defaults__ is not None or function.__closure__ is not None:
+        _selection_failure()
+    keywords = function.__kwdefaults__
+    if name in ('score_value', 'score_ranks'):
+        if type(keywords) is not dict or set(keywords) != {'exact'} or keywords['exact'] is not None:
+            _selection_failure()
+    elif keywords is not None:
+        _selection_failure()
+
+
+def _selection_aggregation_literal(tree):
+    """Read the fixed source's sole direct string declaration, without execution.
+
+    This conservative syntax contract also declines nested-local rebinding. It
+    is not a general Python binding analyzer or a hostile-code security boundary.
+    """
+    name = 'ACCURACY_AGGREGATION'
+    declarations = [node for node in tree.body
+                    if isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == name]
+    if len(declarations) != 1:
+        _selection_failure()
+    declaration = declarations[0]
+    if not isinstance(declaration.value, ast.Constant) or type(declaration.value.value) is not str:
+        _selection_failure()
+    bindings = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Name) and node.id == name
+                and isinstance(node.ctx, (ast.Store, ast.Del))):
+            bindings.append(node)
+        elif (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                               ast.ExceptHandler, ast.MatchAs, ast.MatchStar))
+              and node.name == name):
+            bindings.append(node)
+        elif isinstance(node, ast.MatchMapping) and node.rest == name:
+            bindings.append(node)
+        elif isinstance(node, ast.alias) and (node.asname or node.name.split('.')[0]) == name:
+            bindings.append(node)
+    if len(bindings) != 1 or bindings[0] is not declaration.targets[0]:
+        _selection_failure()
+    return declaration.value.value
+
+def _initialize_selection_state():
+    """Compare fourteen loaded example functions with compiled, unexecuted source.
+
+    This is a bounded consistency check, not an interpreter security boundary.
+    Library internals, hostile changes to this guard and concurrent mutation
+    between a check and use remain outside its guarantee.
+    """
+    global _SELECTION_COMPILE_EVIDENCE
+    directory = Path(__file__).resolve().parent
+    modules = ((tune_mnist, 'tune_mnist'), (_selection_support, 'search_support'))
+    sources = {}
+    for module, name in modules:
+        path = directory / (name + '.py')
+        if (sys.modules.get(name) is not module
+                or Path(module.__file__).resolve() != path):
+            _selection_failure()
+        digest = _file_hash(path)
+        source = path.read_bytes()
+        if hashlib.sha256(source).hexdigest() != digest or _file_hash(path) != digest:
+            _selection_failure()
+        sources[name] = (source, digest)
+    functions = (
+        (tune_mnist, 'fully_valid_candidate_mask', fully_valid_candidate_mask),
+        (tune_mnist, 'ranked_valid_indices', ranked_valid_indices),
+        (_selection_support, 'score_value', score_value),
+        (_selection_support, 'accuracy_evidence', accuracy_evidence),
+        (_selection_support, 'accuracy_fraction', accuracy_fraction),
+        (_selection_support, '_fraction_record', _selection_support._fraction_record),
+        (_selection_support, 'exact_accuracy_available', _selection_support.exact_accuracy_available),
+        (_selection_support, 'score_token', _selection_support.score_token),
+        (_selection_support, 'token_value', _selection_support.token_value),
+        (_selection_support, 'comparable_tokens', _selection_support.comparable_tokens),
+        (_selection_support, 'equal_score_tokens', _selection_support.equal_score_tokens),
+        (_selection_support, 'score_nonimproving', _selection_support.score_nonimproving),
+        (_selection_support, 'apply_accuracy_evidence', apply_accuracy_evidence),
+        (_selection_support, 'score_ranks', score_ranks),
+    )
+    # Function code objects do not include evaluated defaults. Check the fixed
+    # release's source declarations too, before trusting loaded None defaults.
+    constants = {}
+    for module, module_name in modules:
+        names = {name for owner, name, _ in functions if owner is module}
+        definitions = {name: [] for name in names}
+        tree = ast.parse(sources[module_name][0], filename=str(directory / (module_name + '.py')))
+        if module_name == 'search_support':
+            constants['ACCURACY_AGGREGATION'] = _selection_aggregation_literal(tree)
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in definitions:
+                definitions[node.name].append(node)
+        for name, matches in definitions.items():
+            if (len(matches) != 1 or not isinstance(matches[0], ast.FunctionDef)
+                    or matches[0].decorator_list):
+                _selection_failure()
+            arguments = matches[0].args
+            if arguments.defaults:
+                _selection_failure()
+            if name in ('score_value', 'score_ranks'):
+                if (len(arguments.kwonlyargs) != 1 or arguments.kwonlyargs[0].arg != 'exact'
+                        or len(arguments.kw_defaults) != 1
+                        or not isinstance(arguments.kw_defaults[0], ast.Constant)
+                        or arguments.kw_defaults[0].value is not None):
+                    _selection_failure()
+            elif arguments.kwonlyargs or arguments.kw_defaults:
+                _selection_failure()
+    compiled, states, evidence = {}, [], []
+    for module, name, function in functions:
+        if (type(function) is not FunctionType or getattr(module, name) is not function
+                or function.__globals__ is not module.__dict__):
+            _selection_failure()
+        _selection_defaults(function, name)
+        module_name = 'tune_mnist' if module is tune_mnist else 'search_support'
+        source, digest = sources[module_name]
+        filename = function.__code__.co_filename
+        if Path(filename).resolve() != directory / (module_name + '.py'):
+            _selection_failure()
+        key = (module_name, filename)
+        if key not in compiled:
+            # compile constructs code objects only; it does not execute imports
+            # or module statements. Use the loaded filename/optimization mode
+            # so normal interpreter-specific code metadata compares correctly.
+            module_code = compile(source, filename, 'exec', dont_inherit=True,
+                                  optimize=sys.flags.optimize)
+            compiled[key] = {item.co_name: item for item in module_code.co_consts
+                             if type(item) is CodeType}
+        expected = compiled[key].get(name)
+        if expected is None or function.__code__ != expected:
+            _selection_failure()
+        states.append((module, name, function, function.__code__))
+        evidence.append((module_name, digest, filename, name))
+    by_name = {name: function for _, name, function, _ in states}
+    declared_aggregation = constants['ACCURACY_AGGREGATION']
+    for loaded in (_selection_support.ACCURACY_AGGREGATION, ACCURACY_AGGREGATION):
+        if type(loaded) is not str or loaded != declared_aggregation:
+            _selection_failure()
+    bindings = [
+        (sys.modules, 'tune_mnist', tune_mnist),
+        (sys.modules, 'search_support', _selection_support),
+        (sys.modules, 'numpy', np), (sys.modules, 're', re),
+        (tune_mnist.__dict__, 'np', np), (tune_mnist.__dict__, 're', re),
+        (tune_mnist.__dict__, 'score_value', by_name['score_value']),
+        (_selection_support.__dict__, 'np', np),
+        (_selection_support.__dict__, 'Fraction', Fraction),
+        (_selection_support.__dict__, 'ACCURACY_AGGREGATION', _selection_support.ACCURACY_AGGREGATION),
+        (globals(), 'ACCURACY_AGGREGATION', ACCURACY_AGGREGATION),
+    ]
+    for name in ('fully_valid_candidate_mask', 'ranked_valid_indices'):
+        bindings.append((tune_mnist.__dict__, name, by_name[name]))
+        bindings.append((globals(), name, by_name[name]))
+    for name in ('score_value', 'accuracy_evidence', 'accuracy_fraction',
+                 '_fraction_record', 'exact_accuracy_available', 'score_token',
+                 'token_value', 'comparable_tokens', 'equal_score_tokens',
+                 'score_nonimproving', 'apply_accuracy_evidence', 'score_ranks'):
+        bindings.append((_selection_support.__dict__, name, by_name[name]))
+    for name in ('score_value', 'accuracy_evidence', 'accuracy_fraction',
+                 'apply_accuracy_evidence', 'score_ranks'):
+        bindings.append((globals(), name, by_name[name]))
+    # A global shadow of a builtin also changes these functions' semantics.
+    # The fixed names below are the builtins used by the fourteen source functions.
+    builtin_names = {
+        'tune_mnist': ('sorted', 'int', 'list', 'range', 'len', 'float', 'ValueError'),
+        'search_support': ('isinstance', 'dict', 'set', 'ValueError', 'type', 'int',
+                           'len', 'any', 'sum', 'enumerate', 'float', 'range'),
+    }
+    missing_globals = []
+    for module, name, function, _ in states:
+        module_name = 'tune_mnist' if module is tune_mnist else 'search_support'
+        for builtin_name in builtin_names[module_name]:
+            if builtin_name in module.__dict__:
+                _selection_failure()
+            missing_globals.append((module.__dict__, builtin_name))
+            bindings.append((function.__builtins__, builtin_name, getattr(builtins, builtin_name)))
+    attributes = (
+        (np, 'ma', np.ma), (np.ma, 'asarray', np.ma.asarray),
+        (np, 'nan', np.nan), (np, 'isfinite', np.isfinite),
+        (np, 'flatnonzero', np.flatnonzero), (np, 'asarray', np.asarray),
+        (np, 'std', np.std), (np, 'int32', np.int32),
+        (re, 'fullmatch', re.fullmatch),
+    )
+    unique_bindings, binding_keys = [], set()
+    for mapping, name, expected in bindings:
+        if mapping.get(name) is not expected:
+            _selection_failure()
+        key = (id(mapping), name)
+        if key not in binding_keys:
+            binding_keys.add(key)
+            unique_bindings.append((mapping, name, expected))
+    unique_missing = {(id(mapping), name): (mapping, name)
+                      for mapping, name in missing_globals}
+    consumers = (
+        ('adaptive_search', (('fully_valid_candidate_mask', by_name['fully_valid_candidate_mask']),
+                             ('ranked_valid_indices', by_name['ranked_valid_indices']),
+                             ('score_value', by_name['score_value']),
+                             ('score_token', by_name['score_token']),
+                             ('token_value', by_name['token_value']),
+                             ('comparable_tokens', by_name['comparable_tokens']),
+                             ('equal_score_tokens', by_name['equal_score_tokens']),
+                             ('score_nonimproving', by_name['score_nonimproving']))),
+        ('ratio_refinement', (('score_token', by_name['score_token']),
+                              ('comparable_tokens', by_name['comparable_tokens']))),
+        ('numerical_confirmation', (('score_value', by_name['score_value']),
+                                    ('score_ranks', by_name['score_ranks']),
+                                    ('exact_accuracy_available', by_name['exact_accuracy_available']))),
+    )
+    _SELECTION_COMPILE_EVIDENCE = tuple(evidence)
+    return tuple(states), tuple(unique_bindings), attributes, tuple(unique_missing.values()), consumers
+
+
+def check_selection_state():
+    """Check the finite selection dependency set without rescanning the runtime."""
+    global _SELECTION_STATE
+    if _SELECTION_STATE is None:
+        with _HASH_LOCK:
+            if _SELECTION_STATE is None:
+                _SELECTION_STATE = _initialize_selection_state()
+    states, bindings, attributes, missing_globals, consumers = _SELECTION_STATE
+    for module, name, function, code in states:
+        if (getattr(module, name, None) is not function or function.__code__ is not code
+                or function.__globals__ is not module.__dict__):
+            _selection_failure()
+        _selection_defaults(function, name)
+    for mapping, name, expected in bindings:
+        if mapping.get(name) is not expected:
+            _selection_failure()
+    for owner, name, expected in attributes:
+        if getattr(owner, name, None) is not expected:
+            _selection_failure()
+    if any(name in mapping for mapping, name in missing_globals):
+        _selection_failure()
+    # Consumers may load after cv_checkpoint. Do not import them here: adaptive
+    # and optional workflows import this module themselves. Ratio/confirmation
+    # lazy selector imports are bound by the tune_mnist module/function checks.
+    for module_name, aliases in consumers:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            for name, expected in aliases:
+                if getattr(module, name, None) is not expected:
+                    _selection_failure()
+
+
+def _native_pool_fingerprint(files, *, native_threads):
+    """Observe native pools; callers own complete runtime boundary checks.
+
+    ``files`` receives the same lexical artifact guards used by the full
+    fingerprint. This helper does not claim to observe package/source identity.
+    """
+    global _RUNTIME_CONTROLLER, _RUNTIME_MODULE_COUNT
+    _RUNTIME_CONTROLLER = ThreadpoolController()
+    _RUNTIME_MODULE_COUNT = len(sys.modules)
+    pools = []
+    for pool in _RUNTIME_CONTROLLER.info():
+        record = {key: value for key, value in pool.items() if key != 'filepath'}
+        path = Path(pool['filepath']).absolute()
+        files[str(path)] = _file_hash(path)
+        canonical, _, verified = _runtime_artifact_identity(path)
+        if verified != files[str(path)]:
+            raise CheckpointError('Runtime pool artifact identity changed')
+        record.update(filepath=canonical, sha256=verified)
+        if pool.get('num_threads') != native_threads:
+            if native_threads == 1:
+                raise CheckpointError('Checkpointed CV requires one active native thread per worker')
+            raise CheckpointError('Final-fit runtime does not match its requested native-thread budget')
+        pools.append(record)
+    if not any(pool.get('user_api') == 'blas' for pool in pools):
+        raise CheckpointError('Loaded BLAS identity is unavailable')
+    return pools
+
+
+def _runtime_package_paths(root):
+    """Enumerate a stable package tree, retaining live caller file checks.
+
+    Directory entries select traversal only; the caller uses fresh lexical
+    regular-file classification and hash checks. Do not descend into directory symlinks
+    or excluded bytecode caches. A changed installation is rejected by the
+    existing cross-observation inventories and live artifact guards; no traversal
+    is an atomic filesystem snapshot.
+    """
+    if not hasattr(type(root), 'walk'):
+        # Preserve the older pathlib traversal and its narrower error policy.
+        yield from root.rglob('*')
+        return
+    if not root.is_dir() or '__pycache__' in root.parts:
+        return
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            scan = os.scandir(directory)
+        except OSError:
+            # Match pathlib's default handling of an unlistable directory.
+            continue
+        with scan:
+            entries = list(scan)
+        children = []
+        for entry in entries:
+            if entry.name == '__pycache__':
+                continue
+            path = directory / entry.name
+            yield path
+            try:
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                is_directory = False
+            if is_directory:
+                children.append(path)
+        pending.extend(reversed(children))
+
+
 def runtime_fingerprint(*, check_inventory=True, native_threads=1):
     """Hash once, check complete inventory per stage and core/native guards per fit.
 
@@ -387,8 +870,9 @@ def runtime_fingerprint(*, check_inventory=True, native_threads=1):
     if isinstance(native_threads, (bool, np.bool_)) or not isinstance(native_threads, (int, np.integer)) or native_threads < 1:
         raise ValueError('native_threads must be a positive integer')
     global _RUNTIME_FILES, _RUNTIME_PACKAGE_FILES, _RUNTIME_PACKAGES, _RUNTIME_MODULES
-    global _RUNTIME_DIGEST, _RUNTIME_NATIVE, _RUNTIME_ACCELERATOR
+    global _RUNTIME_DIGEST, _RUNTIME_NATIVE, _RUNTIME_ACCELERATOR, _RUNTIME_FILE_COUNT
     global _RUNTIME_CONTROLLER, _RUNTIME_MODULE_COUNT
+    global _RUNTIME_COMMON_FILES, _RUNTIME_COMMON_DIGEST, _RUNTIME_COMMON_FILE_COUNT
     from ensemble_dwd._cache_identity import _package_identity
     from dwd import _compiled_residual, _native_residual
     import scipy.linalg  # Load numerical dependencies before observing thread pools.
@@ -416,14 +900,17 @@ def runtime_fingerprint(*, check_inventory=True, native_threads=1):
                           'distribution_version': installed, 'origin': str(origin)}
         module_guards[name] = (module, str(origin), packages[name]['version'])
         if deep:
-            candidates = [origin] if not hasattr(module, '__path__') else root.rglob('*')
+            candidates = [origin] if not hasattr(module, '__path__') else _runtime_package_paths(root)
             for path in candidates:
-                if not path.is_file() or '__pycache__' in path.parts:
+                if '__pycache__' in path.parts:
+                    continue
+                info = _inventory_regular_stat(path)
+                if info is None:
                     continue
                 suffixes = ('.py', '.c', '.h', '.pyd', '.dll', '.so', '.dylib')
                 if path.suffix.lower() in suffixes or '.so.' in path.name or (name == 'aocl_runtime' and path.suffix.lower() == '.json'):
                     path = path.absolute()
-                    files[str(path)] = _file_hash(path)
+                    files[str(path)] = _file_hash_observed(path, info)
                     if name in ('dwd', 'ensemble_dwd', 'aocl_runtime'):
                         _RUNTIME_GUARDS.add(path)
     if _RUNTIME_PACKAGES is None:
@@ -437,41 +924,183 @@ def runtime_fingerprint(*, check_inventory=True, native_threads=1):
     _loaded_source_guards()
     for path in _RUNTIME_GUARDS:
         _file_hash(path)
-    # Enumerate newly loaded libraries only at a stage boundary or after a
-    # Python extension/module import; the controller queries live thread counts.
-    if deep or _RUNTIME_CONTROLLER is None or _RUNTIME_MODULE_COUNT != len(sys.modules):
-        _RUNTIME_CONTROLLER = ThreadpoolController()
-        _RUNTIME_MODULE_COUNT = len(sys.modules)
-    pools = []
-    for pool in _RUNTIME_CONTROLLER.info():
-        record = {key: value for key, value in pool.items() if key != 'filepath'}
-        path = Path(pool['filepath']).absolute()
-        files[str(path)] = _file_hash(path)
-        record.update(filepath=str(path), sha256=files[str(path)])
-        if pool.get('num_threads') != native_threads:
-            if native_threads == 1:
-                raise CheckpointError('Checkpointed CV requires one active native thread per worker')
-            raise CheckpointError('Final-fit runtime does not match its requested native-thread budget')
-        pools.append(record)
-    if not any(pool.get('user_api') == 'blas' for pool in pools):
-        raise CheckpointError('Loaded BLAS identity is unavailable')
+    # Native loads (including ctypes) need not change sys.modules. Discover
+    # pools at every observation; shallow calls still reuse package inventories.
+    common_files = dict(files)
+    pools = _native_pool_fingerprint(files, native_threads=native_threads)
     for path in (Path(sys.executable), Path(__file__), Path(__file__).with_name('phase_threads.py'),
-                 _preprocessing_source(),
+                 _preprocessing_source(), _selection_source(),
                  Path(inspect.getsourcefile(CandidateEvaluator))):
-        files[str(path.absolute())] = _file_hash(path)
+        name = str(path.absolute())
+        files[name] = common_files[name] = _file_hash(path)
     for path in _RUNTIME_GUARDS:
         if path.name == 'METADATA':
-            files[str(path)] = _file_hash(path)
+            files[str(path)] = common_files[str(path)] = _file_hash(path)
     inventory = sorted(files)
+    common_inventory = sorted(common_files)
     if _RUNTIME_FILES is None:
+        canonical_files = {}
+        canonical_stamps = {}
+        canonical_common = {}
+        for name, digest in files.items():
+            canonical, stamp, verified = _runtime_artifact_identity(name)
+            if verified != digest:
+                raise CheckpointError('Runtime artifact inventory identity changed')
+            if canonical in canonical_files and (canonical_files[canonical] != digest
+                                                  or canonical_stamps[canonical] != stamp):
+                raise CheckpointError('Conflicting canonical runtime inventory: ' + canonical)
+            canonical_files[canonical], canonical_stamps[canonical] = digest, stamp
+            if name in common_files:
+                canonical_common[canonical] = digest
         _RUNTIME_FILES = inventory
-        _RUNTIME_DIGEST = _digest(files)
-    elif inventory != _RUNTIME_FILES:
+        _RUNTIME_DIGEST = _digest(canonical_files)
+        _RUNTIME_FILE_COUNT = len(canonical_files)
+        _RUNTIME_COMMON_FILES = common_inventory
+        _RUNTIME_COMMON_DIGEST = _digest(canonical_common)
+        _RUNTIME_COMMON_FILE_COUNT = len(canonical_common)
+    elif inventory != _RUNTIME_FILES or common_inventory != _RUNTIME_COMMON_FILES:
         raise CheckpointError('Loaded runtime inventory changed in this process; restart before resuming')
+    emitted_packages = {name: {**record, 'origin': _runtime_artifact_identity(record['origin'])[0]}
+                        for name, record in packages.items()}
     return {'python': sys.version, 'implementation': platform.python_implementation(),
-            'machine': platform.machine(), 'packages': packages, 'package_native': _RUNTIME_NATIVE,
-            'files_sha256': _RUNTIME_DIGEST, 'file_count': len(files),
-            'native_pools': sorted(pools, key=lambda row: row['filepath'])}
+            'machine': platform.machine(), 'packages': emitted_packages, 'package_native': _RUNTIME_NATIVE,
+            'files_sha256': _RUNTIME_DIGEST, 'file_count': _RUNTIME_FILE_COUNT,
+            'native_pools': sorted(pools, key=lambda row: row['filepath']),
+            'runtime_policy': _RUNTIME_ROLE_POLICY,
+            'common_files_sha256': _RUNTIME_COMMON_DIGEST,
+            'common_file_count': _RUNTIME_COMMON_FILE_COUNT}
+
+
+def _runtime_fields(value):
+    """Read only the closed runtime encoding; never decode estimator identities."""
+    if (type(value) is not list or len(value) != 2 or value[0] != 'dict'
+            or type(value[1]) is not list):
+        raise CheckpointError('Malformed execution-role runtime identity')
+    fields = {}
+    for row in value[1]:
+        if (type(row) is not list or len(row) != 2 or type(row[0]) is not str
+                or row[0] in fields):
+            raise CheckpointError('Malformed or duplicate runtime identity field')
+        fields[row[0]] = row[1]
+    return fields
+
+
+def _role_runtime(value):
+    fields = _runtime_fields(value)
+    required = {'python', 'implementation', 'machine', 'packages', 'package_native',
+                'files_sha256', 'file_count', 'native_pools', 'runtime_policy',
+                'common_files_sha256', 'common_file_count'}
+    if set(fields) != required or fields['runtime_policy'] != _stable(_RUNTIME_ROLE_POLICY):
+        raise CheckpointError('Unsupported execution-role runtime policy')
+    for name in ('files_sha256', 'common_files_sha256'):
+        encoded = fields[name]
+        if (type(encoded) is not list or len(encoded) != 2 or encoded[0] != 'str'
+                or type(encoded[1]) is not str
+                or re.fullmatch(r'[0-9a-f]{64}', encoded[1]) is None):
+            raise CheckpointError('Malformed runtime artifact digest')
+    for name in ('file_count', 'common_file_count'):
+        encoded = fields[name]
+        if (type(encoded) is not list or len(encoded) != 2 or encoded[0] != 'int'
+                or type(encoded[1]) is not int or encoded[1] < 1):
+            raise CheckpointError('Malformed runtime artifact count')
+    if fields['common_file_count'][1] > fields['file_count'][1]:
+        raise CheckpointError('Common runtime inventory exceeds full inventory')
+    encoded_pools = fields['native_pools']
+    if (type(encoded_pools) is not list or len(encoded_pools) != 2
+            or encoded_pools[0] != 'list' or type(encoded_pools[1]) is not list):
+        raise CheckpointError('Malformed runtime native-pool list')
+    blas = False
+    for row in encoded_pools[1]:
+        pool = _runtime_fields(row)
+        if not {'filepath', 'sha256', 'num_threads', 'user_api'}.issubset(pool):
+            raise CheckpointError('Incomplete runtime native-pool identity')
+        for name in ('filepath', 'sha256'):
+            encoded = pool[name]
+            if (type(encoded) is not list or len(encoded) != 2 or encoded[0] != 'str'
+                    or type(encoded[1]) is not str or not encoded[1]):
+                raise CheckpointError('Malformed native-pool artifact identity')
+        if (not Path(pool['filepath'][1]).is_absolute()
+                or re.fullmatch(r'[0-9a-f]{64}', pool['sha256'][1]) is None):
+            raise CheckpointError('Malformed native-pool artifact path or digest')
+        if pool['user_api'] not in (_stable('blas'), _stable('openmp')):
+            raise CheckpointError('Unsupported native-pool API identity')
+        count = pool['num_threads']
+        if (type(count) is not list or len(count) != 2 or count[0] != 'int'
+                or type(count[1]) is not int or count[1] != 1):
+            raise CheckpointError('Execution-role runtime requires native threads equal to one')
+        blas = blas or pool['user_api'] == _stable('blas')
+    if not blas:
+        raise CheckpointError('Loaded BLAS identity is unavailable')
+    return fields
+
+
+def _require_execution_compatible(execution, coordinator):
+    """Admit only P-only pools; actual workers still require exact full W."""
+    worker, parent = _role_runtime(execution), _role_runtime(coordinator)
+    common = ('python', 'implementation', 'machine', 'packages', 'package_native',
+              'runtime_policy', 'common_files_sha256', 'common_file_count')
+    changed = [name for name in common
+               if _canonical(worker[name]) != _canonical(parent[name])]
+    if changed:
+        raise CheckpointError('Execution and coordinator common runtime differs: '
+                              + ', '.join(changed[:4]))
+    worker_pools = Counter(_canonical(row) for row in worker['native_pools'][1])
+    parent_pools = Counter(_canonical(row) for row in parent['native_pools'][1])
+    if worker_pools - parent_pools:
+        raise CheckpointError('Execution native pools are not contained in coordinator runtime')
+    worker_paths = {_runtime_fields(row)['filepath'][1] for row in worker['native_pools'][1]}
+    parent_paths = {_runtime_fields(row)['filepath'][1] for row in parent['native_pools'][1]}
+    worker_count, parent_count = worker['file_count'][1], parent['file_count'][1]
+    if not worker_count <= parent_count <= worker_count + len(parent_paths - worker_paths):
+        raise CheckpointError('Execution and coordinator artifact counts are inconsistent')
+    # Exact common identity plus pool inclusion permits only additional files.
+    # These are necessary aggregate joins, not reconstruction of a hidden map.
+    if (worker_pools == parent_pools or worker_count == parent_count) and (
+            worker['file_count'] != parent['file_count']
+            or worker['files_sha256'] != parent['files_sha256']):
+        raise CheckpointError('Execution and coordinator full artifact identities are inconsistent')
+
+
+def _execution_runtime_probe(estimator):
+    # The real task payload has already deserialized/imported its estimator.
+    # No fitting, prediction, scoring or random-state draws occur here.
+    _stable(estimator)
+    with threadpool_limits(limits=1):
+        return _stable(runtime_fingerprint())
+
+
+def _execution_import_probe():
+    # Resolving this module-qualified task imports the checkpoint module.
+    # No estimator payload, runtime fingerprint or identity is created here.
+    return None
+
+
+def _probe_execution_runtime(estimator, *, jobs):
+    if type(jobs) is not int or jobs <= 1:
+        raise CheckpointError('A parallel execution probe requires jobs greater than one')
+    with parallel_config(backend='loky', inner_max_num_threads=1), threadpool_limits(limits=1):
+        result = Parallel(n_jobs=jobs, pre_dispatch=jobs, batch_size=1)(
+            [delayed(_execution_runtime_probe)(estimator)]
+            + [delayed(_execution_import_probe)() for _ in range(jobs - 1)])
+    if len(result) != jobs or any(row is not None for row in result[1:]):
+        raise CheckpointError('Invalid execution runtime probe result')
+    return result[0]
+
+
+def _saved_identity(path, *, schema=SCHEMA):
+    """Authenticate a saved identity before extracting its execution runtime."""
+    record = _read_json(path)
+    if type(record) is not dict or set(record) != {'payload', 'sha256'}:
+        raise CheckpointError('Malformed saved identity envelope')
+    payload = record['payload']
+    if (type(payload) is not dict or set(payload) != {'identity_sha256', 'identity'}
+            or record['sha256'] != _digest(payload)):
+        raise CheckpointError('Saved identity checksum or structure mismatch')
+    identity = payload['identity']
+    if (type(identity) is not dict or identity.get('schema') != schema
+            or payload['identity_sha256'] != _digest(identity)):
+        raise CheckpointError('Saved identity digest or schema mismatch')
+    return identity, payload['identity_sha256']
 
 
 def _row_diagnostics(rows, y=None):
@@ -651,8 +1280,9 @@ def _equivalence_key(proof, identity, fold):
 def _fold_equivalence(candidate, identity, fold, y_train):
     """Conservative semantic identity; unsupported candidates still fit normally.
 
-    Only supported built-in parameter types are eligible: normalizing any
-    NumPy scalar before multiplication can change selection or subset counts.
+    Only supported built-in parameter types are eligible. Row-count
+    normalization does not merge concrete parameter identities or extend
+    this reuse proof to NumPy scalar parameters.
     """
     if not _reuse_parameter_types(candidate):
         return None
@@ -855,8 +1485,10 @@ def _fit_fold(folder, identity, runtime, token, task, estimator, parameters, X, 
         fold_receipt_committed = False
         try:
             with threadpool_limits(limits=1):
-                if _stable(runtime_fingerprint(check_inventory=False)) != runtime:
-                    raise CheckpointError('Worker runtime differs from the frozen CV identity')
+                observed_runtime = _stable(runtime_fingerprint(check_inventory=False))
+                if observed_runtime != runtime:
+                    raise CheckpointError('Worker runtime differs from the frozen CV identity'
+                                          + _runtime_mismatch_details(runtime, observed_runtime))
                 model = clone(estimator).set_params(**parameters)
                 if context is None:
                     evaluator = CandidateEvaluator(model, error_policy=error_policy, failure_dir=failure_dir)
@@ -878,8 +1510,10 @@ def _fit_fold(folder, identity, runtime, token, task, estimator, parameters, X, 
                     if error_policy != 'nan' or failure['category'] not in ('ineligible_selection', 'ineligible_subset'):
                         raise CheckpointError('Unexpected ineligible result')
                 # Check core package/native guards and newly loaded pools before committing.
-                if _stable(runtime_fingerprint(check_inventory=False)) != runtime:
-                    raise CheckpointError('Worker runtime changed during the fit')
+                observed_runtime = _stable(runtime_fingerprint(check_inventory=False))
+                if observed_runtime != runtime:
+                    raise CheckpointError('Worker runtime changed during the fit'
+                                          + _runtime_mismatch_details(runtime, observed_runtime))
                 record = {**attempt, 'state': state, 'completed_at': _now(),
                           'score': float(score) if state == 'complete' else None,
                           'fit_time': fit_time, 'score_time': score_time,
@@ -931,8 +1565,10 @@ def _reuse_fold(folder, identity, runtime, token, task, parameters, fold, proof,
         owner = _read_json(folder / 'owner.json')
         if owner.get('token') != token or owner.get('state') != 'active':
             raise CheckpointBusyError('The dispatching coordinator no longer owns this run')
-        if _stable(runtime_fingerprint(check_inventory=False)) != runtime:
-            raise CheckpointError('Worker runtime differs from the frozen CV identity')
+        observed_runtime = _stable(runtime_fingerprint(check_inventory=False))
+        if observed_runtime != runtime:
+            raise CheckpointError('Worker runtime differs from the frozen CV identity'
+                                  + _runtime_mismatch_details(runtime, observed_runtime))
         path = folder / 'folds' / (task + '.json')
         if path.exists():
             return _valid_fold(path, identity, task, parameters=parameters, fold=fold,
@@ -953,8 +1589,10 @@ def _reuse_fold(folder, identity, runtime, token, task, parameters, fold, proof,
                       'diagnostics_source_task_sha256': source_task, 'reuse_seconds': perf_counter() - started}}
         _validate_equivalence(record, identity, task)
         _validate_alias(record, path, identity, validation_size=validation_size)
-        if _stable(runtime_fingerprint(check_inventory=False)) != runtime:
-            raise CheckpointError('Worker runtime changed before equivalent-fold publication')
+        observed_runtime = _stable(runtime_fingerprint(check_inventory=False))
+        if observed_runtime != runtime:
+            raise CheckpointError('Worker runtime changed before equivalent-fold publication'
+                                  + _runtime_mismatch_details(runtime, observed_runtime))
         # Include all verification before publication; the atomic write itself
         # remains part of the enclosing stage's wall time.
         record['equivalent_reuse']['reuse_seconds'] = perf_counter() - started
@@ -989,13 +1627,123 @@ def _fit_fold_group(folder, identity, runtime, token, estimator, X, y, error_pol
     return completed
 
 
+class _EntryImportPreparation:
+    """Overlap fixed import-only tasks; never qualify or serialize an estimator."""
+
+    def __init__(self, manifest, *, jobs, resume):
+        self.manifest, self.jobs, self.resume = manifest, jobs, resume
+        self.enabled = False
+        self.failure = None
+        self.stack = self.pool = self.pending = None
+        self.pool_enter_attempted = False
+
+    def start(self):
+        if self.jobs <= 1 or self.resume:
+            return
+        try:
+            if self.manifest.exists():
+                return
+        except OSError:
+            # This is only a routing hint. The original authoritative lookup
+            # still follows the first parent fingerprint and observes errors.
+            return
+        except Exception as error:
+            self.enabled = True
+            self.failure = (error, error.__traceback__)
+            return
+        self.enabled = True
+        try:
+            self.stack = ExitStack()
+            self.stack.enter_context(parallel_config(backend='loky', inner_max_num_threads=1))
+            self.stack.enter_context(threadpool_limits(limits=1))
+            self.pool = Parallel(n_jobs=self.jobs, pre_dispatch=self.jobs,
+                                 batch_size=1, return_as='generator')
+            # A failed __enter__ can still have partially initialized a backend.
+            self.pool_enter_attempted = True
+            self.pool.__enter__()
+            self.pending = self.pool(
+                [delayed(_execution_import_probe)() for _ in range(self.jobs - 1)])
+        except Exception as error:
+            # Retain the failure until the original parent/manifest checks have
+            # had their precedence. No preparation or real task is retried.
+            self.failure = (error, error.__traceback__)
+            self.close(primary=error)
+        except BaseException as error:
+            self.close(primary=error)
+            raise
+
+    def probe(self, estimator):
+        if not self.enabled:
+            return _probe_execution_runtime(estimator, jobs=self.jobs)
+        if self.failure is not None:
+            error, traceback = self.failure
+            raise error.with_traceback(traceback)
+        imported = list(self.pending)
+        self.pending = None
+        if len(imported) != self.jobs - 1 or any(value is not None for value in imported):
+            raise CheckpointError('Invalid entry import preparation result')
+        # The caller has completed its first parent fingerprint and original
+        # manifest validation. This is the only estimator-bearing submission.
+        self.pending = self.pool([delayed(_execution_runtime_probe)(estimator)])
+        result = list(self.pending)
+        self.pending = None
+        if len(result) != 1:
+            raise CheckpointError('Invalid execution runtime probe result')
+        return result[0]
+
+    def close(self, *, primary=None):
+        if primary is not None and self.failure is not None and self.failure[0] is not primary:
+            try:
+                secondary = self.failure[0]
+                primary.add_note('Entry preparation also failed: ' + repr(secondary))
+                for note in getattr(secondary, '__notes__', ()):
+                    primary.add_note(note)
+            except BaseException:
+                pass
+        pending, pool, stack = self.pending, self.pool, self.stack
+        attempted = self.pool_enter_attempted
+        self.pending = self.pool = self.stack = None
+        self.pool_enter_attempted = False
+        errors = []
+        if pending is not None:
+            try:
+                pending.close()
+            except BaseException as error:
+                errors.append(('pending import/authority generator', error))
+        if pool is not None and attempted:
+            try:
+                pool.__exit__(None, None, None)
+            except BaseException as error:
+                errors.append(('managed preparation pool', error))
+        if stack is not None:
+            try:
+                stack.close()
+            except BaseException as error:
+                errors.append(('preparation configuration/limits', error))
+        if errors:
+            target = primary if primary is not None else errors[0][1]
+            for where, error in errors:
+                try:
+                    target.add_note('Entry preparation cleanup failed at ' + where + ': ' + repr(error))
+                except BaseException:
+                    # Diagnostics must not replace the primary error.
+                    pass
+            if primary is None:
+                raise target
+
+
+
 class CheckpointedCV:
     """Context-managed, fixed-fold, accuracy-only whole-pipeline CV.
 
     ``provenance`` must contain stable run settings, not timestamps or the
     subsequently returned ``identity``. ``resume=True`` permits only exact
-    provenance/runtime/data/fold matches. Explicit random seeds are required
-    whenever an estimator exposes a random_state parameter.
+    provenance/execution-runtime/data/fold matches. Common source/library
+    identity remains exact; coordinator-only native pools are session provenance.
+    New parallel runs establish one worker runtime before fitting. Resume uses
+    that saved runtime and every actual worker checks it before and after work.
+    Explicit random seeds are required whenever an estimator exposes a
+    random_state parameter.
 
     Schema 2 preserves parameter types, including NumPy scalar types and
     list/tuple distinctions. Older checkpoint directories cannot be resumed;
@@ -1106,18 +1854,43 @@ class CheckpointedCV:
 
     def __enter__(self):
         self.folder.mkdir(parents=True, exist_ok=True)
+        preparation = None
         self.lease = _Lease(self.folder / 'session.lock')
         try:
             self.lease.__enter__()
-            for name in ('folds', 'attempts', 'locks', 'artifacts'):
+            for name in ('folds', 'attempts', 'locks', 'artifacts', 'sessions'):
                 (self.folder / name).mkdir(exist_ok=True)
+            preparation = _EntryImportPreparation(self.folder / 'identity.json', jobs=self.jobs, resume=self.resume)
+            preparation.start()
             with threadpool_limits(limits=1):
                 self.runtime = _stable(runtime_fingerprint())
+            manifest = self.folder / 'identity.json'
+            saved_identity = None
+            if manifest.exists():
+                if not self.resume:
+                    raise CheckpointError('Checkpoint already exists; explicitly request resume')
+                saved_identity, _ = _saved_identity(manifest)
+                self.execution_runtime = saved_identity.get('runtime')
+            else:
+                if self.resume:
+                    raise CheckpointError('No checkpoint identity exists for this run')
+                self.execution_runtime = (self.runtime if self.jobs == 1 else
+                    preparation.probe(self.estimator))
+            _require_execution_compatible(self.execution_runtime, self.runtime)
+            if self.jobs == 1 and _canonical(self.execution_runtime) != _canonical(self.runtime):
+                raise CheckpointError('Serial execution runtime differs from the frozen CV identity')
+            # Probe serialization/imports must not silently redefine this session.
+            if saved_identity is None and self.jobs > 1:
+                with threadpool_limits(limits=1):
+                    if _canonical(_stable(runtime_fingerprint())) != _canonical(self.runtime):
+                        raise CheckpointError('Coordinator runtime changed while establishing execution identity')
+            preparation.close()
+            preparation = None
             self.identity = {'schema': SCHEMA, 'data': data_fingerprint(self.X, self.y),
                              'folds': [{'train': array_fingerprint(t), 'validation': array_fingerprint(v)} for t, v in self.folds],
                              'estimator': _stable(self.estimator), 'error_policy': self.error_policy,
                              'scoring': 'accuracy', 'accuracy_aggregation': ACCURACY_AGGREGATION,
-                             'native_threads': 1, 'runtime': self.runtime,
+                             'native_threads': 1, 'runtime': self.execution_runtime,
                              'provenance': _stable(self.provenance)}
             if self.pair_recovery:
                 self.identity['pair_recovery'] = deepcopy(self._pair_recovery_config)
@@ -1127,26 +1900,32 @@ class CheckpointedCV:
             if self.cv_seeds is not None:
                 self.identity['seed_policy'] = self._seed_policy()
             self.identity_sha256 = _digest(self.identity)
-            manifest = self.folder / 'identity.json'
-            if manifest.exists():
-                if not self.resume:
-                    raise CheckpointError('Checkpoint already exists; explicitly request resume')
+            if saved_identity is not None:
                 saved = _read_receipt(manifest, self.identity_sha256)
                 if _canonical(saved.get('identity')) != _canonical(self.identity):
                     raise CheckpointError('Run identity changed; use a new run directory')
             else:
-                if self.resume:
-                    raise CheckpointError('No checkpoint identity exists for this run')
                 _write_receipt(manifest, {'identity_sha256': self.identity_sha256, 'identity': self.identity})
             # Invalidate unstarted work from a dead parent before checking live workers.
             self.token = uuid.uuid4().hex
+            self._runtime_session = {
+                'identity_sha256': self.identity_sha256, 'owner_token': self.token,
+                'policy': _RUNTIME_ROLE_POLICY, 'runtime': self.runtime,
+                'execution_runtime_sha256': _digest(self.execution_runtime),
+                'pid': os.getpid(), 'started_at': _now()}
+            self._runtime_session_path = self.folder / 'sessions' / (self.token + '.json')
+            if self._runtime_session_path.exists():
+                raise CheckpointError('Coordinator session identifier already exists')
+            _write_receipt(self._runtime_session_path, self._runtime_session)
             write_json_atomic(self.folder / 'owner.json', {'token': self.token, 'state': 'active',
                               'pid': os.getpid(), 'started_at': _now()}, replace=True)
             for path in (self.folder / 'locks').glob('*.lock'):
                 with _Lease(path):
                     pass
             return self
-        except BaseException:
+        except BaseException as error:
+            if preparation is not None:
+                preparation.close(primary=error)
             self.__exit__(*sys.exc_info())
             raise
 
@@ -1189,6 +1968,13 @@ class CheckpointedCV:
         return self.folder / 'artifacts' / (name + '.json')
 
     def _check_runtime(self):
+        if (_canonical(self.execution_runtime) != _canonical(self.identity.get('runtime'))
+                or _digest(self.execution_runtime) != self._runtime_session['execution_runtime_sha256']
+                or self.token != self._runtime_session['owner_token']
+                or _canonical(self.runtime) != _canonical(self._runtime_session['runtime'])
+                or _canonical(_read_receipt(self._runtime_session_path, self.identity_sha256))
+                   != _canonical(self._runtime_session)):
+            raise CheckpointError('Coordinator session or execution runtime identity changed')
         frozen = self.identity.get('pair_recovery')
         if (self.pair_recovery is not (frozen is not None)
                 or (frozen is not None and self.pair_recovery_max_bytes != frozen['max_bytes'])
@@ -1198,8 +1984,10 @@ class CheckpointedCV:
             from pair_recovery import check_source_hashes
             check_source_hashes(frozen)
         with threadpool_limits(limits=1):
-            if _stable(runtime_fingerprint()) != self.runtime:
-                raise CheckpointError('Coordinator runtime changed during this run')
+            observed_runtime = _stable(runtime_fingerprint())
+            if observed_runtime != self.runtime:
+                raise CheckpointError('Coordinator runtime changed during this run'
+                                      + _runtime_mismatch_details(self.runtime, observed_runtime))
 
     def check_runtime(self):
         """Verify full frozen provenance, including immediately after final refit."""
@@ -1356,7 +2144,7 @@ class CheckpointedCV:
                         raise CheckpointError('Saved equivalent-fold eligibility or identity changed')
                     if self.pair_recovery:
                         from pair_recovery import cleanup_saved_fold
-                        saved = cleanup_saved_fold(self.folder, self.identity_sha256, self.runtime,
+                        saved = cleanup_saved_fold(self.folder, self.identity_sha256, self.execution_runtime,
                             self.token, task, parameters, fold, train, validation, self.X, self.y,
                             self._pair_recovery_config)
                     records[candidate_index, fold] = (saved, True)
@@ -1371,7 +2159,7 @@ class CheckpointedCV:
                     proof = member[-1]
                     key = proof['key'] if proof is not None else member[2]
                     groups.setdefault(key, []).append(member)
-                arguments = (self.folder, self.identity_sha256, self.runtime, self.token,
+                arguments = (self.folder, self.identity_sha256, self.execution_runtime, self.token,
                              self.estimator, self.X, self.y, self.error_policy,
                              str(self.folder.parent / 'failures'))
                 if self.jobs == 1:
@@ -1387,13 +2175,13 @@ class CheckpointedCV:
                             records[ci, fi] = result
             elif self.jobs == 1:
                 for ci, fi, task, params, train, validation, _ in work:
-                    records[ci, fi] = _fit_fold(self.folder, self.identity_sha256, self.runtime, self.token,
+                    records[ci, fi] = _fit_fold(self.folder, self.identity_sha256, self.execution_runtime, self.token,
                         task, self.estimator, params, self.X, self.y, train, validation, fi,
                         self.error_policy, str(self.folder.parent / 'failures'),
                         pair_recovery=self._pair_recovery_config)
             else:
                 completed = Parallel(n_jobs=self.jobs, pre_dispatch=self.jobs, batch_size=1)(
-                    delayed(_fit_fold)(self.folder, self.identity_sha256, self.runtime, self.token,
+                    delayed(_fit_fold)(self.folder, self.identity_sha256, self.execution_runtime, self.token,
                         task, self.estimator, params, self.X, self.y, train, validation, fi,
                         self.error_policy, str(self.folder.parent / 'failures'),
                         pair_recovery=self._pair_recovery_config)

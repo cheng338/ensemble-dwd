@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import clone
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
@@ -106,7 +107,7 @@ class FoldEquivalenceProofTests(unittest.TestCase):
                    'model__gamma': .3, 'model__random_state': 43,
                    'model__max_iter': 5, 'model__obj_tol': 1e-7,
                    'model__residual_check_order': 'adaptive',
-                   'model__affine_computation': 'joint',
+                   'model__affine_computation': 'standard',
                    'model__exact_recovery': 'extended',
                    'scale__with_std': False, 'scale__with_mean': False}
         for name, value in changes.items():
@@ -203,7 +204,7 @@ class EquivalentFoldReuseTests(unittest.TestCase):
         self.X, self.y = binary_data()
         self.folds = list(StratifiedKFold(2, shuffle=True, random_state=42).split(self.X, self.y))
         self.runtime_patch = patch.object(checkpoint, 'runtime_fingerprint',
-                                         return_value={'test_runtime': 'fixed', 'native_threads': 1})
+                                         return_value=synthetic_runtime())
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
 
@@ -345,7 +346,7 @@ class EquivalentFoldReuseTests(unittest.TestCase):
                 direct = clone(model).set_params(model__sv_selection_ratio=ratio).fit(X[train], y[train])
                 direct_model = direct.named_steps['model']
                 self.assertIs(type(direct_model.theta), np.float32)
-                expected_subset_size = max(2, int(len(train) * direct_model.theta))
+                expected_subset_size = max(2, int(len(train) * float(direct_model.theta)))
                 self.assertEqual(len(direct_model.subset_indices_[0]), expected_subset_size)
                 facts = result.checkpoint_summary_['diagnostics'][candidate_index][fold_index]
                 self.assertEqual(facts['subset_sizes'], [expected_subset_size])

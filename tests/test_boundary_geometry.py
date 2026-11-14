@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
@@ -243,7 +244,7 @@ class BoundaryGeometryTests(unittest.TestCase):
                             folds=folds, jobs=1, provenance={'boundary': 'fixed-test'})
             CountingBoundaryClassifier.calls, CountingBoundaryClassifier.interrupt_at = 0, 3
             try:
-                with patch.object(cv_checkpoint, 'runtime_fingerprint', return_value={'runtime': 'fixed-test'}):
+                with patch.object(cv_checkpoint, 'runtime_fingerprint', return_value=synthetic_runtime(source='boundary-geometry-test')):
                     with self.assertRaises(KeyboardInterrupt), cv_checkpoint.CheckpointedCV(**settings) as checkpoint:
                         checkpoint.search(grid)
                     CountingBoundaryClassifier.calls, CountingBoundaryClassifier.interrupt_at = 0, None

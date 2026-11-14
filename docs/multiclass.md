@@ -3,6 +3,9 @@
 `OvOClassifier(EnsembleKernelDWD(...))` provides one-versus-one multiclass
 classification using the binary ensemble DWD estimator for each class pair.
 
+See [Choosing Ensemble options](choosing_options.md) for pair/CV parallelism,
+prediction batching, search controls and when completed-pair recovery is useful.
+
 ## Method
 
 Chapter 5's multiclass experiment in Chang Cheng's dissertation trains one

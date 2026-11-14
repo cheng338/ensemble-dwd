@@ -22,11 +22,11 @@ class AutomaticResidualPolicyTests(unittest.TestCase):
             self.assertEqual(learner.residual_check_order, expected)
             self.assertEqual(learner.diagnostics_['residual_check_order'], expected)
 
-    def test_nine_policy_combinations_match_concrete_controls(self):
-        for affine in ('auto', 'standard', 'joint'):
+    def test_six_policy_combinations_match_concrete_controls(self):
+        for affine in ('standard', 'joint'):
             for residual in ('auto', 'refinement_first', 'adaptive'):
                 with self.subTest(affine=affine, residual=residual):
-                    a = 'joint' if affine == 'auto' else affine
+                    a = affine
                     r = 'adaptive' if residual == 'auto' else residual
                     model = self.model(affine_computation=affine,
                                        residual_check_order=residual).fit(self.X, self.y)
@@ -51,8 +51,8 @@ class AutomaticResidualPolicyTests(unittest.TestCase):
 
     def test_ovo_and_clone_preserve_requested_defaults(self):
         wrapper = clone(OvOClassifier(self.model(M=1, theta=1.), n_jobs=1))
-        for field in ('affine_computation', 'residual_check_order'):
-            self.assertEqual(wrapper.get_params()['estimator__' + field], 'auto')
+        self.assertEqual(wrapper.get_params()['estimator__affine_computation'], 'joint')
+        self.assertEqual(wrapper.get_params()['estimator__residual_check_order'], 'auto')
         wrapper.fit(self.X, np.repeat(['a', 'b', 'c'], 12))
         for model in wrapper.estimators_:
             self.assert_policy(model, 'adaptive')

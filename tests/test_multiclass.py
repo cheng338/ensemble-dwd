@@ -351,7 +351,7 @@ class MulticlassBinaryEnsembleTests(unittest.TestCase):
             self.assertEqual(len(child.estimators_), 1)
             self.assertEqual(child.consensus_scores_.shape, (16,))
             for learner in [*child.estimators_, child.final_estimator_]:
-                self.assertEqual(learner.params["implementation"], "optimized")
+                self.assertNotIn("implementation", learner.params)
                 self.assertEqual(learner.params["kernel_kws"]["gamma"], base.gamma)
                 for parameter in ["lambd", "q", "stopping", "max_iter"]:
                     self.assertEqual(learner.params[parameter], getattr(base, parameter))

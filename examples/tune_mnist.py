@@ -49,7 +49,9 @@ from mnist_preprocessing import (add_preprocessing_arguments, make_preprocessor,
 
 from phase_threads import (add_final_thread_argument, report_final_threads,
                            final_fit_threads, final_thread_policy_sha256,
-                           validate_final_native_threads)
+                           validate_final_native_threads, preflight_final_native_threads,
+                           _noncheckpoint_preflight_final_native_threads,
+                           _noncheckpoint_final_fit_threads, _NATIVE_SCOPE_POLICY)
 
 
 def select_pair(X, y, first, second):
@@ -338,7 +340,7 @@ def boundary_parameters(parameters, grid, *, regularization='lambd', prefix='ens
 def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         run_dir, *, jobs=1, error_policy='nan', refine=False,
                         settings=None, verbose=1, selection_review=None, final_native_threads=1):
-    """Checkpoint completed CV stages before fitting the selected bare pipeline.
+    """Record completed CV stages before fitting the selected bare pipeline.
 
     ``run_dir`` must be newly created by ``new_run_directory``. Fold indices
     refer to the training arrays in their original order. No automatic fallback
@@ -352,6 +354,9 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     final_native_threads changes only the selected full-training pipeline
     fit. CV and held-out prediction remain at one native thread. The default
     is one; wider budgets require every exposed nested n_jobs to be one.
+    This noncheckpoint scope verifies native resources and restoration; it does
+    not attest package/source installation identity. Keep installed code unchanged
+    during a run. Checkpointed and recovery workflows retain their full guards.
     """
     final_native_threads = validate_final_native_threads(final_native_threads, pipeline)
     run_dir = _resolved_public_path(run_dir)
@@ -365,11 +370,14 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
         raise TypeError('selection_review must be callable or None.')
     folds = [(np.asarray(train, dtype=np.int64), np.asarray(test, dtype=np.int64))
              for train, test in folds]
+    native_preflight = _noncheckpoint_preflight_final_native_threads(final_native_threads, pipeline)
     identity = {'training': data_fingerprint(X_train, y_train),
                 'held_out': data_fingerprint(X_test, y_test)}
     metadata = {
         'schema_version': 1, 'data': identity,
         'final_thread_policy_sha256': final_thread_policy_sha256(),
+        'final_thread_runtime_policy': _NATIVE_SCOPE_POLICY,
+        'source_installation_attestation': False,
         'folds': [{'train': train, 'validation': test} for train, test in folds],
         'settings': {'jobs': jobs, 'error_policy': error_policy, 'refine': refine,
                      'selection_review_enabled': selection_review is not None,
@@ -465,7 +473,8 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             try:
                 final_model = clone(pipeline).set_params(**parameters)
                 final_runtime = {}
-                with final_fit_threads(final_native_threads, final_model, final_runtime):
+                with _noncheckpoint_final_fit_threads(
+                        final_native_threads, final_model, final_runtime, preflight=native_preflight):
                     final_model.fit(X_train, y_train)
             except Exception as error:
                 write_failure_json(run_dir / 'refit.json', {
@@ -484,7 +493,9 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
             test_accuracy = float(accuracy_score(y_test, final_model.predict(X_test)))
             completed = {**selection, 'refit_seconds': refit_seconds,
-                         'held_out_accuracy': test_accuracy, 'final_native_threads': final_native_threads}
+                         'held_out_accuracy': test_accuracy, 'final_native_threads': final_native_threads,
+                         'final_thread_runtime_policy': _NATIVE_SCOPE_POLICY,
+                         'source_installation_attestation': False}
             write_json_atomic(run_dir / 'completed.json', completed)
             if review is not None:
                 review['held_out_scored'] = True

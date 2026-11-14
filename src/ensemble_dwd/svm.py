@@ -19,6 +19,7 @@ from .estimator import (
     IneligibleSelectionError,
     _finite_real,
     _fraction,
+    _fraction_rows,
     _overflow_safe_consensus,
     _positive_integer,
     _private_random_state,
@@ -398,12 +399,12 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
             if len(classes) > 2:
                 raise ValueError("Only binary classification is supported. The input has more than two classes.")
             context["stage"] = "setup"
-            selected_size = int(len(y) * self.sv_selection_ratio)
+            selected_size = _fraction_rows(len(y), self.sv_selection_ratio, "sv_selection_ratio")
             if selected_size < 2:
                 raise IneligibleSelectionError(
                     "sv_selection_ratio selects fewer than two observations. "
                     "Increase the ratio or provide more training observations.")
-            subset_size = max(2, int(len(y) * self.theta))
+            subset_size = max(2, _fraction_rows(len(y), self.theta, "theta"))
             gamma = self._resolve_gamma(X)
             context["stage"] = "sampling"
             subsets = _sample_subsets(encoded, subset_size, self.M,

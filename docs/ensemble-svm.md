@@ -5,6 +5,10 @@ Cheng's ensemble kernel DWD. It uses scikit-learn's compiled LIBSVM `SVC`
 implementation for every base learner and the final fit. No new numerical
 dependency is required.
 
+See [Choosing Ensemble options](choosing_options.md#svm-specific-choices) for
+when to change shrinking, solver budgets, caching or prediction allocation, and
+for the separate shared search/recovery controls.
+
 `OvOClassifier(EnsembleKernelSVM(...))` provides multiclass classification:
 each class pair trains its own binary ensemble, and the pair's final SVC
 casts one vote. The maximum-wins rule matches the ensemble DWD wrapper.

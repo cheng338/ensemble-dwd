@@ -26,11 +26,36 @@ The four-stage ensemble DWD method is described in Chapter 5 of:
 
 See [CITATION.cff](CITATION.cff) for citation details.
 
+The unreleased source follows DWD's public optimized solver without forwarding
+the removed `implementation` selector. It requires a compatible paired
+DWD/ensemble-DWD release; the installation examples below still describe the
+last published release. See [upgrade boundaries](docs/method.md#public-solver-api-upgrade)
+before reusing caches, checkpoints or saved estimators.
+
+With the paired development DWD build, eligible dense named-linear L-BFGS base
+and final fits automatically use DWD's private native ordered-gradient reducer.
+The ensemble algorithm, selection, predictions and public options are unchanged;
+portable builds retain DWD's checked-sum fallback. The measured benefit concerns
+wider fitting workloads, with ordinary and missing-binary costs also observed,
+not a general prediction or CV speedup. See the paired DWD source's
+`docs/compiled_residual.md` and `docs/kernel_dwd.md` for that runtime contract
+and the measured limitations. Published dependency locks remain unchanged here.
+
 Copyright 2026 Chang Cheng. **All Rights
 Reserved.** A software license has not yet been selected or granted. See
 [LICENSE](LICENSE).
 
 # Installation
+
+If estimator HTML display raises `UnicodeDecodeError` under an affected
+non-UTF-8 interpreter, see DWD's
+[scikit-learn display limitation](https://github.com/cheng338/dwd/blob/master/docs/dependency_display.md).
+The original sklearn 1.9.1 renderer remains affected, including Ensemble
+estimators inside outer containers. A separately tested UTF-8 backport was not
+authorized as part of the package change and was reverted in the validation
+environments. Neither package edits dependencies, changes locale settings or
+installs an import-time workaround. This is a display limitation, not a
+numerical-library or fitting defect.
 
 Python 3.11 or later is required. Version 0.3.15 requires DWD 1.3.19 from the
 [DWD release assets](https://github.com/cheng338/dwd/releases/tag/v1.3.19).
@@ -136,10 +161,33 @@ The bundled digits dataset requires no download. The classifier preserves the
 two input class labels. Its `decision_function` and `predict` use the final
 refitted model; the average base-model scores are used during selection.
 
+## Fitting weights and the paired DWD API
+
+`EnsembleKernelDWD`, `EnsembleKernelSVM` and `OvOClassifier` do not accept
+training `sample_weight`, including an explicit `None`. Their inherited
+`score(X, y, sample_weight=weights)` still supports weighted accuracy. These
+estimators cannot be used as AdaBoost base estimators requiring weighted fits.
+
+The paired unreleased DWD API also removes its formerly unsupported weight
+arguments. Direct users of its base estimators or standalone solvers must omit
+the argument and use the documented keyword boundaries for other controls.
+Saved DWD metadata requests are not rewritten, and cloning retains stale
+requests; construct a fresh estimator from its parameters and reapply only
+supported requests before refitting. See DWD's
+[argument and metadata migration](https://github.com/cheng338/dwd/blob/master/docs/fitting_and_conic_persistence.md#fitting-arguments-and-metadata).
+
+DWD's separate conic DWD/SVM persistence and margin-expression repairs do not
+change this package's kernel ensemble algorithms. `EnsembleKernelSVM` uses
+scikit-learn's SVC, not `dwd.svm.SVM`; conic timings are not ensemble timings.
+
 # Defaults
 
 The following defaults apply to `EnsembleKernelDWD`, including each pairwise
 DWD ensemble inside `OvOClassifier`.
+
+See [Choosing Ensemble options](docs/choosing_options.md) for when to override
+each numerical, resource, storage and search policy, its cost and its limits.
+The guide also distinguishes estimator options from example-only workflow flags.
 
 | Parameter | Default | Meaning |
 |---|---:|---|
@@ -151,12 +199,12 @@ DWD ensemble inside `OvOClassifier`.
 | `q` | `1.0` | Ordinary DWD loss exponent. |
 | `kernel` | `'rbf'` | Kernel used by every learner. |
 | `rbf_computation` | `'standard'` | RBF arithmetic; opt-in `'direct'` uses coordinate differences. |
-| `affine_computation` | `'auto'` | Joint affine protection when supported; explicit `'standard'` preserves historical scoring. |
+| `affine_computation` | `'joint'` | Joint affine protection; explicit `'standard'` uses separately rounded scoring with weaker cancellation protection. |
 | `residual_check_order` | `'auto'` | Adaptive checks on eligible optimized Cholesky paths; applicable historical ordering elsewhere. |
 | `exact_recovery` | `'standard'` | Exact-recovery budget; opt-in `'extended'` permits rank 32 and 8192-bit arithmetic for eligible small kernels. |
 | `gamma` | `'scale'` | Resolved once per binary fit and shared by its base and final learners. |
 | `max_iter`, `obj_tol` | `100`, `1e-5` | Default objective-change stopping controls. |
-| `stopping`, `tol` | `'objective'`, `1e-6` | Stopping policy and optional optimality tolerance. |
+| `stopping`, `tol` | `'objective'`, `1e-6` | Stopping policy and stationarity tolerance; objective termination alone does not establish convergence. |
 | `acceleration` | `'auto'` | Restarted MM on compatible backends; ordinary updates for L-BFGS. Use `None` for ordinary MM explicitly. |
 | `linear_action` | `'factor'` | DWD shifted-system action; explicit `'inverse'` trades setup and additional dense storage for repeated matrix-vector actions, with unchanged acceptance/recovery. |
 | `random_state` | `42` | Reproducible subset sampling. |
@@ -165,11 +213,24 @@ DWD ensemble inside `OvOClassifier`.
 | `store_base_estimators` | `True` | Retain fitted base models for inspection. |
 | `backend` | `'auto'` | Shared optimized DWD backend for all base and final fits. |
 
-Base learners and the final model share their DWD parameters. Every fit
-explicitly uses `implementation='optimized'`; the defaults therefore perform
+For both ensemble DWD and SVM, row counts use `int(n * float(ratio))` after
+validating the original ratio in `(0, 1]`. This rounds down the computed
+nonnegative Python-float product; it is not an exact-arithmetic floor. The
+subset minimum remains two. Converting a NumPy scalar preserves its represented
+value, not its decimal spelling: `np.float32(0.7)` can still give a different
+count from the Python literal `0.7`. Constructor parameters remain unchanged.
+
+Base learners and the final model share their DWD parameters. Every fit uses
+the supported optimized DWD solver without an `implementation` parameter; the defaults perform
 five optimized base fits and one optimized final fit when no cache entry is
 reused. A shared stopping policy
 does not require all six fits to take the same number of iterations.
+Choose `stopping='optimality'` when numerical stationarity is an explicit
+requirement, or when comparing workflows at a common achieved optimization
+tolerance. It can materially increase the cost of every base and final fit,
+and may still reach the iteration cap. It does not guarantee better predictions.
+See [when to use optimality](docs/method.md#choosing-optimality-stopping) for
+budget guidance and how to inspect all learners' convergence.
 All DWD fits use zero initialization; they do not draw random initial
 coefficients. `random_state` controls the ensemble's subset sampling.
 
@@ -190,9 +251,12 @@ policy remains the default. Direct computation preserves the ensemble method
 but can change rounded scores and selected rows and can be substantially
 slower. See [its scope, dependency requirement and measured cost](docs/method.md#optional-direct-rbf-computation).
 
-The default `affine_computation='auto'` includes the intercept in joint
-evaluation of `K @ alpha + b` for each base and final learner when the
-dependency supports it. Explicit `'standard'` preserves historical scoring. It preserves the mathematical
+The default `affine_computation='joint'` includes the intercept in joint
+evaluation of `K @ alpha + b` for each base and final learner. Replace the removed
+affine `'auto'` alias with `'joint'` in caller settings and parameter grids.
+Both supported policies are forwarded explicitly; an incompatible dependency
+raises a clear error instead of silently switching to `'standard'`.
+Explicit `'standard'` uses separate product-and-intercept rounding. Joint preserves the mathematical
 score and selection rule, but corrected rounding can change close rankings,
 selected rows and labels. Its cost depends on how many scores need refinement;
 see [joint affine scoring](docs/method.md#optional-joint-affine-scoring).
@@ -405,9 +469,20 @@ positive integer limit for each detected native BLAS/OpenMP pool during the
 selected full-training pipeline fit. Its default is also 1; CV and held-out
 prediction stay at one native thread. This is a library-pool limit, not a total
 CPU limit or a physical-core assignment. Wider final budgets require sequential
-nested estimators and may change numerical rounding. See
-[native threads by phase](docs/method.md#native-threads-by-phase) for scope,
-runtime records and resume rules.
+nested estimators and may change numerical rounding. Before CV, a dry run
+checks that a nondefault budget can actually be set and restored, without
+fitting or silently reducing the request. The actual final fit is checked
+again; early feasibility does not reserve future runtime availability. Default
+1 skips this separate budget probe and additional runtime authority.
+
+For the nonresumable `run_search_workflow` helper, a final budget above one
+checks native-library identity, observed pool limits, continuity across CV and
+the final fit, and restoration. It does not attest the complete installation;
+receipts state `source_installation_attestation=false`, and installed code must
+remain unchanged during use. Strict phase helpers and adaptive, checkpoint and
+recovery workflows retain their complete/frozen source and runtime checks.
+See [native threads by phase](docs/method.md#native-threads-by-phase) for these
+distinct policies, measured workflow costs and their limits.
 
 New runs require a fresh `--output-dir`; the default creates a
 unique `results/mnist-*` directory. `--cache-dir` selects a trusted base cache
@@ -425,16 +500,59 @@ python examples/tune_mnist.py --confirm-max-iter 300 --confirm-top-k 3
 
 To resume, pass `--resume --run` with the original output directory and the
 same data, folds, estimator parameters, policy and budgets, job count, and
-numerical runtime. The installation must remain immutable. Identity mismatch
-or live ownership prevents reuse. Checksummed completed fold records survive
+CV-worker runtime. Common sources and libraries must remain unchanged; each
+invocation also records and checks its full coordinator runtime. Additional
+coordinator-only native pools can differ between compatible sessions without
+changing the saved worker identity. Identity mismatch or live ownership
+prevents reuse. Checksummed completed fold records survive
 interruption; unfinished fits restart by default. The multiclass example also
 offers [optional completed-pair recovery](docs/multiclass.md#completed-pair-recovery).
 This checkpoint is separate from the
 optional base-fit cache, so `--no-cache` does not disable completed-fold reuse.
 
-Checkpoint schema 2 preserves parameter types because numerically equal Python
-and NumPy values can produce different subset sizes. Checkpoints from earlier
-schemas require a new run directory. The checkpoint helper rejects custom
+Checkpoint scans assume an immutable installation. Keep package sources and
+libraries unchanged while a run is active; these checks are not an atomic
+snapshot of concurrent file edits. The updated inventory reduces directory and
+file-metadata work without removing the full checkpoint checks. A cached file
+changed just after its metadata observation may be detected at the next full
+check instead. See [checkpoint inventory changes](docs/candidate_changes.md#unreleased-checkpoint-inventory)
+for the observation limits and Python 3.11 fallback. This helper-source change
+requires the original frozen workflow or a fresh run directory for old records.
+
+Runtime artifacts reached through different path spellings must resolve to the
+same physical files and pass the source/content checks. Retargeted aliases or
+changed worker libraries, pools or native counts still refuse reuse. Each new
+parallel checkpoint identity uses one estimator-bearing worker probe plus
+import-only tasks before CV. These prepare module imports without guaranteeing
+that every worker is ready; each participating worker still qualifies
+independently. Serial entry and authenticated resumes bypass these tasks.
+Fresh independent parallel contexts submit them again, even with a reusable
+pool. There is no new public option. Earlier imports can add startup work for
+empty contexts; native-pool discovery also runs at subsequent runtime checks.
+For the measured benefits and costs, see
+[checkpoint runtime identity](docs/method.md#checkpoint-runtime-identity).
+Older runtime-policy records require their original frozen workflow or a fresh
+run directory, rather than automatic migration.
+
+Checkpoint identity includes the selector source in `tune_mnist.py`. Before
+reuse and adaptive selection, the workflow also checks a finite reviewed set
+of fourteen selector and exact-accuracy helpers and their dependencies against
+the adjacent sources and initially verified state. Initial verification checks
+source declarations as well as loaded function bodies and evaluated defaults,
+rejecting stale bytecode whose defaults disagree with source. Changes to the
+reviewed helpers require reviewing guard coverage and updating release tests.
+These are consistency checks in a trusted Python
+process, not protection against arbitrary concurrent code modification.
+Changes to the selector file conservatively invalidate reuse, including edits
+outside the selector functions. For an older checkpoint, use a separately
+verified original frozen workflow with its matching runtime, or start a new
+run directory; missing historical selector identity cannot be reconstructed
+or silently migrated.
+
+Checkpoint schema 2 preserves the caller's concrete parameter types, even when
+normalized row counts agree. Ratio normalization for fitting does not merge
+Python and NumPy parameter identities. Checkpoints from earlier schemas require
+a new run directory. The checkpoint helper rejects custom
 scalar/container subclasses and object, structured, or metadata-bearing array
 parameters when their identity cannot be verified safely. These restrictions
 apply to checkpointing, not to the estimators' ordinary fit methods.
@@ -473,24 +591,46 @@ with bounded detail samples and brief console notices. These observations do
 not establish equivalent fits: every candidate keeps its exact values and
 checkpoint identity. See [the reporting details](docs/method.md#work-and-timing-summaries).
 
-An interrupted final refit restarts from the beginning; its fitted models are
-not serialized. A crash after held-out prediction but before the authoritative
-completion receipt is committed can require refitting and rescoring. Once
-that receipt is committed, a verified resume returns the saved result without
-fitting or scoring again. The Python result then has `model=None` and
-`resumed_completed=True`; it does not restore a predictor.
+An interrupted final refit can restart before held-out scoring is reserved;
+its fitted model is not serialized. Adaptive runs record a shared scoring
+claim before prediction. If that claim exists without a committed completion,
+automatic retries refuse to fit or score again, including after a crash that
+may have occurred before prediction started. Once completion is committed,
+verified replay returns saved results with `model=None` and
+`resumed_completed=True`, without restoring a predictor.
+
+Ordinary `--resume` keeps the original budget and identity. If an accepted
+final fit needs a different native-thread budget, the example Python API
+[`recover_final_fit`](docs/method.md#explicit-final-only-recovery) can run that
+fit in a new, nonoverlapping attempt directory without repeating CV. It
+requires the prospective accepted handoff and the same configured, unfitted
+selected pipeline, data, common sources and libraries, and compatible saved
+CV-worker identity. Each new final-only attempt freezes its full current runtime;
+an unfinished attempt must retain that runtime on resume. Completed replay
+keeps the historical runtime and returns reports without fitting or scoring.
+The API does not migrate historical runs or reconstruct estimators from reports. The shared scoring claim also
+prevents a new attempt directory from bypassing an ambiguous scoring outcome.
 
 # Reusing work and storing models
 
 Set `cache_dir` to reuse the base stage when only the retention fraction
 changes. The key includes the current training data and row order, labels,
-subsets, kernel and solver settings, and numerical runtime. It excludes
+subsets, kernel and solver settings, and numerical runtime, including the
+calling thread's four NumPy error-handling settings. It excludes
 `sv_selection_ratio`, because selection and the final fit are performed anew.
 Entries are written atomically under a per-key operating-system lock so
 parallel workers can share the directory. Caching is bypassed for
 `random_state=None`, callable kernels or callable kernel keywords, and custom
 estimator subclasses. Inspect `cache_hit_`, `cache_key_`, and `cache_status_`
 after fitting to see whether the base stage was reused.
+Caches distinguish ordinary and strict NumPy error policies. Active `call` or
+`log` modes bypass caching because user callbacks and loggers can have mutable,
+untracked behavior. An inactive registered handler does not prevent reuse.
+The cache preserves the caller's policy and checks it again before admitting
+cached results or publishing new entries. Eligible internal DWD base workers
+also preserve the calling thread's NumPy error modes and registered handler
+for each task; see [parallel base fitting](docs/parallel-base-fitting.md)
+for restoration and concurrent callback behavior.
 `cache_dir` accepts strings and path-like objects. Internal cache files and
 locks support long Windows paths, including paths beyond the legacy 260-character limit.
 
@@ -518,6 +658,18 @@ describes files on disk; it does not verify code already loaded into the
 process. Same-version edits to external scientific Python source and
 unobserved transitive libraries remain outside this identity.
 
+Repeated cache observations avoid redundant path construction and share one
+fresh successful file-metadata observation between external-artifact type and
+identity checks. A successful cache hit still checks provenance three times:
+when forming its key, under the cache lock, and after reading the cached result.
+Source, native-library, loaded-module and NumPy-policy guards remain, as do
+checks before publishing a new entry. The single observation removes an
+adjacent second `stat`: a change immediately afterward can be detected only at
+a later check. This is not an atomic snapshot or permission to modify an
+installation during use. See the [cache observation notes](docs/candidate_changes.md#unreleased-base-cache-observations)
+for the precise scope and measured costs. This optimizes cached fitting, not
+standalone prediction or checkpoint startup.
+
 With `store_base_estimators=False`, `estimators_` is `None` after fitting.
 Consensus scores, sampled and selected indices, iteration counts, convergence
 flags, and the final predictor remain available. This reduces saved-model and
@@ -532,10 +684,13 @@ contain their training rows.
 
 Training still requires dense kernel matrices. Limiting workers and prediction
 batches controls some allocations but does not guarantee a fixed memory limit.
-Choose `--jobs` for the available memory. Changes to DWD constructor parameters,
-including `prediction_batch_size`, take effect on the next fit. For
-`EnsembleKernelSVM`, `prediction_batch_size` can also be changed after fitting:
-every prediction call validates it as `None` or a positive integer. Its default
+Choose `--jobs` for the available memory. DWD fitting-policy changes take effect
+on the next fit; they do not reinterpret fitted child policies. In both
+`EnsembleKernelDWD` and `EnsembleKernelSVM`, `prediction_batch_size` changes take
+effect on subsequent predictions without refitting. DWD passes a supported
+per-call override without mutating its child; older/custom children may retain
+a tighter internal limit. SVM validates every prediction request as `None` or
+a positive integer. Its default
 is `None`, using one native call for the supplied rows. The SVM's temporary
 kernel-cache capacity target defaults to 1024 MiB per active fit, allocated as needed; concurrent
 fits each have their own allowance. Choose `cache_size` and worker counts

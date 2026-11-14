@@ -62,8 +62,8 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(len(BackendProbeDWD.instances), model.M + 1)
                 for learner in [*model.estimators_, model.final_estimator_]:
                     self.assertEqual(learner.params['backend'], backend)
-                    self.assertEqual(learner.params['implementation'], 'optimized')
-                    self.assertEqual(learner.params['solver_mode'], 'schur')
+                    self.assertNotIn('implementation', learner.params)
+                    self.assertNotIn('solver_mode', learner.params)
                     self.assertEqual(learner.params['initialization'], 'zero')
                     self.assertEqual(learner.params['lambd'], model.lambd)
                     self.assertEqual(learner.params['kernel_kws'], {'gamma': .2})
@@ -75,7 +75,9 @@ class BackendTests(unittest.TestCase):
             with self.subTest(backend=backend):
                 learner = self.model(backend=backend)._make_estimator({'gamma': .2})
                 self.assertEqual(learner.get_params()['backend'], backend)
-                self.assertEqual(learner.get_params()['implementation'], 'optimized')
+                self.assertNotIn('implementation', learner.get_params())
+                self.assertEqual(learner.get_params()['initialization'], 'zero')
+                self.assertEqual(clone(learner).get_params(), learner.get_params())
 
     def test_backend_is_a_cloneable_public_parameter(self):
         self.assertEqual(EnsembleKernelDWD().get_params()['backend'], 'auto')
