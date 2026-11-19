@@ -23,6 +23,8 @@ jobs:
       MKL_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: b1594756438e68905e2cd41a5baf41cddadab59e
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -30,8 +32,17 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           repository: cheng338/dwd
-          ref: ${{ vars.DWD_DEVELOPMENT_REF }}
+          ref: b4588e33845840833d28a1b4efeb910d7b9c4df5
           path: .ci-dwd-source
+      - name: Verify candidate source commits
+        shell: python
+        run: |
+          import subprocess
+          commits = [subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+                     for path in (".", ".ci-dwd-source")]
+          if commits != ["b1594756438e68905e2cd41a5baf41cddadab59e", "b4588e33845840833d28a1b4efeb910d7b9c4df5"]:
+              raise SystemExit(f"Unexpected candidate source commits: {commits}")
+          print("VALIDATED_CANDIDATE_SOURCES", *commits, flush=True)
       - name: Build the paired DWD wheel
         env:
           DWD_BUILD_ACCEL: ${{ runner.os == 'Windows' && '1' || '0' }}
@@ -69,6 +80,8 @@ jobs:
       MKL_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: b1594756438e68905e2cd41a5baf41cddadab59e
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.11"
@@ -76,8 +89,17 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           repository: cheng338/dwd
-          ref: ${{ vars.DWD_DEVELOPMENT_REF }}
+          ref: b4588e33845840833d28a1b4efeb910d7b9c4df5
           path: .ci-dwd-source
+      - name: Verify candidate source commits
+        shell: python
+        run: |
+          import subprocess
+          commits = [subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+                     for path in (".", ".ci-dwd-source")]
+          if commits != ["b1594756438e68905e2cd41a5baf41cddadab59e", "b4588e33845840833d28a1b4efeb910d7b9c4df5"]:
+              raise SystemExit(f"Unexpected candidate source commits: {commits}")
+          print("VALIDATED_CANDIDATE_SOURCES", *commits, flush=True)
       - name: Build the paired DWD wheel
         env:
           DWD_BUILD_ACCEL: '0'
