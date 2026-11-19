@@ -2,8 +2,7 @@ cff-version: 1.2.0
 message: "Please cite this software and the dissertation describing its ensemble method."
 type: software
 title: "ensemble-dwd: Ensemble Kernel Distance Weighted Discrimination"
-version: 0.3.15
-date-released: 2026-10-26
+version: 0.4.0
 authors:
   - family-names: Cheng
     given-names: Chang
@@ -21,5 +20,9 @@ references:
         given-names: Chang
     institution:
       name: Purdue University
+    publisher:
+      name: Purdue University Graduate School
     year: 2026
-    month: 8
+    month: 10
+    doi: "10.25394/PGS.34548831.v1"
+    url: "https://hammer.purdue.edu/articles/thesis/ENSEMBLE_KERNEL_DISTANCE-WEIGHTED_DISCRIMINATION_AND_SUPERVISED_NONNEGATIVE_MATRIX_FACTORIZATION_FOR_CLASSIFICATION/34548831"

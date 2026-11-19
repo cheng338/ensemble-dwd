@@ -7,10 +7,10 @@ import subprocess
 import sys
 import time
 
-import psutil
 import pytest
 
 from ensemble_dwd._cache import _cached_base_stage, _CACHE_DIRECTORY
+from process_test_support import popen_python
 
 
 @pytest.mark.parametrize("code", sorted({errno.ENOLCK, errno.ENOSYS, errno.ENOTSUP}))
@@ -29,7 +29,7 @@ def test_unavailable_lock_explains_explicit_configuration_without_computing(tmp_
         _cached_base_stage(tmp_path, {"key": 1}, lambda: calls.append(True))
     assert caught.value.errno == code
     assert caught.value.__cause__ is failure
-    assert Path(caught.value.filename).parent == tmp_path / _CACHE_DIRECTORY
+    assert Path(caught.value.filename).parent.samefile(tmp_path / _CACHE_DIRECTORY)
     assert not calls
     assert sorted(p.suffix for p in (tmp_path / _CACHE_DIRECTORY).iterdir()) == [".lock"]
 
@@ -67,6 +67,7 @@ def compute():
     return {'answer': 37}
 value, hit, key = _cached_base_stage(root / 'cache', {'shared': 1}, compute)
 print(json.dumps(dict(value=value, hit=hit, key=key, pid=me.pid,
+    prefix=sys.prefix, executable=sys.executable,
     created=me.create_time(), rss=me.memory_info().rss,
     cpu=me.cpu_times().user + me.cpu_times().system)))
 '''
@@ -80,9 +81,9 @@ def test_four_processes_compute_once_with_psutil_ownership(tmp_path):
     identities = []
     try:
         for _ in range(4):
-            child = psutil.Popen([sys.executable, "-c", _WORKER, str(tmp_path)],
-                                 env=env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True)
+            child = popen_python(
+                ["-c", _WORKER, str(tmp_path)], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             children.append(child)
             identities.append((child.pid, child.create_time()))
         deadline = time.monotonic() + 20
@@ -103,6 +104,8 @@ def test_four_processes_compute_once_with_psutil_ownership(tmp_path):
         assert len({row["key"] for row in rows}) == 1
         assert all(row["value"] == {"answer": 37} for row in rows)
         assert [(r["pid"], r["created"]) for r in rows] == identities
+        assert all(Path(r["prefix"]) == Path(sys.prefix)
+                   and Path(r["executable"]) == Path(sys.executable) for r in rows)
         assert all(row["rss"] > 0 and row["cpu"] >= 0 for row in rows)
         assert all(not child.is_running() for child in children)
     finally:

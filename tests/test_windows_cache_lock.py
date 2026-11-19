@@ -9,7 +9,7 @@ import time
 import unittest
 
 
-def worker(mode, folder, ordinal='0'):
+def worker(mode, folder, owner_pid, ordinal='0'):
     """Tiny subprocess payload; numerical arrays are never materialized here."""
     from ensemble_dwd._cache import _cached_base_stage, _key_lock
     folder = Path(folder)
@@ -22,11 +22,27 @@ def worker(mode, folder, ordinal='0'):
                 time.sleep(90)
         print(json.dumps({'entered': True}), flush=True)
         return
+    import psutil
+    # parent() checks for PID reuse when it obtains the direct parent.
+    # is_running() subsequently checks the identity of that same process.
+    owner = psutil.Process().parent()
+    if owner is None or owner.pid != int(owner_pid):
+        raise RuntimeError('Cache worker lost its parent before readiness.')
     (folder / ('ready-' + ordinal)).write_text('ready', encoding='utf-8')
-    deadline = time.monotonic() + 90
-    while not (folder / 'start').exists():
-        if time.monotonic() >= deadline:
-            raise RuntimeError('Cache worker start barrier timed out.')
+    start = folder / 'start'
+    next_owner_check = time.monotonic() + .5
+    while not start.is_file():
+        # The parent owns the readiness deadline, including for early arrivals.
+        if time.monotonic() >= next_owner_check:
+            try:
+                alive = owner.is_running() and owner.status() != psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                alive = False
+            if not alive:
+                if not start.is_file():
+                    raise RuntimeError('Cache worker lost its parent before start.')
+                break
+            next_owner_check = time.monotonic() + .5
         time.sleep(.01)
 
     def compute():
@@ -56,24 +72,36 @@ class WindowsCacheLockTests(unittest.TestCase):
             process.communicate(timeout=15)
 
     def spawn(self, mode, ordinal='0'):
+        from process_test_support import popen_python
+
         environment = os.environ.copy()
         environment['PYTHONPATH'] = os.pathsep.join(sys.path)
         for name in ('MKL_NUM_THREADS', 'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
                      'BLIS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
             environment[name] = '1'
-        process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), '--worker', mode, str(self.folder), str(ordinal)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+        process = popen_python(
+            [str(Path(__file__).resolve()), '--worker', mode, str(self.folder), str(os.getpid()), str(ordinal)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
             creationflags=subprocess.CREATE_NO_WINDOW)
         self.processes.append(process)
         return process
 
     def wait_for(self, paths, timeout=90):
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
         while not all(path.exists() for path in paths):
-            self.assertLess(time.monotonic(), deadline, 'Worker readiness timed out.')
-            self.assertTrue(all(process.poll() is None for process in self.processes),
-                            'A worker exited before reaching its readiness barrier.')
+            for process in self.processes:
+                code = process.poll()
+                if code is not None:
+                    ordinal = process.args[-1]
+                    ready = (self.folder / ('ready-' + ordinal)).exists()
+                    missing = [path.name for path in paths if not path.exists()]
+                    stdout, stderr = process.communicate(timeout=5)
+                    self.fail(f'Worker {ordinal} (PID {process.pid}) exited with code {code}, '
+                              f'ready={ready}, missing={missing}.\n'
+                              f'stderr: {stderr[-4000:]}\nstdout: {stdout[-1000:]}')
+            if time.monotonic() - started >= timeout:
+                missing = [path.name for path in paths if not path.exists()]
+                self.fail(f'Parent waited {timeout}s for worker readiness. Missing: {missing}')
             time.sleep(.01)
 
     def result(self, process):
@@ -128,7 +156,7 @@ class WindowsCacheLockTests(unittest.TestCase):
     def test_32_cold_key_processes_compute_once_and_read_identical_payload(self):
         processes = [self.spawn('cache', str(index)) for index in range(32)]
         self.wait_for([self.folder / ('ready-' + str(index)) for index in range(32)])
-        (self.folder / 'start').write_text('start', encoding='utf-8')
+        (self.folder / 'start').touch(exist_ok=False)
         rows = [self.result(process) for process in processes]
         self.assertEqual((self.folder / 'computations.txt').read_text(encoding='utf-8').splitlines(), ['computed'])
         self.assertEqual(sum(not row['hit'] for row in rows), 1)

@@ -19,6 +19,7 @@ from .estimator import (
     IneligibleSelectionError,
     _finite_real,
     _fraction,
+    _fraction_rows,
     _overflow_safe_consensus,
     _positive_integer,
     _private_random_state,
@@ -85,8 +86,10 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
         objective the corresponding squared-norm coefficient is 1/(2*C*n).
     gamma : {"scale", "auto"} or positive float, default="scale"
         RBF/polynomial coefficient, resolved once from the complete supplied training
-        fold and then shared numerically by all learners. ``"scale"`` uses
-        1/(n_features * X.var()); ``"auto"`` uses 1/n_features.
+        fold and then shared numerically by all learners. ``"scale"``
+        evaluates 1.0 / (n_features * variance) on the float64 training
+        input, with variance = X.var(), or 1 for constant data.
+        ``"auto"`` uses 1/n_features.
     kernel : {"rbf", "linear", "poly"}, default="rbf"
         Named positive-semidefinite kernel shared by every learner.
         Linear kernels ignore gamma, degree and coef0.
@@ -218,8 +221,6 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
             raise ValueError("kernel must be 'rbf', 'linear', or 'poly'.")
         _positive_integer(self.degree, "degree")
         _finite_real(self.coef0, "coef0", allow_zero=True)
-        if self.coef0 < 0:
-            raise ValueError("coef0 must be nonnegative for a polynomial PSD kernel.")
         if isinstance(self.gamma, str):
             if self.gamma not in ("scale", "auto"):
                 raise ValueError("gamma must be 'scale', 'auto', or a finite positive number.")
@@ -249,7 +250,7 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
             if not np.isfinite(variance) or (variance == 0 and X.min() != X.max()):
                 raise ValueError("Feature variance is outside float64 range; rescale X or specify gamma.")
             with np.errstate(over="ignore", under="ignore", divide="ignore"):
-                gamma = (1.0 / X.shape[1]) / variance if variance != 0 else 1.0
+                gamma = 1.0 / (X.shape[1] * variance) if variance != 0 else 1.0
             if not np.isfinite(gamma) or gamma <= 0:
                 raise ValueError("Scaled gamma is outside float64 range; rescale X or specify gamma.")
             return gamma
@@ -398,12 +399,12 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
             if len(classes) > 2:
                 raise ValueError("Only binary classification is supported. The input has more than two classes.")
             context["stage"] = "setup"
-            selected_size = int(len(y) * self.sv_selection_ratio)
+            selected_size = _fraction_rows(len(y), self.sv_selection_ratio, "sv_selection_ratio")
             if selected_size < 2:
                 raise IneligibleSelectionError(
                     "sv_selection_ratio selects fewer than two observations. "
                     "Increase the ratio or provide more training observations.")
-            subset_size = max(2, int(len(y) * self.theta))
+            subset_size = max(2, _fraction_rows(len(y), self.theta, "theta"))
             gamma = self._resolve_gamma(X)
             context["stage"] = "sampling"
             subsets = _sample_subsets(encoded, subset_size, self.M,

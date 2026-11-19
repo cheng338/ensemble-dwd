@@ -17,7 +17,7 @@ from dwd.gen_kern_dwd import KernGDWD
 from ensemble_dwd import EnsembleKernelDWD, OvOClassifier
 from ensemble_dwd.multiclass import _fit_pair
 from search_support import CandidateEvaluator, data_fingerprint, json_safe
-from _pair_store import PairStore, StoreMismatch, canonical, digest, _read_envelope
+from _pair_store import PairStore, StoreMismatch, digest, _read_envelope
 import _pair_store
 from mnist_preprocessing import UnitPixelScaler
 
@@ -201,7 +201,7 @@ class FoldContext:
         return self.folder / 'pair-stores' / self.task
 
     def summary(self):
-        return {'schema': 1, 'policy': POLICY,
+        result = {'schema': 1, 'policy': POLICY,
                 'fitted_pairs': sum(e['work_origin'] == 'fitted' for e in self.events),
                 'recovered_pairs': sum(e['work_origin'] == 'recovered' for e in self.events),
                 'fitted_unsaved_pairs': sum(e['status'] == 'fitted_unsaved' for e in self.events),
@@ -211,6 +211,10 @@ class FoldContext:
                 'historical_reused_pair_fit_seconds': sum(e.get('historical_fit_seconds', 0.0) for e in self.events),
                 'pairs': deepcopy(self.events), 'cleanup_status': self.cleanup_status,
                 'timing_policy': 'current-attempt-wall-time; restored diagnostics retain historical fit observations'}
+        if any('failed_load_seconds' in event for event in self.events):
+            result['pair_failed_load_seconds'] = sum(
+                event.get('failed_load_seconds', 0.0) for event in self.events)
+        return result
 
     def write_evidence(self):
         if self.attempt is None:
@@ -324,6 +328,16 @@ def validate_summary(record):
         if ((event['work_origin'] == 'recovered' and (event['fit_seconds'] != 0 or event['save_seconds'] != 0))
                 or (event['work_origin'] == 'fitted' and (event['historical_fit_seconds'] != 0 or event['load_seconds'] != 0))):
             raise cp.CheckpointError('Pair-recovery timing mixes historical and current work')
+        payload_failure = event.get('cache_reason') in ('payload_read_failure', 'payload_integrity_failure')
+        if payload_failure != ('failed_load_seconds' in event):
+            raise cp.CheckpointError('Pair payload recovery lacks matching failure evidence')
+        if payload_failure:
+            failed_load = event['failed_load_seconds']
+            if (type(failed_load) not in (int, float) or not math.isfinite(failed_load)
+                    or failed_load < 0 or event['status'] != 'fitted_unsaved'
+                    or event['save_seconds'] != 0
+                    or not isinstance(event.get('cache_error'), str) or not event['cache_error']):
+                raise cp.CheckpointError('Invalid failed pair-load accounting')
     counts = {'fitted_pairs': sum(e['work_origin'] == 'fitted' for e in events),
               'recovered_pairs': sum(e['work_origin'] == 'recovered' for e in events),
               'fitted_unsaved_pairs': sum(e['status'] == 'fitted_unsaved' for e in events)}
@@ -336,6 +350,13 @@ def validate_summary(record):
         value = summary.get(name)
         if type(value) not in (int, float) or value != sum(e[source] for e in events):
             raise cp.CheckpointError('Pair-recovery timing disagrees with events')
+    if ('pair_failed_load_seconds' in summary
+            or any('failed_load_seconds' in event for event in events)):
+        failed_load = summary.get('pair_failed_load_seconds')
+        if (type(failed_load) not in (int, float) or not math.isfinite(failed_load)
+                or failed_load < 0
+                or failed_load != sum(event.get('failed_load_seconds', 0.0) for event in events)):
+            raise cp.CheckpointError('Failed pair-load timing disagrees with events')
     diagnostics = record.get('diagnostics', {})
     pairs = diagnostics.get('pairwise_estimators')
     if record['state'] == 'complete' and (type(pairs) is not list or len(pairs) != len(events)):

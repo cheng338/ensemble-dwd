@@ -35,19 +35,24 @@ class AffineComputationTests(unittest.TestCase):
             self.assertEqual(learner.affine_computation, 'joint')
             self.assertEqual(learner.affine_computation_, 'joint')
 
-    def test_standard_omits_new_keyword_for_older_dependencies(self):
+    def test_standard_is_explicit_and_rejects_unsupported_dependencies_without_retry(self):
+        error = TypeError("unexpected keyword argument 'affine_computation'")
+
         def older_constructor(**parameters):
             if 'affine_computation' in parameters:
-                raise TypeError("unexpected keyword argument 'affine_computation'")
+                raise error
             return KernGDWD(**parameters)
 
         model = self.model()
         with patch('ensemble_dwd.estimator.KernGDWD', side_effect=older_constructor) as construct:
-            model.fit(self.X, self.y)
-        self.assertEqual(construct.call_count, model.M + 1)
-        self.assertEqual(model.affine_computation_, 'standard')
-        for call in construct.call_args_list:
-            self.assertNotIn('affine_computation', call.kwargs)
+            with self.assertRaisesRegex(ImportError, 'requested numerical computation options.*pinned') as caught:
+                model.fit(self.X, self.y)
+        self.assertIs(caught.exception.__cause__, error)
+        self.assertEqual(construct.call_count, 1)
+        self.assertEqual(construct.call_args.kwargs['affine_computation'], 'standard')
+        self.assertFalse(any(name.endswith('_') for name in vars(model)))
+        with self.assertRaises(NotFittedError):
+            model.predict(self.X)
 
     def test_joint_reaches_base_and_fresh_final_models_with_either_rbf_policy(self):
         for kernel, rbf in (('linear', 'standard'), ('rbf', 'standard'), ('rbf', 'direct')):
@@ -76,15 +81,15 @@ class AffineComputationTests(unittest.TestCase):
         wrapper.set_params(estimator__affine_computation='standard')
         self.assertEqual(wrapper.estimator.affine_computation, 'standard')
 
-    def test_older_serialized_models_keep_standard_scoring(self):
+    def test_missing_requested_affine_uses_joint_without_changing_standard_fitted_scoring(self):
         model = self.model().fit(self.X, self.y)
         scores = model.decision_function(self.X)
         for learner in [model, *model.estimators_, model.final_estimator_]:
             learner.__dict__.pop('affine_computation', None)
             learner.__dict__.pop('affine_computation_', None)
         restored = pickle.loads(pickle.dumps(model))
-        self.assertEqual(restored.get_params()['affine_computation'], 'standard')
-        self.assertEqual(clone(restored).affine_computation, 'standard')
+        self.assertEqual(restored.get_params()['affine_computation'], 'joint')
+        self.assertEqual(clone(restored).affine_computation, 'joint')
         assert_array_equal(restored.decision_function(self.X), scores)
 
     def test_multiclass_forwards_joint_policy_into_all_real_pairs(self):
@@ -98,7 +103,7 @@ class AffineComputationTests(unittest.TestCase):
 
     def test_invalid_policy_fails_before_construction_and_clears_refit(self):
         model = self.model(affine_computation='joint').fit(self.X, self.y)
-        for policy in (None, True, 1, '', 'unknown', ['joint'], np.array(['joint'])):
+        for policy in (None, True, 1, '', 'unknown', 'auto', ['joint'], np.array(['joint'])):
             with self.subTest(policy=repr(policy)):
                 model.set_params(affine_computation=policy)
                 with patch('ensemble_dwd.estimator.KernGDWD') as construct:

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import clone
 from sklearn.datasets import make_classification
 from sklearn.metrics import accuracy_score
@@ -61,7 +62,7 @@ class ConfirmationWorkflowTests(unittest.TestCase):
             regularization='lambd', prefix='ensemble__', refine=False, max_candidates=2)
         self.confirmation = NumericalConfirmationConfig(max_iter=4, top_k=2)
         self.runtime_patch = patch.object(cv_checkpoint, 'runtime_fingerprint',
-                                          return_value={'test_runtime': 'confirmation-lifecycle-v1'})
+                                          return_value=synthetic_runtime(source='confirmation-lifecycle-v1'))
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
 

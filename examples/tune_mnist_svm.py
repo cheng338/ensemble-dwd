@@ -141,7 +141,13 @@ def main(argv=None):
     X_train, X_test, y_train, y_test = load_local_data(args.data, *args.digits)
     if min(np.unique(y_train, return_counts=True)[1]) < 5:
         parser.error("Each training class requires at least five rows.")
+    archive_path = str(args.data.resolve())
+    print(f'Input archive: {archive_path}')
     run_dir = new_run_directory(args.output_dir, resume=args.resume)
+    if not args.resume:
+        # Location is observational; array fingerprints bind resumed data.
+        write_json_atomic(run_dir / 'archive-location.json',
+                          {'schema_version': 1, 'data_path': archive_path})
     cache_dir = None if args.no_cache else str(args.cache_dir.resolve() if args.cache_dir else run_dir / "base-cache")
     pipeline = Pipeline([
         ("scale", preprocessor),
@@ -160,7 +166,7 @@ def main(argv=None):
         jobs=args.jobs, error_policy=args.error_score, config=config, resume=args.resume,
         reuse_equivalent_folds=args.reuse_equivalent_folds,
         settings={"classifier": "EnsembleKernelSVM", "selection": "signed_margin",
-                  "data_path": str(args.data.resolve()), "digits": args.digits,
+                  "digits": args.digits,
                   "cache_dir": cache_dir, "svc_cache_size_mib": args.cache_size,
                   "preprocessing": preprocessing},
         **seed_options, **ratio_options,

@@ -14,6 +14,7 @@ from unittest.mock import patch
 import warnings
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import ParameterGrid
 from sklearn.pipeline import Pipeline
@@ -168,7 +169,7 @@ class AdaptiveSearchTests(unittest.TestCase):
         # discovery has dedicated guard tests and real-estimator validation.
         # The two-worker case retains actual coordinator/worker fingerprints.
         runtime_scope = (patch.object(cv_checkpoint, 'runtime_fingerprint',
-                                     return_value={'synthetic_runtime': 'adaptive-policy-v1'})
+                                     return_value=synthetic_runtime(source='adaptive-policy-v1'))
                          if jobs == 1 else contextlib.nullcontext())
         with patch.object(example, 'CheckpointedCV', RecordedCheckpointedCV), \
                 runtime_scope, contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():

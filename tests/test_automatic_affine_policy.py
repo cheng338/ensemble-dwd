@@ -1,4 +1,4 @@
-"""Resolve affine policy across dependency versions and ensemble learners."""
+"""Concrete affine policy across dependency wrappers and ensemble learners."""
 import pickle
 import tempfile
 import unittest
@@ -31,18 +31,20 @@ class AutomaticAffinePolicyTests(unittest.TestCase):
         return EnsembleKernelDWD(**options)
 
     def test_ensemble_default_all_learners_and_nested_ovo(self):
-        auto = self.ensemble().fit(self.Xn, self.yn)
+        default = self.ensemble().fit(self.Xn, self.yn)
         joint = self.ensemble(affine_computation='joint').fit(self.Xn, self.yn)
-        self.assertEqual(auto.affine_computation, 'auto')
-        self.assertEqual(auto.affine_computation_, 'joint')
-        for model in [*auto.estimators_, auto.final_estimator_]:
+        self.assertEqual(default.affine_computation, 'joint')
+        self.assertEqual(default.affine_computation_, 'joint')
+        for model in [*default.estimators_, default.final_estimator_]:
             self.assertEqual(model.affine_computation, 'joint')
             self.assertEqual(model.affine_computation_, 'joint')
-        np.testing.assert_array_equal(auto.selected_indices_, joint.selected_indices_)
-        np.testing.assert_array_equal(auto.consensus_scores_, joint.consensus_scores_)
+        np.testing.assert_array_equal(default.selected_indices_, joint.selected_indices_)
+        np.testing.assert_array_equal(default.consensus_scores_, joint.consensus_scores_)
+        np.testing.assert_array_equal(default.decision_function(self.Xn), joint.decision_function(self.Xn))
+        np.testing.assert_array_equal(default.predict(self.Xn), joint.predict(self.Xn))
         labels = np.repeat(['a', 'b', 'c'], 8)
         wrapper = OvOClassifier(self.ensemble(M=1, theta=1.0), n_jobs=1).fit(self.Xn, labels)
-        self.assertEqual(clone(wrapper).get_params()['estimator__affine_computation'], 'auto')
+        self.assertEqual(clone(wrapper).get_params()['estimator__affine_computation'], 'joint')
         self.assertTrue(all((m.affine_computation_ == 'joint' for m in wrapper.estimators_)))
 
     def test_ensemble_explicit_standard_with_new_dependency(self):
@@ -51,18 +53,18 @@ class AutomaticAffinePolicyTests(unittest.TestCase):
             self.assertEqual(learner.affine_computation, 'standard')
             self.assertEqual(learner.affine_computation_, 'standard')
 
-    def test_ensemble_unknown_wrapper_conservative_without_retry(self):
+    def test_ensemble_hidden_capable_wrapper_receives_default_joint_without_retry(self):
         calls = []
 
         def hidden_constructor(**kw):
             calls.append(kw.copy())
-            self.assertNotIn('affine_computation', kw)
+            self.assertEqual(kw['affine_computation'], 'joint')
             return KernGDWD(**kw)
         with patch('ensemble_dwd.estimator.KernGDWD', new=hidden_constructor):
             model = self.ensemble().fit(self.Xn, self.yn)
         self.assertEqual(len(calls), model.M + 1)
-        self.assertEqual(model.affine_computation_, 'standard')
-        self.assertTrue(all((m.affine_computation_ == 'standard' for m in model.estimators_)))
+        self.assertEqual(model.affine_computation_, 'joint')
+        self.assertTrue(all((m.affine_computation_ == 'joint' for m in model.estimators_)))
 
     def test_dependency_internal_typeerror_is_not_retried(self):
         error = TypeError('internal constructor failure')

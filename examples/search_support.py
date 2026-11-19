@@ -99,7 +99,8 @@ def write_json_atomic(path, payload, *, replace=False):
 def _warn_logging_failure(error):
     # A warnings-as-errors policy must not hide the original numerical failure.
     try:
-        warnings.warn('Could not write the failure record: ' + str(error), RuntimeWarning)
+        warnings.warn('Could not write the failure record: '
+                      + exception_message(error, catch=BaseException), RuntimeWarning)
     except Exception:
         pass
 
@@ -171,6 +172,14 @@ def parameter_snapshot(estimator):
     return {key: _parameter_value(value) for key, value in estimator.get_params(deep=True).items()}
 
 
+def exception_message(error, *, catch=Exception):
+    """Use BaseException only when formatting must preserve a primary failure."""
+    try:
+        return str.__str__(str(error))
+    except catch:
+        return 'Error message could not be formatted'
+
+
 def exception_details(error):
     if isinstance(error, IneligibleSubsetError):
         category = 'ineligible_subset'
@@ -184,7 +193,7 @@ def exception_details(error):
         category = 'unexpected_error'
     details = {'category': category,
                'exception_type': type(error).__module__ + '.' + type(error).__qualname__,
-               'message': str(error)}
+               'message': exception_message(error, catch=BaseException)}
     try:
         context = failure_context(error)
         if context is not None:

@@ -87,7 +87,7 @@ class NumericalBoundaryTests(unittest.TestCase):
         with patch('ensemble_dwd.estimator.KernGDWD', SequenceDWD):
             model.fit(np.full((len(self.y), 1), 1e-200), self.y)
         self.assertEqual(model.gamma_, 1.)
-        self.assertEqual(model.final_estimator_.params['implementation'], 'optimized')
+        self.assertNotIn('implementation', model.final_estimator_.params)
 
 
 if __name__ == '__main__':

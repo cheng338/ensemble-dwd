@@ -3,6 +3,9 @@
 `OvOClassifier(EnsembleKernelDWD(...))` provides one-versus-one multiclass
 classification using the binary ensemble DWD estimator for each class pair.
 
+See [Choosing Ensemble options](choosing_options.md) for pair/CV parallelism,
+prediction batching, search controls and when completed-pair recovery is useful.
+
 ## Method
 
 Chapter 5's multiclass experiment in Chang Cheng's dissertation trains one
@@ -196,6 +199,13 @@ receipt is committed can require final fitting and scoring again. See the
 [shared workflow](method.md#validation-and-proposed-search-space) for records,
 ownership checks and failure handling.
 
+The input archive may move or be renamed without changing resume identity.
+Full decoded source-split fingerprints, archive keys, subsampling indices and
+selected data still have to match. `data-selection.json` keeps the original
+archive location as an observation and is not rewritten on resume; the current
+location is printed. This does not migrate older checkpoints or permit changes
+to the run/cache locations, code, runtime or search settings.
+
 `work-summary.json` separates this invocation's new CV evaluations,
 equivalent-ratio reuse and checkpoint replay, optional confirmation, final
 fitting and scoring. Cache observations count reported binary pairs; missing
@@ -282,6 +292,25 @@ committed and verified, pair payloads can be removed; interrupted cleanup
 can finish on resume without refitting the completed fold. Cleanup status
 is recorded separately without rewriting the authoritative receipt.
 
+If an unfinished fold has a valid parent identity and a valid matching pair
+manifest, a missing model payload, an unreadable verified regular payload,
+or a payload byte-count/checksum mismatch causes that pair to be fitted again.
+The failed payload is not unpickled. Other healthy pairs remain reusable.
+The newly fitted model must pass the usual validation and is used without
+overwriting that cached entry. Existing damaged bytes and their manifest
+remain until the ordinary cleanup after an authoritative fold is committed.
+If the fold is interrupted again before that commit, the damaged pair may
+need another fit on the next attempt.
+
+This fallback does not cover an invalid manifest, changed parent or pair
+identity, an unsafe or unverifiable file namespace, failed deserialization
+of an otherwise verified payload, or a model/fitted-state disagreement.
+Those conditions still refuse reuse. Numerical fitting and model-validation
+errors also propagate; they do not become cache misses. Neither this recovery
+nor [missing equivalent-source recovery](method.md#equivalent-fold-reuse)
+changes an old run's source identity. Updating the package is not permission
+to adopt checkpoints from different source or runtime versions.
+
 Recovery uses the existing pair fitting, candidate failure handling and
 multiclass prediction. It does not change the solver, sampling, row
 selection, CV candidate ranking or votes. It does not save a final
@@ -290,10 +319,38 @@ and loading models costs time and disk space; enable it when avoiding
 repeated completed pairs after interruption is worth those costs.
 
 Reports distinguish newly fitted pairs, restored pairs and completed-fold
-replay. Current pair fit/load/save times are components of the enclosing
-fold fit time, not additional time to add to it. Historical fit times and
+replay. A failed optional-payload load is reported separately from successful
+model loading, and its replacement is a newly fitted, unsaved pair rather
+than restored work. Current pair fit/load/save and failed-load times are
+components of the enclosing fold fit time, not additional time to add to it.
+Replaying a completed fold keeps these observations in historical receipt
+accounting instead of counting them again as current work. Historical fit times and
 cache observations of restored children are not counted as new work. See
 [work and timing summaries](method.md#work-and-timing-summaries).
+
+### When automatic recovery refuses
+
+Keep a complete backup of the run before any manual recovery, and verify that
+its coordinator and workers have stopped. Do not change source/runtime hashes,
+checkpoint identities, completed scores or alias references to make validation
+pass. Correct an access or storage problem, or restore the exact original
+artifact from a trusted backup whose identity and checksum match the run.
+
+If deliberately abandoning one optional cached pair in an unfinished fold,
+first independently verify its parent, candidate, fold and pair key. Archive
+only that key's matching `.json` manifest and `.pkl` payload outside the active
+store, preserving `identity.json`, healthy pairs, attempts and completed-fold
+receipts. A normal resume then fits that uncached pair under the original
+checks. This is not a remedy for a parent/key/source mismatch or uncertain
+ownership; do not discard the whole checkpoint directory to force reuse.
+
+A missing equivalent-fold source needs an exact valid completed copy; a new
+fit is not a replacement for its original receipt. If automatic restoration
+cannot find such a copy, an exact trusted backup may supply it. Without valid
+original evidence, preserve the old run and start a separately identified run
+in a new directory. Do not delete dependent aliases or edit their checksums to
+keep historical scores while changing their source. This may repeat work, but
+it does not mislabel a new computation as continuation of the old one.
 
 ## Resource use and diagnostics
 

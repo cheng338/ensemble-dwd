@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.model_selection import ParameterGrid, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -46,7 +47,7 @@ class EquivalentFoldWorkflowTests(unittest.TestCase):
         self.config = adaptive_search.AdaptiveSearchConfig(
             regularization='C', prefix='ensemble__', refine=False, max_candidates=2)
         self.runtime = patch.object(cv_checkpoint, 'runtime_fingerprint',
-                                    return_value={'test_runtime': 'equivalent-workflow-v1'})
+                                    return_value=synthetic_runtime(source='equivalent-workflow-v1'))
         self.runtime.start()
         self.addCleanup(self.runtime.stop)
 

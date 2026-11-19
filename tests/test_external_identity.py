@@ -103,7 +103,7 @@ class ExternalIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(_CacheIdentityError, "unreadable"):
             self.process.get(self.pools)
 
-    def test_loaded_native_addition_and_object_replacement_are_detected(self):
+    def test_loaded_native_addition_changes_identity_and_replacement_is_refused(self):
         self.process.get(self.pools)
         previous = self.modules["numpy._native_fixture"]
         replacement = types.ModuleType(previous.__name__)
@@ -112,10 +112,12 @@ class ExternalIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(_CacheIdentityError, "inventory changed"):
             self.process.get(self.pools)
         process = external._ExternalNativeIdentity()
-        process.get(self.pools)
+        before = process.get(self.pools)
         self.modules["numpy.new_native"] = previous
-        with self.assertRaisesRegex(_CacheIdentityError, "inventory changed"):
-            process.get(self.pools)
+        after = process.get(self.pools)
+        self.assertNotEqual(after, before)
+        self.assertEqual(process.get(self.pools), after)
+        self.assertIsNone(process.failure)
 
     def test_change_during_initial_hashing_is_rejected(self):
         read = external._file_digest

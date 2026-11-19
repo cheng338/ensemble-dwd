@@ -26,12 +26,17 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Download the validated DWD wheel
-        run: >-
-          python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.19"
-          --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
-      - name: Install the exact validated DWD wheel
+      - name: Check out the paired DWD source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: cheng338/dwd
+          ref: ${{ vars.DWD_DEVELOPMENT_REF }}
+          path: .ci-dwd-source
+      - name: Build the paired DWD wheel
+        env:
+          DWD_BUILD_ACCEL: ${{ runner.os == 'Windows' && '1' || '0' }}
+        run: python -m pip wheel --no-deps --wheel-dir .ci-wheels/dwd ./.ci-dwd-source
+      - name: Install the paired DWD wheel
         run: python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/dwd
       - name: Build and install the ensemble wheel to be tested
         run: |
@@ -46,7 +51,11 @@ jobs:
         run: >-
           python -I -B tests/ci_artifacts.py check
           --dwd-wheel-dir "${{ github.workspace }}/.ci-wheels/dwd"
-          --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble" --backend wheel
+          --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble"
+          --backend "${{ runner.os == 'Windows' && 'native' || 'portable' }}"
+          --route-contract current
+          --expected-platform "${{ runner.os == 'Windows' && 'windows' || 'linux' }}"
+          --expected-python "${{ matrix.python-version }}"
       - name: Run the complete bundled test suite
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: python -I -B -m pytest tests -o "python_files=test*.py" -ra
@@ -63,17 +72,22 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.11"
-      - name: Download the validated DWD wheel
-        run: >-
-          python -m pip download --no-index
-          --find-links "https://github.com/cheng338/dwd/releases/expanded_assets/v1.3.19"
-          --no-deps --require-hashes -r requirements-dwd.txt --dest .ci-wheels/dwd
+      - name: Check out the paired DWD source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: cheng338/dwd
+          ref: ${{ vars.DWD_DEVELOPMENT_REF }}
+          path: .ci-dwd-source
+      - name: Build the paired DWD wheel
+        env:
+          DWD_BUILD_ACCEL: '0'
+        run: python -m pip wheel --no-deps --wheel-dir .ci-wheels/dwd ./.ci-dwd-source
       - name: Install compatible older numerical dependencies
         run: >-
           python -m pip install
           "numpy==1.26.4" "scipy==1.12.0"
-          "scikit-learn==1.6.1" "joblib==1.3.2"
-      - name: Install the exact validated DWD wheel
+          "scikit-learn==1.6.1" "joblib==1.3.2" "pandas==2.2.3"
+      - name: Install the paired DWD wheel
         run: python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/dwd
       - name: Build and install the ensemble wheel to be tested
         run: |
@@ -90,7 +104,10 @@ jobs:
         run: >-
           python -I -B tests/ci_artifacts.py check
           --dwd-wheel-dir "${{ github.workspace }}/.ci-wheels/dwd"
-          --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble" --backend wheel
+          --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble" --backend portable
+          --route-contract current
+          --expected-platform linux
+          --expected-python 3.11
       - name: Run the complete bundled test suite
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: python -I -B -m pytest tests -o "python_files=test*.py" -ra

@@ -4,6 +4,7 @@ from email.parser import BytesParser
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import shutil
@@ -80,6 +81,16 @@ def verify_backend(dwd_record, expected):
     return {'backend': declared, 'compiled_helper_executed': values is not None}
 
 
+def _route_checker():
+    # -I deliberately excludes the script directory from sys.path. Load only
+    # this exact sibling test helper, while dwd stays imported from the wheel.
+    path = Path(__file__).with_name('ci_native_routes.py')
+    spec = importlib.util.spec_from_file_location('_ci_native_route_checks', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.verify_routes
+
+
 def prepare_bundle(source, destination):
     """Keep tests, examples and their metadata/fixtures, but no package roots."""
     source, destination = Path(source).resolve(), Path(destination).resolve()
@@ -113,6 +124,9 @@ def main():
     check.add_argument('--dwd-wheel-dir', required=True)
     check.add_argument('--ensemble-wheel-dir')
     check.add_argument('--backend', choices=['native', 'portable', 'wheel'], required=True)
+    check.add_argument('--route-contract', choices=['current', 'released-1.3.19'], required=True)
+    check.add_argument('--expected-platform', choices=['windows', 'linux'], required=True)
+    check.add_argument('--expected-python', choices=['3.11', '3.12'], required=True)
     args = parser.parse_args()
     if args.command == 'install':
         target = str(single_wheel(args.wheel_dir))
@@ -125,6 +139,8 @@ def main():
         record = verify_artifact(single_wheel(args.dwd_wheel_dir), 'dwd')
         result = {'python': sys.executable, 'dwd': record,
                   **verify_backend(record, args.backend)}
+        result['native_routes'] = _route_checker()(
+            result['backend'], args.route_contract, args.expected_platform, args.expected_python)
         if args.ensemble_wheel_dir:
             result['ensemble'] = verify_artifact(single_wheel(args.ensemble_wheel_dir), 'ensemble_dwd')
         print(json.dumps(result, indent=2))

@@ -129,6 +129,11 @@ def _initialize_numerical_runtime():
 
 
 def _runtime_provenance(factory):
+    error_state = tuple(sorted(np.geterr().items()))
+    # Active user callbacks/loggers have mutable, untracked behavior.
+    if any(mode in ("call", "log") for _, mode in error_state):
+        raise _CacheIdentityError(
+            "active NumPy call/log error handler is not persistently cacheable")
     _initialize_numerical_runtime()
     try:
         observed_pools = threadpool_info()
@@ -147,7 +152,7 @@ def _runtime_provenance(factory):
                 python_implementation=platform.python_implementation(),
                 machine=platform.machine(), numpy=np.__version__, scipy=scipy.__version__,
                 sklearn=sklearn.__version__, joblib=joblib.__version__,
-                dwd=dwd.__version__, pools=pools)
+                dwd=dwd.__version__, numpy_error_state=error_state, pools=pools)
 
 
 class _RuntimeVerifier:

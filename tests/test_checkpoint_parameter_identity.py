@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import clone
 from sklearn.model_selection import StratifiedKFold
 
@@ -150,7 +151,7 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
                                        cache_dir=None, store_base_estimators=False)
         self.numpy_theta = np.float32(.7)
         self.plain_theta = float(self.numpy_theta)
-        self.runtime = {'counter': 1, 'native_threads': 1}
+        self.runtime = synthetic_runtime(packages={'counter': 1})
         runtime_patch = patch.object(checkpoint, 'runtime_fingerprint',
                                      side_effect=lambda **kwargs: deepcopy(self.runtime))
         runtime_patch.start()
@@ -170,7 +171,7 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
                           type(theta))
             for fold_index, (train, validation) in enumerate(self.folds):
                 direct = clone(self.model).set_params(theta=theta).fit(self.X[train], self.y[train])
-                expected_subset_size = max(2, int(len(train) * theta))
+                expected_subset_size = max(2, int(len(train) * float(theta)))
                 self.assertEqual(len(direct.subset_indices_[0]), expected_subset_size)
                 facts = result.checkpoint_summary_['diagnostics'][candidate_index][fold_index]
                 self.assertEqual(facts['subset_sizes'], [expected_subset_size])
@@ -179,8 +180,8 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
                                  direct.score(self.X[validation], self.y[validation]))
 
     def test_numpy_and_python_theta_fit_separately_in_same_stage(self):
-        # NumPy scalar promotion can make these counts equal or different.
-        # Parameter types must remain distinct checkpoint identities either way.
+        # Sizing normalizes NumPy scalars locally to the same Python float.
+        # Original parameter types must remain distinct checkpoint identities.
         self.assertNotEqual(checkpoint._stable(self.numpy_theta),
                             checkpoint._stable(self.plain_theta))
         thetas = [self.numpy_theta, self.plain_theta]
@@ -239,7 +240,7 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
                 self.assertIs(type(selected), type(theta))
                 fresh = clone(self.model).set_params(theta=selected).fit(self.X, self.y)
                 direct = clone(self.model).set_params(theta=theta).fit(self.X, self.y)
-                expected_subset_size = max(2, int(len(self.X) * theta))
+                expected_subset_size = max(2, int(len(self.X) * float(theta)))
                 self.assertEqual(len(direct.subset_indices_[0]), expected_subset_size)
                 self.assertEqual(len(fresh.subset_indices_[0]), expected_subset_size)
                 np.testing.assert_array_equal(fresh.subset_indices_[0], direct.subset_indices_[0])
@@ -269,20 +270,20 @@ class CheckpointParameterIdentityTests(unittest.TestCase):
     def test_type_only_runtime_change_rejects_resume(self):
         with self.session():
             pass
-        self.runtime['counter'] = True
+        self.runtime['packages']['counter'] = True
         with self.assertRaises(checkpoint.CheckpointError), self.session(resume=True):
             pass
 
     def test_type_only_runtime_change_is_detected_in_active_coordinator(self):
         with self.session() as store:
-            self.runtime['counter'] = True
+            self.runtime['packages']['counter'] = True
             with self.assertRaises(checkpoint.CheckpointError):
                 store.search({'theta': [.7]})
         self.assertFalse(list((self.base / 'run/cv-checkpoints/folds').glob('*.json')))
 
     def test_type_only_runtime_change_is_detected_by_worker(self):
         with self.session() as store:
-            self.runtime['counter'] = True
+            self.runtime['packages']['counter'] = True
             # Isolate the worker's own guard; a normal search also rejects this
             # change in its coordinator before any work is dispatched.
             with patch.object(store, '_check_runtime', return_value=None):

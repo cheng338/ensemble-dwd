@@ -1,5 +1,8 @@
 # Parallel base fitting
 
+For choosing between base, pair and outer-CV parallelism, see
+[Choosing Ensemble options](choosing_options.md#parallel-work-and-prediction-allocation).
+
 `EnsembleKernelDWD(base_jobs=4)` fits up to four base learners concurrently.
 The default, `base_jobs=1`, keeps sequential base fitting. The actual worker
 count cannot exceed `M`. Each parallel worker uses one native numerical thread;
@@ -11,6 +14,18 @@ order and final-refit procedure. Numerical acceptance criteria are unchanged.
 Different BLAS thread counts can nevertheless change floating-point results;
 bitwise equivalence is not promised for arbitrary inputs or runtimes.
 
+Each eligible internal base task uses a snapshot of the calling thread's four
+NumPy error modes and its registered callback or logger, including an absent
+handler. Prior worker state is restored when the task returns or raises.
+Base scoring retains the sequential path's local overflow/invalid ignore mask;
+other error modes continue to follow the caller's settings.
+
+Callbacks and loggers are shared by reference and may be invoked concurrently.
+They must tolerate concurrent calls; serial invocation order and identical
+event counts are not guaranteed. This propagation applies to internal DWD base
+tasks, not the separate `OvOClassifier` joblib dispatch or arbitrary caller
+context variables.
+
 ## Runtime ownership and resource planning
 
 The caller must own native-thread configuration throughout the fit. Unrelated
@@ -20,7 +35,8 @@ native thread limits can affect other code in the same process.
 
 Calls from a Python worker thread, custom learner factories, callable kernels
 and callable kernel arguments keep sequential execution. `base_execution_`
-records the effective worker count and runtime information. These fallbacks
+describes the policy of the fitted base result; read it together with
+`cache_hit_`, as detailed below. These fallbacks
 preserve the caller's existing behavior; they do not repair an independently
 unsafe external numerical-thread configuration.
 
@@ -46,6 +62,41 @@ numerical runtime. Custom learner factories bypass the cache.
 A cache hit reuses completed base work but still fits a fresh final learner.
 Failed base work is not published as a completed cache entry.
 
+`base_execution_` describes how the fitted base result was produced. On a
+miss, or with caching disabled or bypassed, it describes the newly computed
+base stage. On a hit, it retains the producing stage's policy rather than
+claiming that the current fit ran those base workers. In particular:
+
+- `effective_jobs` is the producing stage's worker limit, not the number
+  of base fits performed by the current call.
+- For parallel bases, `worker_runtimes` contains one observation per base
+  task. Four bases run with three workers therefore have four entries,
+  not four distinct-worker identities.
+- On a parallel cache hit, `worker_runtimes` and `restored` are historical
+  producer observations, not a fresh check of the consuming process.
+- Sequential results have a synthesized policy summary; they do not
+  contain a captured sequential worker-runtime inventory.
+
+For current work, inspect `cache_hit_` and, when counts are needed, use a
+fresh `fit_profile()` context around the fit:
+
+```python
+from ensemble_dwd.profiling import fit_profile
+
+with fit_profile() as profile:
+    fitted = estimator.fit(X, y)
+print(fitted.cache_hit_)
+print(fitted.base_execution_)  # policy associated with the fitted bases
+print(profile.as_dict()["counts"])  # work completed in this context
+```
+
+With one successful cache-hit fit in that context, `base_fit_completed`
+and `base_scoring_completed` are zero, `reused_base_learners` is `M`, and
+`final_fit_completed` is one. No current parallel base-worker profiles
+are added by that hit. This does not mean the complete fit does no work:
+cache verification and I/O, selection, and the fresh final fit still run.
+`base_execution_` does not describe the final learner's execution.
+
 Profiling records the parent parallel stage as elapsed wall time and stores
 individual worker profiles separately. Worker times overlap and must not be
 added to parent wall time. Completed-fit and scoring counts include completed
@@ -58,3 +109,23 @@ original exception. It does not forcibly terminate an active numerical call;
 cleanup can therefore wait for already started base fits. No fitted state is
 published after a failed or interrupted fit. Error context records the affected
 base position when known and distinguishes completed work from queued work.
+
+## Checkpoint entry
+
+Example workflows using `CheckpointedCV` have a separate process-startup path.
+Fresh parallel entry dispatches its existing `jobs - 1` import-only tasks while
+the parent computes its first full runtime fingerprint. After parent
+qualification and import completion, it submits the single estimator-bearing
+worker authority probe on the same managed pool. Parent/worker compatibility,
+the full post-probe parent check, and source, native, receipt and lease guards
+remain in place. There are no additional tasks or fits, and these import tasks
+do not guarantee that every worker is warm. Serial, resume and existing-manifest
+paths bypass this preparation.
+
+Imports now start earlier, so their side effects can occur before a later parent
+refusal. A preparation failure prevents submission of the estimator-bearing
+probe. Parent and manifest errors retain precedence; cleanup preserves the
+primary exception and attempts lease release. Preparation is not retried after
+it starts. This private scheduling change adds no public option and does not
+change the statistical or numerical method. Measured benefits depend on the
+workload and runtime; see the [qualification and timing record](../VALIDATION.md#2026-11-11-fresh-parallel-checkpoint-entry-overlap).

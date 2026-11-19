@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
@@ -156,7 +157,7 @@ class MulticlassDiagnosticsTests(unittest.TestCase):
         config = adaptive_search.AdaptiveSearchConfig(prefix=prefix, refine=False, max_candidates=9)
         with tempfile.TemporaryDirectory(prefix='ovo-diagnostics-') as temporary, \
                 patch.object(cv_checkpoint, 'runtime_fingerprint',
-                             return_value={'synthetic_runtime': 'ovo-diagnostics-v1'}), \
+                             return_value=synthetic_runtime(source='ovo-diagnostics-v1')), \
                 contextlib.redirect_stdout(io.StringIO()):
             run_dir = new_run_directory(Path(temporary) / 'run')
 

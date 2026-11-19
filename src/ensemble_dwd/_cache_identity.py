@@ -44,10 +44,17 @@ def _artifact_files(roots):
             raise _CacheIdentityError("package artifact directory is unavailable")
         for folder, directories, filenames in os.walk(root, onerror=failed):
             directories[:] = sorted(item for item in directories if item != "__pycache__")
+            folder_path = Path(folder)
+            prefix = None
             for filename in sorted(filenames):
-                path = Path(folder) / filename
+                path = folder_path / filename
                 if path.suffix.lower() in (".py", ".c", ".h") or _is_native(path):
-                    result[name + "/" + path.relative_to(root).as_posix()] = (path, _stamp(path))
+                    if prefix is None:
+                        relative_folder = folder_path.relative_to(root).as_posix()
+                        prefix = name + "/"
+                        if relative_folder != ".":
+                            prefix += relative_folder + "/"
+                    result[prefix + filename] = (path, _stamp(path))
         if name + "/__init__.py" not in result:
             raise _CacheIdentityError("package Python source identity is unavailable")
     return result

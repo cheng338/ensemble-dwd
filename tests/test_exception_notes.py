@@ -14,6 +14,7 @@ if str(EXAMPLES) not in sys.path:
     sys.path.insert(0, str(EXAMPLES))
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 import search_support
 import cv_checkpoint as checkpoint
 from sklearn.base import BaseEstimator, ClassifierMixin
@@ -174,8 +175,7 @@ class CheckpointFailureNoteTests(unittest.TestCase):
         self.y = self.X[:, 0].astype(int)
         train, validation = np.array([0, 1, 3, 4, 6, 7]), np.array([2, 5, 8])
         self.folds = [(train, validation), (validation, train)]
-        self.runtime = {'python': 'failure-notes-test-runtime', 'files_sha256': 'c' * 64,
-                        'native_pools': [{'num_threads': 1, 'version': 'test-build'}]}
+        self.runtime = synthetic_runtime(source='failure-notes-test-runtime')
         guard = patch.object(checkpoint, 'runtime_fingerprint', side_effect=lambda **kwargs: deepcopy(self.runtime))
         guard.start()
         self.addCleanup(guard.stop)
