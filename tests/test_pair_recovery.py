@@ -233,27 +233,22 @@ class PairStoreTests(unittest.TestCase):
         self.assertEqual(event['historical_fit_seconds'], first['fit_seconds'])
         self.assertGreaterEqual(event['load_seconds'], 0.)
 
-    def test_identity_checksum_size_and_filename_reject_before_unpickling(self):
-        variants = ('parent', 'key', 'filename', 'payload', 'size', 'envelope')
+    def test_identity_filename_and_envelope_reject_before_unpickling(self):
+        # Optional payload damage is tested separately: it may refit this pair,
+        # but manifest identity and ownership failures must remain fatal.
+        variants = ('parent', 'key', 'filename', 'envelope')
         for variant in variants:
             with self.subTest(variant=variant):
                 store = self.store(variant)
                 event = self.seed(store)
                 receipt = storage._io_path(store.root / (event['key'] + '.json'))
                 payload = read(receipt)['payload']
-                model_path = storage._io_path(store.root / (event['key'] + '.pkl'))
                 if variant == 'parent':
                     payload['parent_sha256'] = '0' * 64
                 elif variant == 'key':
                     payload['key_identity']['rows'].reverse()
                 elif variant == 'filename':
                     payload['model_file'] = '../other.pkl'
-                elif variant == 'payload':
-                    data = bytearray(model_path.read_bytes())
-                    data[-1] ^= 1
-                    model_path.write_bytes(data)
-                elif variant == 'size':
-                    payload['model_bytes'] += 1
                 receipt.write_bytes(storage._envelope(payload))
                 if variant == 'envelope':
                     envelope = read(receipt)

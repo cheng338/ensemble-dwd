@@ -308,6 +308,7 @@ def main(argv=None):
     if min(class_counts(y_train).values()) < args.folds:
         parser.error(f'Each selected training digit needs at least {args.folds} examples '
                      f'for {args.folds}-fold CV; increase --train-size or reduce --folds.')
+    print(f'Input archive: {args.data.resolve()}')
     folds = list(StratifiedKFold(args.folds, shuffle=True, random_state=RANDOM_STATE)
                  .split(X_train, y_train))
     run_dir = new_run_directory(args.output_dir, resume=args.resume)
@@ -328,7 +329,9 @@ def main(argv=None):
     if args.pair_recovery:
         settings['pair_recovery'] = {'enabled': True, 'max_bytes': args.pair_recovery_max_bytes,
                                      'scope': 'unfinished_cv_folds'}
-    # The search manifest validates this same selection before any resumed fit.
+    # Keep the original location in the observational selection record. The
+    # search identity binds every other field, including full-source hashes.
+    identity_settings = {key: value for key, value in settings.items() if key != 'data_path'}
     if not args.resume:
         write_json_atomic(run_dir / 'data-selection.json', settings)
     print(f'Training rows: {len(y_train)}; held-out test rows: {len(y_test)}; all ten digits present.')
@@ -343,7 +346,7 @@ def main(argv=None):
     result = run_adaptive_search(
         pipeline, grid, X_train, y_train, X_test, y_test, folds, run_dir,
         final_native_threads=args.final_native_threads,
-        jobs=args.jobs, error_policy=args.error_score, config=config, settings=settings, resume=args.resume,
+        jobs=args.jobs, error_policy=args.error_score, config=config, settings=identity_settings, resume=args.resume,
         reuse_equivalent_folds=args.reuse_equivalent_folds, **pair_options, **seed_options, **ratio_options,
         **confirmation_options)
     if result.get('resumed_completed'):

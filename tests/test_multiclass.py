@@ -320,10 +320,7 @@ class MulticlassContractTests(unittest.TestCase):
                     model.predict(X)
 
     def test_feature_names_are_preserved_and_checked_when_pandas_is_available(self):
-        try:
-            import pandas as pd
-        except ImportError:
-            self.skipTest("pandas is optional")
+        import pandas as pd
         X = pd.DataFrame(self.X, columns=["position", "row_id"])
         model = self.estimator().fit(X, self.y)
         assert_array_equal(model.feature_names_in_, X.columns)
@@ -351,7 +348,7 @@ class MulticlassBinaryEnsembleTests(unittest.TestCase):
             self.assertEqual(len(child.estimators_), 1)
             self.assertEqual(child.consensus_scores_.shape, (16,))
             for learner in [*child.estimators_, child.final_estimator_]:
-                self.assertEqual(learner.params["implementation"], "optimized")
+                self.assertNotIn("implementation", learner.params)
                 self.assertEqual(learner.params["kernel_kws"]["gamma"], base.gamma)
                 for parameter in ["lambd", "q", "stopping", "max_iter"]:
                     self.assertEqual(learner.params[parameter], getattr(base, parameter))

@@ -171,6 +171,11 @@ def _summarize_pair_work(result, record, *, replayed):
         counts[name] += evidence[name]
     for name, field in _PAIR_SECONDS.items():
         seconds[name] += evidence[field]
+    # Failed optional-payload loading is current recovery work, not successful
+    # model reuse. It is already included in the enclosing fold fit wall time.
+    failed_load = evidence.get('pair_failed_load_seconds', 0.)
+    if failed_load:
+        seconds['pair_failed_load'] = seconds.get('pair_failed_load', 0.) + failed_load
     historical['historical_reused_pair_fit_seconds'] += evidence['historical_reused_pair_fit_seconds']
     status = evidence['cleanup_status']
     statuses = summary['cleanup_status_counts']
@@ -190,6 +195,12 @@ def _aggregate_pair_work(result, summary):
     for name in _PAIR_SECONDS:
         combined['current_worker_seconds'][name] += evidence['current_worker_seconds'][name]
         combined['replayed_receipts']['worker_seconds'][name] += evidence['replayed_receipts']['worker_seconds'][name]
+    for target, source in ((combined['current_worker_seconds'], evidence['current_worker_seconds']),
+                           (combined['replayed_receipts']['worker_seconds'],
+                            evidence['replayed_receipts']['worker_seconds'])):
+        failed_load = source.get('pair_failed_load', 0.)
+        if failed_load:
+            target['pair_failed_load'] = target.get('pair_failed_load', 0.) + failed_load
     combined['historical_reused_pair_fit_seconds'] += evidence['historical_reused_pair_fit_seconds']
     combined['replayed_receipts']['historical_reused_pair_fit_seconds'] += evidence['replayed_receipts']['historical_reused_pair_fit_seconds']
     for name, count in evidence['cleanup_status_counts'].items():

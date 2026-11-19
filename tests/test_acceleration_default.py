@@ -87,11 +87,11 @@ class AccelerationDefaultTests(unittest.TestCase):
                     self.assertEqual(scores.shape, (len(self.X),))
                     self.assertTrue(np.isfinite(scores).all())
 
-    def test_old_missing_field_and_fitted_pickle(self):
+    def test_missing_requested_acceleration_uses_current_default_and_preserves_fitted_pickle(self):
         old = EnsembleKernelDWD(**self.options)
         del old.acceleration
         restored = pickle.loads(pickle.dumps(old))
-        self.assertIsNone(clone(restored).acceleration)
+        self.assertEqual(clone(restored).acceleration, 'auto')
         new = EnsembleKernelDWD(**self.options).fit(self.X, self.y)
         copied = pickle.loads(pickle.dumps(new))
         copied.set_params(acceleration=None)

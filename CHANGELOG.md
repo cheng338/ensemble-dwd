@@ -3,6 +3,269 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+<a id="0316"></a>
+
+## 0.4.0
+
+Ensemble DWD 0.4.0 requires DWD 2.0.1. For a new fit, change any explicit
+`affine_computation='auto'` to `'joint'`, including nested parameter grids.
+`residual_check_order='auto'` is still supported. Start a new run directory
+when upgrading a checkpointed search. See the [migration guide](docs/method.md#public-solver-api-upgrade)
+and the [November 19 candidate comparison](VALIDATION.md#2026-11-19-paired-candidate-comparison)
+for the scope of the earlier tests and the cost of initial and replayed searches.
+
+- Deprecate the `verbose` keyword of the `run_adaptive_search` example helper.
+  The helper still accepts it. Callers can omit it without changing adaptive
+  progress output.
+
+- Align `gamma="scale"` in both ensemble classes with the conventional
+  `1.0 / (n_features * variance)` evaluation order. This can change the last
+  bits compared with the previous `(1.0 / n_features) / variance` order.
+  The full-fold variance, constant-data fallback, range checks and exact
+  sharing of the resolved coefficient across learners are preserved.
+
+- Explain how non-unique free intercepts in DWD learners can affect ensemble
+  scores, consensus selection and predictions. Aggregation, initialization,
+  tie handling and validation checks are unchanged.
+
+- Clarify the DWD dependency's simultaneous exact-recovery limits: rank is not
+  row count, and the bit or operation budget may bind below the rank cap.
+  This documentation change does not alter recovery profiles or defaults.
+
+- Report unsupported real-scalar parameter types with a named `ValueError`,
+  including `Fraction` and `Decimal`, instead of leaking NumPy type errors
+  or reporting a misleading numeric-domain failure. Keep supported inputs,
+  ratio sizing, sampling and numerical behavior unchanged.
+
+- Normalize maintained text to the declared LF policy and preserve
+  binary fixtures. This changes source identities without changing
+  estimator semantics: existing base-cache entries remain on disk but
+  are not reused under the new identity. Exact-source checkpoints require
+  their original source snapshot or a fresh run; historical identities
+  are not rewritten.
+
+- Restore omitted history for tagged versions 0.3.1 and 0.1.1 from the
+  corresponding source and validation records, without changing current
+  dependency requirements or treating historical checks as new execution.
+
+- Link current DWD dependency guidance to the package metadata and lock file.
+  Label historical release pairings and validation records explicitly without
+  changing dependency requirements or historical results.
+
+- Document installed-wheel qualification separately from local repository tests,
+  using existing detached bundles and exact artifact checks for both packages.
+  Clarify current paired-build and historical release route contracts without
+  changing package code or CI behavior.
+
+- Require pandas in the full test extra so binary and multiclass DataFrame
+  feature-name checks cannot silently skip a missing or broken pandas import.
+  Keep pandas optional at runtime and pin pandas 2.2.3 only in the existing
+  minimum-dependency CI job to preserve its NumPy 1.26.4 baseline. Estimator
+  behavior and numerical dependencies for ordinary package use are unchanged.
+
+- Recover bounded optional checkpoint damage without weakening source or model
+  identity checks. Inside an unfinished fold, valid pair metadata with a missing,
+  unreadable regular or byte-corrupted model payload permits a fresh validated
+  fit of that pair without overwriting its cache entry; healthy siblings remain
+  reusable. Attribute failed-load time separately and retain damaged entries
+  until ordinary completed-fold cleanup. Restore a missing equivalent-fold
+  source only from an exact validated completed attempt copy, using atomic
+  hard-link publication without overwrite or new fit/scoring. Document strict
+  refusals and safe manual recovery when original evidence is unavailable.
+  Public options, defaults, numerical methods and source/runtime compatibility
+  requirements are unchanged.
+
+- Overlap existing import-only worker preparation with the first full parent
+  runtime fingerprint at fresh parallel `CheckpointedCV` entry. Keep the single
+  estimator-bearing authority probe after parent qualification and import
+  completion, with all runtime and checkpoint guards retained. Imports may run
+  before a later parent refusal; an import-preparation failure prevents authority
+  submission. Serial and resume behavior, task counts and public options are
+  unchanged. Bounded two-host comparisons favor the initial workflow, without
+  a universal speedup claim. See [checkpoint entry](docs/parallel-base-fitting.md#checkpoint-entry)
+  and its [validation record](VALIDATION.md#2026-11-11-fresh-parallel-checkpoint-entry-overlap).
+
+- Reduce repeated base-cache observation work by sharing one fresh successful
+  external-artifact `stat`, avoiding unnecessary path construction for ordinary
+  Python module origins, and reusing package-directory prefixes within each
+  inventory traversal. Keep all source/native/loaded-module/NumPy-policy guards,
+  the three observations on a successful cache hit, and publication checks.
+  Installations must remain immutable; the removed adjacent `stat` changes a
+  concurrent-mutation detection point, not the installation contract. Bounded
+  cached-fit comparisons favored the combined change on Windows AOCL and Linux
+  MKL, without a universal speedup claim. No public option, default, numerical
+  method or standalone prediction change. This is separate from checkpoint
+  inventory optimization. See
+  [base-cache observations](docs/candidate_changes.md#040-base-cache-observations).
+
+- Reduce initial checkpoint package-metadata discovery overhead by parsing
+  ordinary filesystem distribution RECORDs without constructing unused hash
+  objects or checking unrelated members for existence. Validate all row shapes
+  and sizes before hashing selected METADATA files; preserve their error,
+  alias and drift checks, and the complete source/native runtime verification.
+  The fast path deliberately no longer reports filesystem errors on unrelated
+  RECORD entries. Python 3.11 and nonstandard distribution providers retain the
+  original files-property fallback. Bounded comparisons favored the initial
+  workflow and initial workflow plus one replay; replay timings varied, with
+  no universal speedup or fixed replay penalty established. No estimator
+  mathematics, public defaults or checkpoint migration changes. See
+  [checkpoint metadata discovery](docs/candidate_changes.md#040-checkpoint-metadata-discovery).
+
+- Reduce checkpoint inventory overhead with one-pass directory traversal and
+  one fresh file-metadata observation shared by regular-file classification
+  and the existing hash/cache check. Prune excluded `__pycache__` directories;
+  on Python 3.11, retain the original `rglob` traversal and error behavior.
+  Keep full inventories, checkpoint-boundary checks and worker qualification.
+  The installation must remain immutable: sharing the observation can defer
+  detection of a cached file changed immediately afterward until the next
+  full check. Numerical work, public defaults and checkpoint reuse rules are
+  unchanged; this helper-source change still invalidates old runtime identity.
+  Bounded comparisons support the combined change, with workload-specific
+  tradeoffs rather than a universal speedup. See
+  [checkpoint inventory changes](docs/candidate_changes.md#040-checkpoint-inventory).
+
+- Use an explicit native-resource scope for nonresumable
+  `run_search_workflow` final budgets above one. Preserve native-library and
+  pool identity, requested limits, continuity across CV/final fit and
+  restoration. Remove complete source/`METADATA`/unloaded-file/extra
+  callable-origin attestation from this route and record
+  `source_installation_attestation=false`; installed code must remain
+  unchanged during use. Strict phase helpers, adaptive search, checkpoints
+  and recovery retain complete/frozen checks. Default 1, estimator mathematics,
+  CV scheduling and public options are unchanged. Qualified ordinary workflow
+  comparisons showed substantial savings on the tested Windows AOCL and Linux
+  MKL environments; larger-workload performance remains unquantified because
+  all timing pairs were excluded. These are not pure-fit or universal gains.
+
+- Verify that eligible serial base and final fits use DWD's ordered-gradient
+  reducer and that the portable fallback reproduces the checked sum. DWD 2.0.1
+  provides this optimization. Its measured cost depends on the feature width,
+  availability of the native helper and diagnostic work elsewhere in the fit.
+
+- Prepare checkpoint-module imports alongside the single estimator-bearing
+  runtime probe at fresh parallel checkpoint entry. Import-only tasks add no
+  estimator payload or fits and do not guarantee that every worker is ready;
+  independent worker qualification remains required. Serial entry and
+  authenticated resumes bypass this preparation, with no new public option.
+  Bounded comparisons supported lower fitting-workflow time, while an empty
+  Windows context added about 0.3 s; there is no universal speedup claim.
+  Helper-source identity still refuses reuse across this source change.
+
+- Skip redundant file-type queries for `__pycache__` paths already excluded
+  from checkpoint inventories. Preserve checks and errors for every other
+  path, source/native identity guards and worker qualification. Bounded
+  comparisons showed lower inventory and replay overhead; fitting, scheduling
+  and public defaults are unchanged. The helper-source change retains strict
+  checkpoint mismatch refusal: use the original frozen workflow or a new run
+  directory, without migrating old records.
+
+- Retain the streamlined feasibility preflight in strict/adaptive/checkpoint
+  workflows for explicit `--final-native-threads` budgets above one. Keep
+  complete source/runtime identities before and after the probe, while
+  checking only native-pool state inside its empty widened scope. Reuse the
+  existing native observer; retain restoration and the unchanged actual
+  final-fit guard. Default 1 still validates arguments without an extra
+  runtime probe or thread scope. Bounded comparisons support setup savings
+  and an ordinary-workflow benefit on the tested Windows system, not a
+  universal larger-workflow speedup. Estimator mathematics, CV scheduling
+  and public defaults are unchanged.
+
+- Document the paired DWD API's removal of unsupported fitting/solver weights
+  and the migration of explicit `None`, positional placeholders and saved
+  metadata requests. Ensemble fitting remains unweighted; weighted accuracy
+  scoring remains supported, and AdaBoost's weighted-fit contract remains
+  unsupported. No ensemble production behavior changes here. Distinguish DWD's
+  separate conic persistence and SVM expression fixes from this package's
+  kernel DWD learners and SVC comparator.
+
+- Use current joint/auto/auto defaults when requested affine, acceleration or
+  residual-order fields are missing from an estimator, including parameter
+  inspection, cloning and refitting. Preserve explicitly stored choices and
+  the interpretation of existing fitted prediction state. No new solver
+  arithmetic or deserialization rewrite is introduced. Cache identity and
+  unsupported explicit-value checks remain enforced.
+
+- Default affine scoring explicitly to `'joint'` and reject the former public
+  `'auto'` alias. Forward both supported concrete policies to every base and
+  final learner. Remove the unsupported-dependency downgrade to `'standard'`;
+  incompatible dependencies now fail with the original error chained, without
+  retry. Supported-pair default scoring, sampling and selection are unchanged.
+  Update caller settings and nested grids from affine `'auto'` to `'joint'`.
+
+- Document when to opt into optimality stopping, its cost across all base and
+  final learners, budget limits, and per-learner convergence checks. This is
+  documentation only; stopping defaults and estimator behavior are unchanged.
+
+- Follow the paired DWD public optimized solver without forwarding its removed
+  `implementation` keyword. Verify the absent public selector and actual fitted
+  implementation/backend in existing integration and cache tests. Ensemble
+  defaults, explicit backend controls and statistical procedure are unchanged.
+  This requires the paired DWD 2.0.1 release. Source identity invalidates
+  old cache reuse and checkpoint continuation; document new-run setup rather
+  than migrating historical records or promising arbitrary pickle compatibility.
+
+- Verify the pinned DWD dependency's expected native and portable execution
+  routes in CI, in addition to installed-wheel identity. Require actual native
+  execution witnesses and exact small-case results while preserving legitimate
+  platform fallbacks. Package fitting and prediction are unchanged.
+
+- Read the example checkpoint aggregation declaration from its parsed source
+  instead of Python bytecode. Require a single direct string literal while
+  preserving selector code, defaults, source and loaded-value integrity checks.
+  Initialization has a small measured additional cost; warmed checks are unchanged.
+
+- Compare checkpoint runtime artifacts by verified physical-file identity,
+  preserving content and live alias guards. Save an exact CV-worker runtime
+  separately from each coordinator session, allowing compatible coordinator-only
+  native pools without weakening worker checks. Probe once for each new parallel
+  checkpoint identity, preserve saved worker identity on resume, and keep full
+  final-execution identity for unfinished final-only attempts. Completed replay
+  retains historical runtime records and the shared scoring-ambiguity guard.
+  Reject older runtime-policy records without migration; document new-run setup
+  and recurring native-discovery costs. Numerical methods and selection are unchanged.
+
+- Check nondefault final native-thread budgets before CV without fitting or
+  silently clamping requests; keep the actual final-fit checks and strict
+  ordinary resume identity. Add `recover_final_fit` in
+  `examples/final_recovery.py` for explicit final-budget changes after an
+  accepted adaptive handoff, with the same selected model, data, sources and
+  libraries. Preserve completed CV
+  and separate attempt identities. A shared scoring claim prevents automatic
+  rescoring after an ambiguous interruption; completed replay returns reports
+  with `model=None`. Document prospective-only recovery and measured one-time
+  handoff/scoring management costs.
+
+- Correct two test expectations without changing runtime behavior: compare
+  cache-lock error directories by filesystem identity, including Windows
+  extended-path spellings, and recognize the existing guarded RBF v2 labels.
+  Retain the lock-failure and constructor-compatibility assertions.
+
+- Normalize validated subset and selection ratios to local Python floats
+  before calculating row counts in ensemble DWD and SVM. Avoid premature
+  NumPy low-precision rounding and integer-coercion overflow; reject original
+  wider-precision ratios above one before accepting the normalized value.
+  Preserve Python-float multiplication followed by truncation, constructor
+  parameters, disjoint sampling, and checkpoint type identities.
+
+- Bind checkpoint reuse to the selector source and verify loaded selection
+  functions, defaults, dependencies and consumer aliases before adaptive
+  selection. Cover all fourteen selector and exact-accuracy helpers and reject
+  stale cached bytecode whose loaded defaults disagree with source declarations.
+  Reject inconsistent or historical identities without rewriting
+  existing checkpoints; estimator fitting and selection rules are unchanged.
+
+- Preserve the caller's NumPy error modes and registered callback or logger
+  in each eligible parallel DWD base task. Restore prior worker state on
+  success and exceptions, and match the existing sequential scoring mask
+  for overflow and invalid operations. Add real-fit, callback, worker-reuse,
+  cache and interruption regressions; document concurrent handler invocation.
+- Include the caller's four NumPy error-handling settings in base-cache
+  identity and verification for ensemble DWD and SVM. Preserve reuse under
+  matching ordinary or strict policies, and bypass caching under active
+  `call`/`log` modes whose handlers have untracked mutable behavior. Keep
+  the caller's policy, numerical algorithms and worker scheduling unchanged.
+  Add policy-change, callback/logger, real-fit and cache-boundary regressions.
+
 ## 0.3.15 — 2026-10-26
 
 - Require the paired DWD 1.3.19 dependency release.
@@ -10,7 +273,7 @@ accompanying his dissertation.
   to real learners, without requiring bitwise equality between independently
   solved fits. Preserve native solving, validation and recovery behavior.
 - Poll POSIX exclusive cache locks nonblockingly, retrying only actual lock
-  contention. This avoids the blocking NFS waiter failure reproduced on Robust
+  contention. This avoids the blocking NFS waiter failure reproduced on the Linux NFS host
   while retaining the requested directory, OS exclusion and error handling.
 - Explain unavailable filesystem cache locks with an actionable error, retaining
   the original errno and cause. Keep computation blocked until the lock is held;
@@ -397,6 +660,15 @@ accompanying his dissertation.
   values, nine gamma values and five retention fractions (405 candidates).
 - Updated the hash-pinned optimized DWD dependency to cheng338/dwd 1.3.7.
 
+## 0.3.1 — 2026-09-11
+
+- Update the SHA-256-pinned native and portable DWD dependency from 1.3.5
+  to 1.3.6, carrying its RBF symmetry and restricted recovery repairs.
+- Clarify binary and multiclass interfaces and the SVM comparator, and
+  update CI action versions. Ensemble sampling, selection, voting and
+  stopping defaults are unchanged. This entry describes the historical
+  dependency pairing, not the current package requirement.
+
 ## 0.3.0
 
 - Added `EnsembleKernelSVM`, using optimized scikit-learn SVC base learners,
@@ -445,3 +717,14 @@ The ensemble's sampling, consensus selection, final refit, voting, stopping
 defaults and parameter grids are unchanged. The cache synchronization repair
 does not change numerical results. The DWD dependency update improves numerical
 robustness while preserving the objective and unregularized intercept.
+
+## 0.1.1 — 2026-09-07
+
+- Add optional process-safe base-stage caching and optional storage without
+  base models, while retaining the final predictor and its diagnostics.
+- Save completed external CV results before explicit final refitting;
+  distinguish ineligible selections from unexpected failures. Preserve
+  the ensemble methodology and stopping defaults.
+- See the [archived 0.1.1 validation record](docs/validation-0.1.1.md) for
+  that release's dependency, numerical-boundary changes and completed checks.
+  Those checks are historical evidence, not validation of today's packages.

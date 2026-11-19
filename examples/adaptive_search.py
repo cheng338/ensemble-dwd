@@ -24,10 +24,10 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import ParameterGrid
 from threadpoolctl import threadpool_limits
 from cv_checkpoint import (CheckpointedCV, validate_cv_seeds, validate_seed,
-                           validate_seed_parameters)
+                           validate_seed_parameters, check_selection_state)
 
 from search_support import (_io_path, _resolved_public_path, bare_parameters, data_fingerprint,
-                            exception_details, parameter_snapshot,
+                            exception_details, exception_message, parameter_snapshot,
                             record_failure, write_failure_json,
                             write_json_atomic)
 from tune_mnist import fully_valid_candidate_mask, ranked_valid_indices
@@ -44,7 +44,9 @@ from stage_reporting import (candidate_budget, grid_proposal, publish_report,
                              safe_report, workload_plan)
 from near_coordinates import disclose
 from phase_threads import (final_fit_threads, final_thread_policy_sha256,
-                           validate_final_native_threads)
+                           validate_final_native_threads, preflight_final_native_threads)
+from final_recovery import (assert_normal_final_allowed, publish_final_handoff,
+                            reserve_normal_scoring)
 
 
 @dataclass(frozen=True)
@@ -115,28 +117,6 @@ def _results(rows, n_folds):
             **{key: np.asarray([row[key] for row in rows], dtype=float) for key in keys}}
 
 
-def _boundary_directions(results, axes, config):
-    ranked = ranked_valid_indices(results)
-    if not len(ranked):
-        return []
-    best = score_value(results, ranked[0])
-    tied = [int(index) for index in ranked
-            if best - score_value(results, index) <= config.tie_tol]
-    directions = []
-    valid = fully_valid_candidate_mask(results)
-    for name in config.axes:
-        for position, side in enumerate(('low', 'high')):
-            unresolved = False
-            for index in tied:
-                parameters = results['params'][index]
-                conditional = _conditional_values(results, parameters, name)
-                neighbor = _adjacent(parameters[name], conditional)[position]
-                unresolved |= neighbor is None or not valid[conditional[neighbor]]
-            if unresolved:
-                directions.append((name, side))
-    return directions
-
-
 def _rounded_geometric_extension(ordered, side):
     """Round the capped geometric extension once, without logarithm loss."""
     edge = ordered[0] if side == 'low' else ordered[-1]
@@ -181,22 +161,6 @@ def _outside(values, side):
     return value
 
 
-def _expansion_grid(axes, fixed, directions, config):
-    added = {name: [] for name in config.axes}
-    for name, side in directions:
-        added[name].append(_outside(axes[name], side))
-    first, second = config.axes
-    # Full new strips include corners when both axes expand; no unchanged
-    # interior Cartesian product is scheduled again.
-    grids = []
-    if added[first]:
-        grids.append({**fixed, first: added[first],
-                      second: sorted(set(axes[second]) | set(added[second]))})
-    if added[second]:
-        grids.append({**fixed, first: sorted(axes[first]), second: added[second]})
-    return grids
-
-
 def _neighbors(value, values):
     ordered = sorted(values)
     position = ordered.index(value)
@@ -209,7 +173,7 @@ def _neighbors(value, values):
     return sorted(set(result))
 
 
-def _refinement_grid(results, axes, fixed, config):
+def _refinement_grid(results, fixed, config):
     parents, grids = set(), []
     first, second = config.axes
     for index in ranked_valid_indices(results):
@@ -390,10 +354,10 @@ def _full_strip_certificates(results, anchors, records, stages, leader, best, co
     return certificates
 
 
-def _conditional_repairs(results, anchors, axes, fixed, config, certificates=()):
+def _conditional_repairs(results, anchors, axes, config, certificates=()):
     """Resolve each winning slice; invalid attempts never become valid support."""
     valid = fully_valid_candidate_mask(results)
-    grids, issues, waivers = [], [], []
+    issues, waivers = [], []
     for anchor in anchors:
         for axis in config.axes:
             conditional = _conditional_values(results, anchor, axis)
@@ -424,10 +388,7 @@ def _conditional_repairs(results, anchors, axes, fixed, config, certificates=())
                 issues.append({'parameters': dict(anchor), 'axis': axis, 'side': side,
                                'issue': issue, 'representable': point is not None,
                                'candidate': candidate})
-                if point is not None:
-                    pair = {name: [point if name == axis else anchor[name]] for name in config.axes}
-                    grids.append({**fixed, **pair})
-    return grids, issues, waivers
+    return issues, waivers
 
 
 def next_search_stage(results, initial_grid, config, state=None):
@@ -594,7 +555,7 @@ def next_search_stage(results, initial_grid, config, state=None):
         certificates = _full_strip_certificates(results, tied, records, state['full_strip_stages'],
                                                 leader, best, config)
     certificates = [item for item in certificates if item['edge_key'] != parameter_hash(leader)]
-    repairs, issues, waivers = _conditional_repairs(results, tied, axes, fixed, config, certificates)
+    issues, waivers = _conditional_repairs(results, tied, axes, config, certificates)
     bracketed, bracket = _bracket(results, leader, config)
     state['winner_bracket'] = bracket
     state['winner_bracket_resolved'] = bracketed
@@ -643,7 +604,7 @@ def next_search_stage(results, initial_grid, config, state=None):
         if waivers:
             reason += '; empirical boundary plateau (not an optimality certificate)'
         return finish(reason, accepted=True)
-    return schedule(_refinement_grid(results, axes, fixed, config), 'refinement')
+    return schedule(_refinement_grid(results, fixed, config), 'refinement')
 
 
 def _check_folds(folds, n_rows):
@@ -706,6 +667,10 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     and held-out prediction stay at one native thread. It defaults to one
     and is frozen on resume. Wider budgets require explicit n_jobs=1 for
     every exposed nested estimator; runtime observations are recorded.
+    Accepted selection is committed before final fitting. An explicit separate
+    recover_final_fit attempt may change only the final thread budget while
+    preserving the verified CV evidence. Once held-out scoring is reserved,
+    an incomplete scoring attempt is not automatically repeated.
     """
     final_native_threads = validate_final_native_threads(final_native_threads, pipeline)
     invocation_started = perf_counter()
@@ -768,6 +733,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     if not failure_dir.is_dir():
         raise ValueError('Create a fresh run directory with new_run_directory first.')
     folds = _check_folds(folds, len(y_train))
+    if not resume:
+        preflight_final_native_threads(final_native_threads, pipeline)
     # Own the held-out values too: the saved identity must describe what is
     # eventually scored even if a caller modifies its arrays during CV.
     X_test, y_test = np.array(X_test, copy=True), np.array(y_test, copy=True)
@@ -781,6 +748,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'reporting_sha256': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                                      for name in ('evaluation_reporting.py', 'work_reporting.py')},
                 'final_thread_policy_sha256': final_thread_policy_sha256(),
+                'final_recovery_sha256': hashlib.sha256(Path(__file__).with_name('final_recovery.py').read_bytes()).hexdigest(),
                 'data': identity, 'folds': [{'train': t, 'validation': v} for t, v in folds],
                 'settings': {'jobs': jobs, 'native_threads': 1, 'scoring': 'accuracy',
                              'final_native_threads': final_native_threads, 'held_out_native_threads': 1,
@@ -805,7 +773,6 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             'policy_sha256': hashlib.sha256(Path(__file__).with_name('numerical_confirmation.py').read_bytes()).hexdigest()}
     rows, stages, seen = [], [], set()
     searches = {}
-    axes = {name: set(grid[name]) for name in config.axes}
     policy_state = {}
     ratio_policy_state = {}
     final_runtime = None
@@ -857,28 +824,29 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             'historical_completion_summary_available': historical_work is not None,
             'interpretation': 'Worker durations are summed elapsed work, not CPU or wall time. Historical receipt times are not current fitting. Incomplete-stage work and cumulative elapsed time across interruptions are not inferred.'}
 
-    def warn_report(error):
+    def unavailable_report(error, *, message_errors=Exception):
+        message = exception_message(error, catch=message_errors)
         try:
-            warnings.warn('Could not publish the work summary: ' + str(error), RuntimeWarning)
+            warnings.warn('Could not publish the work summary: ' + message, RuntimeWarning)
         except Exception:
             pass
+        return {'reporting_error': message, 'coverage': 'unavailable'}
 
-    def safe_work_snapshot(state, **kwargs):
+    def safe_work_snapshot(state, *, message_errors=Exception, **kwargs):
         # Reporting cannot turn a successful fit into a failure or hide the
         # original exception, including before the authoritative commit.
         try:
             return work_snapshot(state, **kwargs)
         except Exception as error:
-            warn_report(error)
             return {'schema': 1, 'scope': 'current_invocation', 'state': state,
-                    'reporting_error': str(error), 'coverage': 'unavailable'}
+                    **unavailable_report(error, message_errors=message_errors)}
 
-    def publish_work(state):
-        summary = safe_work_snapshot(state)
+    def publish_work(state, *, message_errors=Exception):
+        summary = safe_work_snapshot(state, message_errors=message_errors)
         try:
             write_json_atomic(run_dir / 'work-summary.json', summary, replace=True)
         except Exception as error:
-            warn_report(error)
+            unavailable_report(error, message_errors=message_errors)
         return summary
 
     def evaluate(label, candidates, proposal_report=None):
@@ -919,8 +887,6 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                          'accuracy_evidence': deepcopy(current.get('accuracy_evidence', [None] * len(current['params']))[index]),
                          **{key: float(current[key][index]) for key in keys}})
             seen.add(parameter_hash(bare))
-            for name in axes:
-                axes[name].add(float(bare[name]))
         stage = {'name': label, 'new_candidates': len(candidates),
                  'total_candidates': len(rows), 'wall_seconds': elapsed,
                  'parameters': candidates, 'checkpoint': search.checkpoint_summary_}
@@ -940,9 +906,15 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
 
     def execute():
         nonlocal phase, policy_state, ratio_policy_state, review, active_work, historical_work, final_runtime
+        if resume:
+            phase = 'final_thread_preflight'
+            preflight_final_native_threads(final_native_threads, pipeline,
+                                           frozen_runtime=checkpoint.runtime)
+            phase = 'coarse_cv'
         with parallel_config(backend='loky', inner_max_num_threads=1), threadpool_limits(limits=1):
             while review is None:
                 results = _results(rows, len(folds))
+                check_selection_state()
                 proposal = next_search_stage(results, grid, config, policy_state)
                 policy_state = proposal['state']
                 review = proposal['review']
@@ -961,6 +933,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             ratio_started = ratio_refinement is not None and review['state'] == 'accepted'
             if ratio_started:
                 while True:
+                    check_selection_state()
                     proposal = next_ratio_stage(_results(rows, len(folds)), grid, config,
                                                 ratio_refinement, ratio_policy_state)
                     ratio_policy_state = proposal['state']
@@ -978,6 +951,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                     evaluate(proposal['phase'], proposal['candidates'], proposal.get('proposal_report'))
 
             results = _results(rows, len(folds))
+            check_selection_state()
             ranked = ranked_valid_indices(results) if rows else []
             index = int(ranked[0]) if len(ranked) else None
             selection = None if index is None else {
@@ -1029,6 +1003,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                         'confirmation_max_iter': numerical_confirmation.max_iter}, replace=True)
                     active_work = {'kind': 'numerical_confirmation', 'name': 'numerical_confirmation',
                                    'started': perf_counter()}
+                    check_selection_state()
                     confirmation_report = run_numerical_confirmation(
                         pipeline=checkpoint.estimator, results=results, rows=rows, searches=searches,
                         folds=folds, X=checkpoint.X, y=checkpoint.y, run_dir=run_dir,
@@ -1085,6 +1060,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             pipeline_fit_seconds = None
             try:
                 model = clone(checkpoint.estimator).set_params(**refit_parameters)
+                publish_final_handoff(checkpoint, model, X_test, y_test, selection, review)
                 final_runtime = {}
                 with final_fit_threads(final_native_threads, model, final_runtime,
                                        frozen_runtime=checkpoint.runtime):
@@ -1107,16 +1083,14 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             try:
                 refit_work['base_cache'] = summarize_cache_diagnostics(refit['diagnostics'])
             except Exception as error:
-                warn_report(error)
-                refit_work['base_cache'] = {'reporting_error': str(error), 'coverage': 'unavailable'}
+                refit_work['base_cache'] = unavailable_report(error)
             for name, reporter in (
                     ('numerical_checks', lambda: numerical_check_summary(refit['diagnostics'])),
                     ('selection_composition', lambda: selection_composition(refit['diagnostics'], checkpoint.y))):
                 try:
                     refit[name] = reporter()
                 except Exception as error:
-                    warn_report(error)
-                    refit[name] = {'reporting_error': str(error), 'coverage': 'unavailable'}
+                    refit[name] = unavailable_report(error)
             refit_work['numerical_checks'] = refit['numerical_checks']
             active_work = None
             if cv_seeds is not None:
@@ -1129,6 +1103,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             checkpoint.check_runtime()
             scoring_work.update(state='running', attempted=True)
             active_work = {'kind': 'held_out_scoring', 'started': perf_counter()}
+            reserve_normal_scoring(checkpoint)
             prediction_started = perf_counter()
             predictions = model.predict(X_test)
             prediction_finished = perf_counter()
@@ -1149,8 +1124,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             try:
                 completed['held_out_classification'] = classification_report(y_test, predictions)
             except Exception as error:
-                warn_report(error)
-                completed['held_out_classification'] = {'reporting_error': str(error), 'coverage': 'unavailable'}
+                completed['held_out_classification'] = unavailable_report(error)
             scoring_work['secondary_metric_reporting_seconds'] = perf_counter() - reporting_started
             review.update(final_refit_performed=True, held_out_scored=True)
             # Commit the authoritative completion receipt before public mirrors.
@@ -1197,6 +1171,7 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             return {**saved, 'model': None, 'run_dir': run_dir, 'resumed_completed': True,
                     'work_summary': publish_work('completed_replay'),
                     'selected_search': None, 'coarse_search': None, 'last_search': None}
+        assert_normal_final_allowed(checkpoint)
         write_json_atomic(run_dir / 'run.json', {
             **metadata, 'checkpoint_identity_sha256': checkpoint.identity_sha256}, replace=resume)
         try:
@@ -1207,12 +1182,12 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 'failure': exception_details(error), 'final_runtime': final_runtime,
                 'recovery': 'Resume with the same settings and output directory; completed folds are retained.'},
                 replace=True)
-            publish_work('interrupted')
+            publish_work('interrupted', message_errors=BaseException)
             raise
         except Exception as error:
             record_failure(failure_dir, error, phase=phase, estimator=pipeline,
                            training_data=identity['training'])
             write_failure_json(run_dir / 'status.json', {'state': 'failed', 'phase': phase,
                                                         'failure': exception_details(error)}, replace=True)
-            publish_work('failed')
+            publish_work('failed', message_errors=BaseException)
             raise

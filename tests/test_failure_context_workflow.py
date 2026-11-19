@@ -9,6 +9,7 @@ from unittest.mock import patch
 import warnings
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.exceptions import ConvergenceWarning, NotFittedError
 from sklearn.utils.validation import check_is_fitted
 
@@ -321,8 +322,7 @@ class CheckpointContextTests(unittest.TestCase):
         X, y = data()
         folds = [(np.arange(0, 40, 2), np.arange(1, 40, 2)),
                  (np.arange(1, 40, 2), np.arange(0, 40, 2))]
-        runtime = {'python': 'failure-context-test', 'files_sha256': 'e' * 64,
-                   'native_pools': [{'num_threads': 1, 'version': 'test'}]}
+        runtime = synthetic_runtime(source='failure-context-test')
         for failure in ('base_fit', 'selection', 'interrupt'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder, \
                     patch.object(cv_checkpoint, 'runtime_fingerprint', side_effect=lambda **kw: deepcopy(runtime)):

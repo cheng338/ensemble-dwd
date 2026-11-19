@@ -129,14 +129,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(np.shape(model.converged_), (2,))
         self.assertEqual(np.shape(model.decision_function(self.X[:1])), (1,))
 
-    def test_shared_fit_parameters_and_forced_optimized_solver(self):
+    def test_shared_fit_parameters_without_removed_solver_selector(self):
         model = self.fit_spy(self.model(lambd=0.013, q=0.5, max_iter=11,
                                        obj_tol=2e-7, stopping="fixed", tol=3e-7,
                                        acceleration="restart", prediction_batch_size=7))
         for learner in RecordingDWD.instances:
             params = learner.params
-            self.assertEqual(params["implementation"], "optimized")
-            self.assertEqual(params["solver_mode"], "schur")
+            self.assertNotIn("implementation", params)
+            self.assertNotIn("solver_mode", params)
             self.assertEqual(params["backend"], "auto")
             self.assertEqual(params["initialization"], "zero")
             for key in ["lambd", "q", "kernel", "max_iter", "obj_tol",
@@ -164,7 +164,7 @@ class ContractTests(unittest.TestCase):
         gamma, keywords = self.model(gamma="scale")._kernel_parameters(X)
         self.assertTrue(np.isfinite(gamma))
         self.assertGreater(gamma, 1e307)
-        self.assertEqual(gamma, (1.0 / X.shape[1]) / X.var())
+        self.assertEqual(gamma, 1.0 / (X.shape[1] * X.var()))
         self.assertEqual(keywords["gamma"], gamma)
 
     def test_unused_gamma_does_not_compute_overflowing_variance(self):
@@ -322,10 +322,7 @@ class ContractTests(unittest.TestCase):
             assert_array_equal(a, b)
 
     def test_feature_names_when_dataframe_support_is_available(self):
-        try:
-            import pandas as pd
-        except ImportError:
-            self.skipTest("Optional pandas is not installed")
+        import pandas as pd
         X = pd.DataFrame(self.X, columns=["first", "second"])
         model = self.fit_spy(X=X)
         assert_array_equal(model.feature_names_in_, ["first", "second"])

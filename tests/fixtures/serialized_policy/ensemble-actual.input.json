@@ -1,0 +1,439 @@
+{
+  "inputs": {
+    "initial": {},
+    "query": {
+      "dtype": "<f8",
+      "shape": [
+        6,
+        4
+      ],
+      "values": {
+        "list": [
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.33c0a1c181825p-1"
+              },
+              {
+                "float_hex": "0x1.18f4ae4d241cfp-4"
+              },
+              {
+                "float_hex": "0x1.8fef00d114db5p-1"
+              },
+              {
+                "float_hex": "0x1.33a4c38b3c1e0p-4"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.8815c2f2d8fdcp+0"
+              },
+              {
+                "float_hex": "-0x1.8adc597822182p-3"
+              },
+              {
+                "float_hex": "-0x1.372e7a482ab8ap+0"
+              },
+              {
+                "float_hex": "-0x1.5b8cdfcbf875ep-2"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.97d7b9ac83e16p-2"
+              },
+              {
+                "float_hex": "-0x1.385ac838ac502p-1"
+              },
+              {
+                "float_hex": "-0x1.6b5a5a853f382p-1"
+              },
+              {
+                "float_hex": "-0x1.68aff5471642bp-1"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.2e8afe471e5bdp+0"
+              },
+              {
+                "float_hex": "-0x1.9463da21fe1b9p-4"
+              },
+              {
+                "float_hex": "0x1.b679a1b83b2dcp+0"
+              },
+              {
+                "float_hex": "0x1.c52427518292cp-4"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.8ea1f45901de7p-1"
+              },
+              {
+                "float_hex": "0x1.0f3320d20fa8ap-1"
+              },
+              {
+                "float_hex": "-0x1.9dff1674e6689p+0"
+              },
+              {
+                "float_hex": "-0x1.60df20600cc9bp-2"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.446188410d89cp-5"
+              },
+              {
+                "float_hex": "0x1.6daa647f1890fp+0"
+              },
+              {
+                "float_hex": "0x1.547bccf750bc5p-2"
+              },
+              {
+                "float_hex": "-0x1.4664aaeed357bp-4"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "train": {
+      "dtype": "<f8",
+      "shape": [
+        18,
+        4
+      ],
+      "values": {
+        "list": [
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.33c0a1c181825p-1"
+              },
+              {
+                "float_hex": "0x1.18f4ae4d241cfp-4"
+              },
+              {
+                "float_hex": "0x1.8fef00d114db5p-1"
+              },
+              {
+                "float_hex": "0x1.33a4c38b3c1e0p-4"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.8d06ce83fdd26p-1"
+              },
+              {
+                "float_hex": "0x1.10f9eddbcf383p-4"
+              },
+              {
+                "float_hex": "0x1.a2ba00bad192fp+0"
+              },
+              {
+                "float_hex": "-0x1.7afe64c04478bp+0"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.afa51dcfe52f0p+0"
+              },
+              {
+                "float_hex": "-0x1.0100cf0f363b0p-1"
+              },
+              {
+                "float_hex": "0x1.1caefc597f84fp+0"
+              },
+              {
+                "float_hex": "-0x1.9a67274580eb3p-2"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.8815c2f2d8fdcp+0"
+              },
+              {
+                "float_hex": "-0x1.8adc597822182p-3"
+              },
+              {
+                "float_hex": "-0x1.372e7a482ab8ap+0"
+              },
+              {
+                "float_hex": "-0x1.5b8cdfcbf875ep-2"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.0d6a5b7d88369p-2"
+              },
+              {
+                "float_hex": "-0x1.3492d9ef2eee3p+0"
+              },
+              {
+                "float_hex": "0x1.8cd0682897fa6p-1"
+              },
+              {
+                "float_hex": "0x1.e8b6661e7814dp-4"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.39bc79b21a076p-3"
+              },
+              {
+                "float_hex": "0x1.7b8223d3bdb57p+0"
+              },
+              {
+                "float_hex": "0x1.d7d9362f5e5fdp-2"
+              },
+              {
+                "float_hex": "-0x1.71d2117b00899p-3"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.97d7b9ac83e16p-2"
+              },
+              {
+                "float_hex": "-0x1.385ac838ac502p-1"
+              },
+              {
+                "float_hex": "-0x1.6b5a5a853f382p-1"
+              },
+              {
+                "float_hex": "-0x1.68aff5471642bp-1"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.803632f962277p-2"
+              },
+              {
+                "float_hex": "-0x1.ed4dfa516e52bp-1"
+              },
+              {
+                "float_hex": "0x1.5c60fde7f6a75p-4"
+              },
+              {
+                "float_hex": "-0x1.7b9b79fe1c0ecp+0"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.7fd5ea99cf30fp+0"
+              },
+              {
+                "float_hex": "0x1.7a44127e28512p+0"
+              },
+              {
+                "float_hex": "-0x1.0b1d59eff89e8p+0"
+              },
+              {
+                "float_hex": "-0x1.541e8d15731fcp-1"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.2e8afe471e5bdp+0"
+              },
+              {
+                "float_hex": "-0x1.9463da21fe1b9p-4"
+              },
+              {
+                "float_hex": "0x1.b679a1b83b2dcp+0"
+              },
+              {
+                "float_hex": "0x1.c52427518292cp-4"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.b30fc676c289fp-2"
+              },
+              {
+                "float_hex": "0x1.2e4b0aa56c6c3p-4"
+              },
+              {
+                "float_hex": "0x1.b3ef762e5afbep+0"
+              },
+              {
+                "float_hex": "-0x1.ca5cd6b5e5bcep-2"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.b4d60c00dae0ep+0"
+              },
+              {
+                "float_hex": "0x1.f273c14f10aecp+0"
+              },
+              {
+                "float_hex": "0x1.2d46a3c6d7fc8p-1"
+              },
+              {
+                "float_hex": "-0x1.7be7cb6e6dc85p+0"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.8ea1f45901de7p-1"
+              },
+              {
+                "float_hex": "0x1.0f3320d20fa8ap-1"
+              },
+              {
+                "float_hex": "-0x1.9dff1674e6689p+0"
+              },
+              {
+                "float_hex": "-0x1.60df20600cc9bp-2"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.9f617296ce589p-1"
+              },
+              {
+                "float_hex": "-0x1.f5c8d11b133aap-5"
+              },
+              {
+                "float_hex": "-0x1.08ba2872dd6f6p+0"
+              },
+              {
+                "float_hex": "0x1.bcc74d277743bp+0"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.f1e6f9c3dc9d8p-2"
+              },
+              {
+                "float_hex": "-0x1.61c3dd8d0d88bp-1"
+              },
+              {
+                "float_hex": "0x1.4a50513289aa5p-2"
+              },
+              {
+                "float_hex": "0x1.7f74f263a7361p-2"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.446188410d89cp-5"
+              },
+              {
+                "float_hex": "0x1.6daa647f1890fp+0"
+              },
+              {
+                "float_hex": "0x1.547bccf750bc5p-2"
+              },
+              {
+                "float_hex": "-0x1.4664aaeed357bp-4"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "0x1.0d2a907ded460p-3"
+              },
+              {
+                "float_hex": "-0x1.89a4b71d30b61p-1"
+              },
+              {
+                "float_hex": "0x1.1ebaa29c804fdp+0"
+              },
+              {
+                "float_hex": "0x1.1a453b0806b7ep-1"
+              }
+            ]
+          },
+          {
+            "list": [
+              {
+                "float_hex": "-0x1.521a332b699f9p-4"
+              },
+              {
+                "float_hex": "-0x1.dfbe5a8d0a037p+0"
+              },
+              {
+                "float_hex": "-0x1.284d7b05b458cp-1"
+              },
+              {
+                "float_hex": "0x1.51613bfa2afbep-3"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "y": {
+      "dtype": "<i8",
+      "shape": [
+        18
+      ],
+      "values": {
+        "list": [
+          -3,
+          7,
+          -3,
+          7,
+          -3,
+          7,
+          -3,
+          7,
+          -3,
+          7,
+          -3,
+          7,
+          -3,
+          7,
+          -3,
+          7,
+          -3,
+          7
+        ]
+      }
+    }
+  }
+}

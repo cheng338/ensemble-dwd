@@ -72,14 +72,29 @@ class SVMExampleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary) / 'run'
             stdout = io.StringIO()
+            original_writer = example.write_json_atomic
+            origin_writes = []
+
+            def write_origin_only(path, payload, **kwargs):
+                self.assertEqual(Path(path).name, 'archive-location.json',
+                                 'Held model must not write fit diagnostics.')
+                self.assertEqual(payload, {'schema_version': 1,
+                                          'data_path': str(Path('unused.npz').resolve())})
+                self.assertEqual(kwargs, {})
+                origin_writes.append(Path(path))
+                return original_writer(path, payload, **kwargs)
+
             argv = [str(EXAMPLE), '--data', 'unused.npz', '--run', '--output-dir', str(run_dir)]
             with (patch.object(sys, 'argv', argv), patch.object(example, 'load_local_data',
                     return_value=(X, X[:4], y, y[:4])), patch.object(
                     adaptive_search, 'run_adaptive_search', side_effect=workflow), patch.object(
-                    example, 'write_json_atomic', side_effect=AssertionError('Held model has no diagnostics.')),
+                    example, 'write_json_atomic', side_effect=write_origin_only),
                     contextlib.redirect_stdout(stdout)):
                 example.main()
             self.assertEqual(len(calls), 1)
+            self.assertEqual(len(origin_writes), 1)
+            self.assertEqual(json.loads((run_dir / 'archive-location.json').read_text(encoding='utf-8')),
+                             {'schema_version': 1, 'data_path': str(Path('unused.npz').resolve())})
             self.assertIn('training-only review', stdout.getvalue())
             self.assertIn('test set was not scored', stdout.getvalue())
             self.assertFalse((run_dir / 'svm-diagnostics.json').exists())

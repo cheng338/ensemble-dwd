@@ -5,6 +5,10 @@ Cheng's ensemble kernel DWD. It uses scikit-learn's compiled LIBSVM `SVC`
 implementation for every base learner and the final fit. No new numerical
 dependency is required.
 
+See [Choosing Ensemble options](choosing_options.md#svm-specific-choices) for
+when to change shrinking, solver budgets, caching or prediction allocation, and
+for the separate shared search/recovery controls.
+
 `OvOClassifier(EnsembleKernelSVM(...))` provides multiclass classification:
 each class pair trains its own binary ensemble, and the pair's final SVC
 casts one vote. The maximum-wins rule matches the ensemble DWD wrapper.
@@ -34,17 +38,17 @@ an exact reproduction of Mao's algorithm. The paper does not
 specify the retained-fraction grid used here. [Mao et al., *Fast Kernel SVM
 Training via Support Vector Identification*, ICPR 2016, Eqs. 1–9](https://projet.liris.cnrs.fr/imagine/pub/proceedings/ICPR-2016/media/files/0649.pdf).
 
-The dissertation describes the signed condition `y * g ≈ 1` in
-Section 4.2.1 and uses `abs(y_signed * g - 1)` followed by a new kernel SVM in
-Section 5.2.2. This comparator's selection rule and final SVC fit match that
-practical SVM procedure. Mao's final squared-loss coefficient fit remains a
-different refit, as described above.
+Version 1 of Cheng's October 2026 Purdue dissertation describes the signed
+condition `y * g ≈ 1` in §4.2.1 (p. 51). In §5.2.2 (p. 58) the practical
+comparator ranks observations by `abs(y_signed * g - 1)` and fits a new kernel
+SVM. This package uses that selection rule and a final hinge-loss SVC.
+[Deposited dissertation, version 1](https://doi.org/10.25394/PGS.34548831.v1).
 
 Earlier dissertation wording used the unsigned score `abs(abs(g) - 1)`.
 It agrees with the signed score on correctly classified observations and can
 differ on misclassified observations. Historical results obtained with that
-unsigned rule must retain that label. DWD continues to select by `abs(g)`;
-its method is unchanged.
+unsigned rule must retain that label. The saved 0.3.0 MNIST study used signed
+ranking. Ensemble DWD uses `abs(g)`. [0.3.0 study record](mnist-validation-0.3.0.md).
 
 Neither rule is an exact detector of the full-data SVM's support vectors.
 Accuracy and time advantages require measurement. Both ensemble methods
@@ -78,6 +82,15 @@ by sample size. Equivalently, the mean-loss form has squared-norm coefficient
 `1 / (2 * C * n_fit)`. Thus C is not interchangeable with DWD's `lambd`, and
 sharing C across different-sized subsets is different from sharing a
 mean-loss norm coefficient. [SVC mathematical formulation](https://scikit-learn.org/stable/modules/svm.html#svc).
+
+Both ensemble classes evaluate `gamma="scale"` as
+`1.0 / (n_features * variance)`, with `variance = X.var()` on float64
+training input and gamma 1 for constant data. This follows scikit-learn
+SVC's evaluation order; it does not promise identical variance reductions
+across data types or runtimes. All learners within a binary fit receive
+exactly the same resolved coefficient. Pass an explicit numeric gamma when
+the coefficient must be shared across implementations. Existing variance
+and gamma range checks remain in force.
 
 `gamma="scale"` is calculated from the full input of the current binary fit,
 which must be a training fold during CV. It is not recalculated on the sampled
@@ -197,6 +210,13 @@ returns `model=None`. A crash before that receipt is committed can require
 the final fit and scoring again. `--no-cache` disables base-fit reuse, not
 fold checkpoints. See the
 [shared workflow and records](method.md#validation-and-proposed-search-space).
+
+The binary tuning CLI permits moving or renaming the input archive when the
+decoded training/held-out arrays and all other identity settings match.
+`archive-location.json` records the original input location separately from
+checkpoint identity; it is not replaced on resume. The CLI prints its current
+input path before starting the workflow. The original run/cache locations and code/runtime requirements
+still apply, and older path-bearing checkpoint identities are not migrated.
 
 `work-summary.json` separates this invocation's new CV evaluations,
 equivalent-ratio reuse and checkpoint replay, plus final fitting and scoring.

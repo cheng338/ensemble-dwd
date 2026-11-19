@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import ParameterGrid, StratifiedKFold
@@ -72,8 +73,7 @@ class MultiSeedCheckpointTests(unittest.TestCase):
         self.pipeline = Pipeline([('scale', StandardScaler()), ('model', SeededClassifier())])
         self.seeds = (0, 4, 8)
         self.grid = {'model__offset': [-.5, .5]}
-        self.runtime = {'python': 'fixed-test-runtime', 'files_sha256': 'a' * 64,
-                        'native_pools': [{'num_threads': 1, 'version': 'test-build'}]}
+        self.runtime = synthetic_runtime(source='fixed-test-runtime')
         runtime_patch = patch.object(checkpoint, 'runtime_fingerprint', side_effect=lambda **kwargs: deepcopy(self.runtime))
         runtime_patch.start()
         self.addCleanup(runtime_patch.stop)

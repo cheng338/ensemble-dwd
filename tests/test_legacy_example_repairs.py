@@ -190,6 +190,8 @@ class LegacyExampleRepairTests(unittest.TestCase):
                     'exception_type': type(error).__name__, 'resume_supported': False,
                     'final_runtime': {
                         'requested_native_threads': 1, 'scope_changed': False,
+                        'runtime_policy': 'noncheckpoint-native-scope-v1',
+                        'source_installation_attestation': False,
                         'observed_final_runtime': None,
                         'observation': 'existing_workflow_scope',
                         'state': 'failed', 'fit_exception': type(error).__name__}})

@@ -59,7 +59,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(set(model.predict(self.X)).issubset(set(self.y)))
         self.assertGreater(model.score(self.X, self.y), 0.65)
         for learner in [*model.estimators_, model.final_estimator_]:
-            self.assertEqual(learner.implementation, "optimized")
+            self.assertNotIn("implementation", learner.get_params())
+            self.assertEqual(learner.diagnostics_["implementation"], "optimized")
+            self.assertIn(learner.backend_, ("cholesky", "spectral"))
             self.assertEqual(learner.lambd, model.lambd)
             self.assertEqual(learner.q, model.q)
             self.assertEqual(learner.kernel_kws["gamma"], model.gamma_)

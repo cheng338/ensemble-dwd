@@ -1,11 +1,177 @@
 # ensemble-dwd validation
 
-## 0.3.15: current source coverage and acceleration-policy test
+Ensemble DWD 0.4.0 requires DWD 2.0.1. The [package metadata](pyproject.toml)
+and [wheel hash lock](requirements-dwd.txt) identify the current pair. Results
+below apply to the artifacts and workloads named in each entry.
 
-The current production source and filesystem/test-support changes passed the
-complete Python 3.12 source suites on both current targets: 966 passed and two
-platform skips on local AOCL 5.3, and 959 passed and nine platform skips on
-Robust MKL 2026.2. Each suite collected 968 unique test items across 77 modules,
+## 2026-11-19 paired candidate comparison
+
+The full native-wheel regression suites used CPython 3.12.15. The baseline was
+Ensemble DWD 0.3.15 with DWD 1.3.19. The candidates were Ensemble DWD 0.3.16
+with DWD 1.3.20. Linux native DWD wheels were built from their respective source
+distributions. The table counts individual pytest cases from each version's
+own suite. These runs preceded the 0.4.0 and 2.0.0 version and packaging edits.
+The Windows environment loaded AOCL-BLAS 5.3.0 and MKL 2026.2. The Linux
+environment used MKL 2026.2. Attribution of a particular operation requires
+evidence from its solver path.
+
+| Environment | Package | Baseline passed / failed / skipped | Candidate passed / failed / skipped |
+|---|---|---:|---:|
+| Windows | Ensemble DWD | 962 / 4 / 2 | 2,226 / 0 / 17 |
+| Linux | Ensemble DWD | 959 / 0 / 9 | 2,233 / 0 / 10 |
+| Windows | DWD | 1,229 / 4 / 12 | 6,184 / 0 / 71 |
+| Linux | DWD | 1,225 / 0 / 20 | 6,231 / 0 / 24 |
+
+Across the separate common panel, the candidate pair met all 106 case
+expectations per host. All 352 labels in 17 ordinary comparisons agreed with
+the baseline on each host. All 2,208 timing jobs passed their numerical checks.
+The 92 timing phases covered different workloads. In paired medians, the larger
+checkpointed search added 2.29 s on Windows and 1.84 s on Linux for the initial
+run and saved 0.37 s and 0.97 s on completed replay, respectively. The larger
+complete CV, final-fit and scoring workflow saved 1.30 s and 3.39 s. The separate
+256-row, 2,048-feature DWD L-BFGS measurement added 137 ms and 296 ms to a
+second fresh fit. Workload, build and stage matter when applying these comparisons.
+Ordinary scikit-learn `GridSearchCV` remains available. The measured
+shared-fold opt-in uses DWD's standalone `KernMD`, outside the ensemble
+workflow.
+
+## 2026-11-11: fresh parallel checkpoint entry overlap
+
+The isolated import-overlap candidate was qualified on Windows with AMD AOCL and
+Linux with Intel MKL, both using CPython 3.12.15. Per host, 28 focused controls and
+189 existing regression cases passed, with 47 subtests and one expected
+version-specific skip. These are unique cases after documented fixture
+corrections, not summed attempts. Coverage includes real worker cancellation,
+cleanup and exception precedence, estimator serialization after parent proof,
+managed-pool reuse, effective sequential execution, source/runtime guards, and
+serial/resume bypass. The [behavior and failure-order tradeoff](docs/parallel-base-fitting.md#checkpoint-entry)
+is independent of estimator mathematics.
+
+Six fixed paired blocks per workload and host compared the candidate with the
+preceding development helper, using fixed saved inputs and settings. Ordinary
+and partial cases used 384-by-32 data; the larger case used 1536-by-32 data, with
+three folds and a solver iteration limit of 30. Checkpoint jobs were 12, 6 and 6,
+respectively, with one native thread per worker. Each host completed 36 original
+children, 72 contexts, 360 ensemble fits and 1080 DWD learner fits. All 18 paired
+scientific states agreed per host.
+
+Initial time covers constructor, entry, search/fitting and normal cleanup.
+Combined time adds the same child's immediate replay or partial continuation;
+it is not total interpreter lifetime. Savings below compare mean costs within
+one host, using only complete timing-qualified pairs.
+
+| Host | Workload | Eligible pairs | Initial mean saving | Combined mean saving |
+| --- | --- | ---: | ---: | ---: |
+| Windows AOCL | Ordinary | 3 | 4.80% / 1.192 s | 4.69% / 1.208 s |
+| Windows AOCL | Partial | 5 | 2.96% / 0.418 s | 2.76% / 0.419 s |
+| Windows AOCL | Larger | 4 | 3.16% / 0.453 s | 3.45% / 0.526 s |
+| Linux MKL | Ordinary | 6 | 2.37% / 0.283 s | 2.37% / 0.307 s |
+| Linux MKL | Partial | 6 | 1.54% / 0.177 s | 1.06% / 0.135 s |
+| Linux MKL | Larger | 6 | 1.03% / 0.121 s | 1.15% / 0.146 s |
+
+Six Windows pairs were excluded from timing because lifecycle evidence was
+insufficient; their scientific results and original failure flags remain
+retained. There were no replacements or CPU-load filters. Windows run-order balance
+is consequently incomplete. Excluding the qualified but interrupted first
+ordinary pair still gives 4.47% initial and 4.25% combined mean savings across
+two opposite-order pairs. Linux partial/larger initial gains depend on order,
+and individual pairs sometimes favor the preceding helper.
+
+Linux partial resume increased by 41.5 ms on average (3.16%; five of six pairs),
+although its initial-plus-resume mean remained lower. Resume bypasses the new
+preparation; these observations do not establish a recurring penalty or a
+universal no-slowdown result. Source prechecks warm file caches, so this is not
+cold-filesystem evidence. The results are descriptive and workload-specific,
+not significance, standalone-fit or release-gap-elimination claims. Integration
+verification is separate from this pre-integration evidence; this is not a
+complete package suite or release qualification.
+
+Integration verification on both hosts initially passed 87 selected tests and
+failed one bytecode-fidelity assertion in the new test fixture. Independent
+compilation identified missing module-import context in the fixture's extracted
+methods, which changed CPython call flags; the production helper was unchanged.
+The corrected fixture uses the imported production code with isolated test
+globals and checks fidelity against compilation of the full source. All 28
+controls then passed on each host. Together with the 60 retained passing tests
+from the other selected modules, this gives 88 unique passing checks per host;
+the initial failure and all attempts remain recorded. One fresh partial-checkpoint
+smoke check per host also matched the qualified scientific state exactly: two
+contexts, 12 ensemble fits, 36 DWD learner fits and six reused folds on resume,
+using six workers with one native thread each. Both smoke children exited zero,
+all captured process identities were closed, and no unproven discoveries were
+recorded. These integration checks add no performance claim.
+
+## 2026-11-09: interruption status test expectation
+
+The interruption fixture now expects the two existing noncheckpoint runtime
+metadata fields: `runtime_policy='noncheckpoint-native-scope-v1'` and
+`source_installation_attestation=False`. Full status-dictionary equality,
+exception identity, completed CV/selection records, and the absence of ordinary
+failure or completion records are still checked. No runtime code changed.
+
+The complete affected module, `test_legacy_example_repairs.py`, passed 15 tests
+and 28 subtests on both Windows AOCL and Linux MKL, with no failures
+or skips. Both KeyboardInterrupt and SystemExit cases passed. Validation used
+isolated current source copies, CPython 3.12.15, pytest 9.1.1 and psutil 7.2.2,
+with initial native-thread limits of 16 on Windows and 20 on Linux. The monitored
+children and parent drivers exited zero; source hashes and dependency
+inventories remained unchanged.
+
+This is focused validation of the integrated fixture correction. The original
+accumulated-comparison full-suite failures remain preserved; this result does
+not relabel those suites as passed or constitute a new full-suite run.
+
+## 2026-11-09: integrated base-cache observation optimization
+
+The combined cache-observation change is integrated: a fresh external-artifact
+stat supplies both file classification and its identity stamp; ordinary Python
+module origins avoid unnecessary path construction; and package inventories
+reuse each directory path and relative-key prefix. The two implementation files
+exactly match the candidate measured in the completed comparison. Numerical
+algorithms, public options/defaults, cache format and provenance boundaries are
+unchanged. The immutable-installation contract and the removed adjacent-stat
+observation limit are described in [the change notes](docs/candidate_changes.md#040-base-cache-observations).
+
+Focused integration validation used isolated copies of the current paired
+package sources on CPython 3.12.15, with pytest 9.1.1 and psutil 7.2.2:
+
+| Target | Passed pytest items | Passed subtests | Skipped |
+| --- | ---: | ---: | ---: |
+| Windows AOCL | 202 | 40 | 4 |
+| Linux MKL | 206 | 40 | 0 |
+
+The nine selected modules include the two new permanent regression modules
+(66 cases), existing external/package identity and NumPy policy checks,
+selection-source checks, real cache reuse and invalidation, concurrent cache
+locking, and effective parallel-execution identity. The four Windows skips are
+one POSIX-only filename case and three real symlink fixtures unavailable with
+the current permissions. Those four cases passed on Linux; this does not
+claim Windows symlink coverage. No machine setting was changed.
+
+Both monitored test processes and their parent drivers exited zero. Initial
+native thread limits were 16 on Windows and 20 on Linux; existing test-specific
+limits and subprocess thread-environment requests were retained. The
+517-file source snapshots passed hash checks
+before and after the tests, recorded loaded modules came from those snapshots,
+and dependency inventories were unchanged. Known admitted process identities
+were closed on both hosts. Three transient Windows process observations remained unproven
+and are not claimed as owned or independently closed.
+
+The earlier clean performance panel remains the timing evidence: on the
+studied 256-by-16 cached RBF ensemble workload, warm whole-fit medians improved
+31-34% on Windows and 26-34% on Linux against the preceding development version.
+These are within-host, workload-specific observations, not a universal speedup,
+a comparison of library versions, or a standalone-prediction result. No new
+timing claims are drawn from pytest durations. This focused integration check
+is not a new complete package suite or a built-wheel/release qualification.
+
+<a id="0315-current-source-coverage-and-acceleration-policy-test"></a>
+
+## 0.3.15 source coverage and acceleration-policy test
+
+For the 0.3.15 production source and filesystem/test-support changes, the
+complete Python 3.12 suites recorded 966 passes and two platform skips on
+Windows AOCL 5.3, and 959 passes and nine platform skips on Linux MKL 2026.2. Each suite collected 968 unique test items across 77 modules,
 with no failures or unresolved items and direct exit zero. The matched source
 snapshots were unchanged. Platform-specific errno parameters were matched by
 their named error conditions; skips remain excluded coverage. These suites
@@ -36,10 +202,12 @@ performance, universal necessity of historical changes, or qualification of
 the final built wheels and minimum-dependency installation. Release-artifact
 checks are separate from these source records.
 
-## 2026-10-26 follow-up: actual Robust NFS contention
+<a id="2026-10-26-follow-up-actual-robust-nfs-contention"></a>
 
-The original blocking-lock code reproduced two failures on Robust's home NFS
-filesystem: a four-process timeout and a three-process ENOLCK error. The other
+## 2026-10-26 follow-up on Linux NFS contention
+
+The original blocking-lock code reproduced two failures on the Linux host's NFS-mounted
+home filesystem: a four-process timeout and a three-process ENOLCK error. The other
 20 selected items passed. Simple lock acquisition, exclusion and owner-exit
 checks had passed, so those alone did not establish reliable cache contention.
 The failed receipts are preserved.
@@ -48,9 +216,9 @@ The revised POSIX path requests the same exclusive OS lock nonblockingly and
 retries EACCES/EAGAIN every 50 ms. All 34 focused cache items then passed on the
 same NFS mount, including the unchanged three-/four-process compute-once tests
 with their original 20-second deadlines, and a real killed-owner/reacquisition
-test. Local AOCL checks passed 33 items plus 26 subtests; only the real POSIX
+test. Windows AOCL checks passed 33 items plus 26 subtests; only the real POSIX
 owner-exit test was skipped on Windows. Injected non-contention failures and
-cancellation checks also passed. Psutil observed owned test processes; Robust
+cancellation checks also passed. Psutil observed owned test processes. The Linux run
 recorded direct exit zero, no cleanup errors and unchanged tested sources.
 
 This resolves the observed package contention failure without moving the cache,
@@ -61,8 +229,8 @@ computation. No performance claim is inferred from these correctness tests.
 
 ## 2026-10-26: filesystem locks and temporary test paths
 
-The final isolated source artifact passed 130 pytest test items on local
-Python 3.12.15/AOCL 5.3 (one POSIX-only skip), and 122 on Robust
+The final isolated source artifact passed 130 pytest test items on Windows
+Python 3.12.15/AOCL 5.3 (one POSIX-only skip), and 122 on Linux
 Python 3.12.15/MKL 2026.2 (nine Windows-only skips). Neither run had failures
 or errors. Pytest 9.1.1 ran existing unittest cases as well as new pytest tests;
 JUnit's extra subtest records are not additional independent test items.
@@ -71,18 +239,17 @@ direct waits supplied actual exit codes. Source hashes remained unchanged.
 
 Four independent cache workers proved compute-once and shared-key behavior.
 Injected unavailable-lock errors proved that computation and publication remain
-blocked and that errno/cause are retained. Robust used explicitly selected
-private scratch under /tmp; this does not repair or qualify the home NFS lock
-service. No lock bypass, automatic cache relocation or timeout extension was
+blocked and that errno/cause are retained. The Linux test used a private scratch directory under `/tmp`. The home NFS
+lock service lay outside this test. No lock bypass, automatic cache relocation or timeout extension was
 introduced. The chosen cache filesystem must still provide working locks.
 
 Windows checks include a fresh process with a requested temporary root longer
 than 260 characters, helper reads and cleanup, environment restoration, and all
 39 workflow methods previously affected by deep paths. No OS path setting was
-changed. The paired DWD selection passed 304 local and 295 Robust test items;
-its nine Robust skips are Windows-specific. These are focused correctness and
+changed. The paired DWD selection passed 304 Windows and 295 Linux test items.
+Its nine Linux skips are Windows-specific. These are focused correctness and
 integration checks, not a complete suite, performance comparison or new wheel
-release. The discarded Resource18 timing remainder remains canceled.
+release. The remaining timings in the separate resource benchmark were canceled.
 
 ## 0.3.14: automatic acceleration and SVM defaults
 
@@ -431,9 +598,9 @@ CPython 3.12 selected the standard pair; CPython 3.10 selected the separately
 tagged companion pair. The Python 3.10 error-note fallback is absent from the
 standard package. These Windows checks do not establish Linux/Intel equivalence.
 
-## Current release and validation history
+## Historical release pairing and validation records
 
-Version 0.3.9 is paired with DWD 1.3.14. See the
+The 0.3.9 release was paired with DWD 1.3.14. See the
 [0.3.9 changelog](CHANGELOG.md#039--2026-10-15) for its changes.
 The records below retain their original workload and version scope; they are
 not new full MNIST searches for version 0.3.9. DWD's
@@ -559,11 +726,11 @@ Neither estimator performs cross-validation internally.
 
 ### Environment and dependency
 
-Local validation uses Windows, Anaconda CPython 3.12.14, NumPy
+Validation used Windows, Anaconda CPython 3.12.14, NumPy
 2.5.2, SciPy 1.18.0, scikit-learn 1.9.0, joblib 1.5.3, and the published
 optimized cheng338/dwd 1.3.5 dependency with its compiled Windows helper.
-Imports are isolated from older ensemble installations in that environment.
-Native numerical threads are limited to one for the functional tests.
+Imports were isolated from older ensemble installations in that environment.
+Native numerical threads were limited to one for the functional tests.
 
 The metadata pins these optimized DWD artifacts:
 
@@ -616,11 +783,19 @@ recovery after restoring a valid value. This is an inference regression,
 without fitting or parameter selection. Source and installed-wheel checks
 also verify the frozen source/data and all 15 model/output identities.
 
-This does not establish a universal accuracy or speed advantage. The SVM
-variant differs from the dissertation's unsigned selection rule; those
-historical results are not interchangeable. All final SVC fits completed;
-the study's DWD fits reached their configured 100-iteration cap and did not
-claim numerical convergence.
+All final SVC fits completed. The study's DWD fits reached their configured
+100-iteration cap. The reported results describe this study's accuracy and
+runtime without establishing numerical convergence for those DWD fits.
+
+**Attribution clarified November 19, 2026.** The original 0.3.0 validation
+text referred to unsigned ranking, `abs(abs(g) - 1)`, in earlier dissertation
+wording. The October 2026 deposited dissertation (version 1) describes the
+signed condition in §4.2.1 (p. 51) and ranks SVM observations by
+`abs(y_signed * g - 1)` in §5.2.2 (p. 58). That section ranks DWD observations
+by `abs(g)`. The saved 0.3.0 MNIST study used the signed SVM rule. Its results
+and the separate historical unsigned criterion retain their original scope.
+[Deposited dissertation, version 1](https://doi.org/10.25394/PGS.34548831.v1) ·
+[0.3.0 study record](docs/mnist-validation-0.3.0.md).
 
 ### Performance review and distribution
 
@@ -642,5 +817,5 @@ package. It does not change the verified loaded arrays or predictions.
 
 Historical validation remains in the [0.2.1](docs/validation-0.2.1.md),
 [0.2.0](docs/validation-0.2.0.md) and [0.1.1](docs/validation-0.1.1.md) records.
-Chang Cheng's authorship, private research status and undecided software
-license remain unchanged.
+At the time of the 0.3.0 validation, Chang Cheng maintained the project as
+private research and had not selected a software license.

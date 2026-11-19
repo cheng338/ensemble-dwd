@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
@@ -79,8 +80,7 @@ class CheckpointTests(unittest.TestCase):
         self.folds = list(StratifiedKFold(2, shuffle=True, random_state=42).split(self.X, self.y))
         self.pipeline = Pipeline([('scale', StandardScaler()), ('model', TinyClassifier())])
         self.grid = {'model__offset': [0., .5]}
-        self.runtime = {'python': 'fixed-test-runtime', 'files_sha256': 'a' * 64,
-                        'native_pools': [{'num_threads': 1, 'version': 'test-build'}]}
+        self.runtime = synthetic_runtime(source='fixed-test-runtime')
         self.runtime_patch = patch.object(checkpoint, 'runtime_fingerprint', side_effect=lambda **kwargs: deepcopy(self.runtime))
         self.runtime_patch.start()
         self.addCleanup(self.runtime_patch.stop)
@@ -234,6 +234,184 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(self.fit_count(), 2)
         self.assertEqual(result.checkpoint_summary_['reused_folds'], 0)
 
+    def test_exited_resume_context_can_reenter_and_replay_completed_folds(self):
+        with self.session():
+            pass
+        store = self.session(resume=True)
+        owner = store.folder / 'owner.json'
+        with store:
+            first_token = store.token
+            first = store.search(self.grid)
+        self.assertEqual(json.loads(owner.read_bytes())['state'], 'inactive')
+        self.assertEqual(first.checkpoint_summary_['new_folds'], 4)
+        with store:
+            second_token = store.token
+            self.assertNotEqual(first_token, second_token)
+            active = json.loads(owner.read_bytes())
+            self.assertEqual((active['state'], active['token']), ('active', second_token))
+            replay = store.search(self.grid)
+        self.assertEqual(self.fit_count(), 4)
+        self.assertEqual(replay.checkpoint_summary_['new_folds'], 0)
+        self.assertEqual(replay.checkpoint_summary_['reused_folds'], 4)
+        np.testing.assert_array_equal(first.cv_results_['mean_test_score'], replay.cv_results_['mean_test_score'])
+        inactive = json.loads(owner.read_bytes())
+        self.assertEqual((inactive['state'], inactive['token']), ('inactive', second_token))
+
+    def test_busy_entry_of_previously_used_context_preserves_live_owner(self):
+        with self.session():
+            pass
+        previous = self.session(resume=True)
+        with previous:
+            previous.search({'model__offset': [0.]})
+        with self.session(resume=True) as active:
+            owner = active.folder / 'owner.json'
+            before = owner.read_bytes()
+            with self.assertRaises(checkpoint.CheckpointBusyError), previous:
+                pass
+            self.assertEqual(owner.read_bytes(), before)
+            result = active.search(self.grid)
+            self.assertEqual(result.checkpoint_summary_['new_folds'], 2)
+            self.assertEqual(result.checkpoint_summary_['reused_folds'], 2)
+            self.assertEqual(self.fit_count(), 4)
+
+    def test_same_instance_nested_entry_leaves_outer_session_locked_and_usable(self):
+        with self.session():
+            pass
+        with self.session(resume=True) as outer:
+            owner = outer.folder / 'owner.json'
+            before = owner.read_bytes()
+            with self.assertRaises(checkpoint.CheckpointError), outer:
+                pass
+            self.assertEqual(owner.read_bytes(), before)
+            with self.assertRaises(checkpoint.CheckpointBusyError), checkpoint._Lease(outer.folder / 'session.lock'):
+                pass
+            result = outer.search(self.grid)
+            self.assertEqual(result.checkpoint_summary_['new_folds'], 4)
+            self.assertEqual(self.fit_count(), 4)
+
+    def test_repeated_exit_of_closed_context_preserves_another_active_owner(self):
+        with self.session() as closed:
+            pass
+        with self.session(resume=True) as active:
+            owner = active.folder / 'owner.json'
+            before = owner.read_bytes()
+            closed.__exit__(None, None, None)
+            self.assertEqual(owner.read_bytes(), before)
+            with self.assertRaises(checkpoint.CheckpointBusyError), checkpoint._Lease(active.folder / 'session.lock'):
+                pass
+            result = active.search(self.grid)
+            self.assertEqual(result.checkpoint_summary_['new_folds'], 4)
+
+    def test_failed_session_receipt_before_owner_publication_preserves_previous_owner(self):
+        with self.session() as initial:
+            initial.search(self.grid)
+        owner = initial.folder / 'owner.json'
+        sessions = initial.folder / 'sessions'
+        before = owner.read_bytes()
+        receipts = {path.name: path.read_bytes() for path in sessions.glob('*.json')}
+        original = checkpoint._write_receipt
+        failure = OSError('session receipt write failed')
+
+        def fail_session(path, payload):
+            if path.parent == sessions:
+                raise failure
+            return original(path, payload)
+
+        resumed = self.session(resume=True)
+        with patch.object(checkpoint, '_write_receipt', side_effect=fail_session):
+            with self.assertRaises(OSError) as caught, resumed:
+                pass
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(owner.read_bytes(), before)
+        self.assertEqual({path.name: path.read_bytes() for path in sessions.glob('*.json')}, receipts)
+        with resumed:
+            replay = resumed.search(self.grid)
+        self.assertEqual(replay.checkpoint_summary_['reused_folds'], 4)
+        self.assertEqual(self.fit_count(), 4)
+
+    def test_live_worker_after_owner_publication_deactivates_attempted_session(self):
+        with self.session() as initial:
+            previous_token = initial.token
+        owner = initial.folder / 'owner.json'
+        resumed = self.session(resume=True)
+        with checkpoint._Lease(initial.folder / 'locks/live-worker.lock'):
+            with patch.object(checkpoint, 'write_json_atomic', wraps=checkpoint.write_json_atomic) as writes:
+                with self.assertRaises(checkpoint.CheckpointBusyError), resumed:
+                    pass
+            published = [call.args[1] for call in writes.call_args_list
+                         if call.args[0] == owner and call.args[1].get('state') == 'active']
+            self.assertEqual(len(published), 1)
+            attempted = published[0]['token']
+            self.assertNotEqual(attempted, previous_token)
+            inactive = json.loads(owner.read_bytes())
+            self.assertEqual((inactive['state'], inactive['token']), ('inactive', attempted))
+            session = json.loads((initial.folder / 'sessions' / (attempted + '.json')).read_bytes())
+            self.assertEqual(session['payload']['owner_token'], attempted)
+        with resumed:
+            result = resumed.search(self.grid)
+        self.assertEqual(result.checkpoint_summary_['new_folds'], 4)
+
+    def test_interrupted_owner_write_retires_only_a_published_token(self):
+        with self.session():
+            pass
+        resumed = self.session(resume=True)
+        owner = resumed.folder / 'owner.json'
+        write = checkpoint.write_json_atomic
+        for published in (False, True):
+            with self.subTest(published=published):
+                before = owner.read_bytes()
+                attempted = []
+                interrupt = KeyboardInterrupt('interrupted owner publication')
+
+                def interrupt_write(path, payload, **kwargs):
+                    if path == owner and payload.get('state') == 'active':
+                        attempted.append(payload['token'])
+                        if published:
+                            write(path, payload, **kwargs)
+                        raise interrupt
+                    return write(path, payload, **kwargs)
+
+                with patch.object(checkpoint, 'write_json_atomic', side_effect=interrupt_write):
+                    with self.assertRaises(KeyboardInterrupt) as caught, resumed:
+                        pass
+                self.assertIs(caught.exception, interrupt)
+                self.assertEqual(len(attempted), 1)
+                if published:
+                    saved = json.loads(owner.read_bytes())
+                    self.assertEqual((saved['state'], saved['token']), ('inactive', attempted[0]))
+                else:
+                    self.assertEqual(owner.read_bytes(), before)
+                with resumed:
+                    self.assertEqual(json.loads(owner.read_bytes())['token'], resumed.token)
+
+    def test_failed_owner_read_preserves_original_publication_error(self):
+        with self.session() as initial:
+            pass
+        resumed = self.session(resume=True)
+        owner = resumed.folder / 'owner.json'
+        before = owner.read_bytes()
+        failure = KeyboardInterrupt('owner publication interrupted')
+        write, read = checkpoint.write_json_atomic, checkpoint._read_json
+
+        def fail_write(path, payload, **kwargs):
+            if path == owner:
+                raise failure
+            return write(path, payload, **kwargs)
+
+        def fail_read(path):
+            if path == owner:
+                raise MemoryError('owner read unavailable')
+            return read(path)
+
+        with patch.object(checkpoint, 'write_json_atomic', side_effect=fail_write), \
+                patch.object(checkpoint, '_read_json', side_effect=fail_read):
+            with self.assertRaises(KeyboardInterrupt) as caught, resumed:
+                pass
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(owner.read_bytes(), before)
+        with resumed:
+            self.assertEqual(json.loads(owner.read_bytes())['token'], resumed.token)
+
     def test_active_coordinator_or_worker_blocks_resume(self):
         with self.session():
             with self.assertRaises(checkpoint.CheckpointBusyError), self.session(resume=True):
@@ -282,12 +460,48 @@ class CheckpointTests(unittest.TestCase):
                 captured.update(kwargs)
             def __call__(self, work):
                 function, args, kwargs = next(iter(work))
+                if function not in (checkpoint._fit_fold, checkpoint._fit_fold_group):
+                    raise AssertionError('Expected actual fold work before simulated parent loss')
                 function(*args, **kwargs)
                 raise KeyboardInterrupt('parent disappears after worker commit')
-        with patch.object(checkpoint, 'Parallel', LostParent):
+        # Metadata-only managed control; LostParent still receives only real folds.
+        prepared = []
+        class PreparationPool:
+            def __init__(inner, **options):
+                self.assertEqual(options, dict(n_jobs=2, pre_dispatch=2, batch_size=1, return_as='generator'))
+                inner.active = False
+            def __enter__(inner):
+                self.assertFalse(inner.active)
+                inner.active = True
+                return inner
+            def __exit__(inner, *unused):
+                self.assertTrue(inner.active)
+                inner.active = False
+                prepared.append('closed')
+            def __call__(inner, pending):
+                self.assertTrue(inner.active)
+                tasks = list(pending)
+                self.assertEqual(len(tasks), 1)
+                function, args, kwargs = tasks[0]
+                self.assertEqual(kwargs, {})
+                if function is checkpoint._execution_import_probe:
+                    self.assertEqual(args, ())
+                    prepared.append('import')
+                    return (function(*args, **kwargs) for unused in range(1))
+                self.assertIs(function, checkpoint._execution_runtime_probe)
+                self.assertEqual(len(args), 1)
+                prepared.append('authority')
+                return (checkpoint._stable(self.runtime) for unused in range(1))
+        def dispatch(**options):
+            return (PreparationPool(**options) if options.get('return_as') == 'generator'
+                    else LostParent(**options))
+        with patch.object(checkpoint, 'Parallel', side_effect=dispatch):
             with self.assertRaises(KeyboardInterrupt), self.session(jobs=2) as store:
                 store.search(self.grid)
         self.assertEqual(captured, {'n_jobs': 2, 'pre_dispatch': 2, 'batch_size': 1})
+        self.assertEqual(prepared, ['import', 'authority', 'closed'])
+        self.assertEqual(self.fit_count(), 1)
+        self.assertEqual(len(list((self.run / 'cv-checkpoints' / 'folds').glob('*.json'))), 1)
         TinyClassifier.events = []
         with self.session(resume=True) as store:
             result = store.search(self.grid)
@@ -409,7 +623,10 @@ class CheckpointTests(unittest.TestCase):
                      '_RUNTIME_DIGEST': None, '_RUNTIME_NATIVE': None,
                      '_RUNTIME_ACCELERATOR': None, '_RUNTIME_GUARDS': set(),
                      '_RUNTIME_CONTROLLER': None, '_RUNTIME_MODULE_COUNT': None,
-                     '_RESOLVED_PATHS': {}, '_HASHES': {}}
+                     '_RESOLVED_PATHS': {}, '_HASHES': {},
+                     '_RUNTIME_ARTIFACT_ALIASES': {}, '_RUNTIME_CANONICAL_ARTIFACTS': {},
+                     '_RUNTIME_FILE_COUNT': None, '_RUNTIME_COMMON_FILES': None,
+                     '_RUNTIME_COMMON_DIGEST': None, '_RUNTIME_COMMON_FILE_COUNT': None}
         import ensemble_dwd._cache_identity as cache_identity
         real_import = checkpoint.importlib.import_module
         def import_module(name, *args):
@@ -434,7 +651,7 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(opens.call_count, reads)
             self.assertEqual(distributions.call_count, 1)
             self.assertEqual(native.call_count, 1)
-            self.assertEqual(controllers.call_count, 1)
+            self.assertEqual(controllers.call_count, 3)
             metadata.write_text('Name: fake-runtime\nVersion: changed\n')
             with self.assertRaises(checkpoint.CheckpointError):
                 checkpoint.runtime_fingerprint(check_inventory=False)

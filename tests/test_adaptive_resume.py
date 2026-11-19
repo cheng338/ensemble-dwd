@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.pipeline import Pipeline
 
@@ -57,7 +58,7 @@ class AdaptiveResumeTests(unittest.TestCase):
         # Exercise real fits, scoring, receipts and locks here. Runtime discovery
         # is covered separately by guard tests and real-estimator validation.
         runtime_patch = patch.object(cv_checkpoint, 'runtime_fingerprint',
-                                     return_value={'synthetic_runtime': 'adaptive-resume-v1'})
+                                     return_value=synthetic_runtime(source='adaptive-resume-v1'))
         runtime_patch.start()
         self.addCleanup(runtime_patch.stop)
         self.folder = tempfile.TemporaryDirectory()
@@ -277,7 +278,7 @@ class AdaptiveResumeTests(unittest.TestCase):
         previous_status = (self.run_dir / 'status.json').read_bytes()
         counts = (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions))
 
-        with self.assertRaisesRegex(CheckpointError, 'checksum or identity mismatch'):
+        with self.assertRaisesRegex(CheckpointError, r'^Checkpoint checksum mismatch: .*completed\.json$'):
             self.run_search(resume=True)
 
         self.assertEqual(counts, (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions)))

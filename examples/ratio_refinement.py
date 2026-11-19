@@ -248,11 +248,11 @@ unchanged parent records to retain the original fixed parameter values/types.
         if proposal_description is not None and review is not None:
             from stage_reporting import candidate_budget, safe_report
             result['proposal_report'] = safe_report(lambda: {
-                'kind': 'ratio_refinement', 'decision': 'scheduled' if review is None else 'refused',
-                'stopping_reason': None if review is None else review['stopping_reason'],
+                'kind': 'ratio_refinement', 'decision': 'refused',
+                'stopping_reason': review['stopping_reason'],
                 'proposal': proposal_description,
                 'budget': candidate_budget(coefficient_config.max_candidates, len(records),
-                                           proposal_description.get('new_candidate_count'), review is None),
+                                           proposal_description.get('new_candidate_count'), False),
             })
         return result
 

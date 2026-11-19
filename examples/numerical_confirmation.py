@@ -180,11 +180,6 @@ def _diagnostic_summary(evidence, max_iter):
             'interpretation': 'Reported facts only; cap sensitivity and stable accuracy do not establish convergence.'}
 
 
-def _ranks(means):
-    means = np.asarray(means, dtype=float)
-    return [1 + int(np.sum(means > value)) if np.isfinite(value) else None for value in means]
-
-
 def compare_rankings(baseline, confirmation):
     """Compare the complete ordering, including exact ties, of one shortlist."""
     from tune_mnist import fully_valid_candidate_mask, ranked_valid_indices

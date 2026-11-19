@@ -1,5 +1,9 @@
 import pickle,tempfile,threading,unittest,time,_thread
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 from unittest.mock import patch
 import numpy as np
 from sklearn.base import clone
@@ -141,6 +145,23 @@ class ParallelBaseIntegrationTests(unittest.TestCase):
         for jobs in (True,0,-1,1.5,None):
             with self.assertRaises(ValueError):model(base_jobs=jobs).fit(self.X,self.y)
     def test_real_pending_python_interrupt_cancels_queued_work(self):
+        if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
+            # Keep the runner's handler in place while exercising Python's Ctrl-C behavior.
+            from process_test_support import popen_python
+
+            child = popen_python(
+                ['-B', str(Path(__file__).resolve()), '--pending-interrupt-probe'],
+                env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            try:
+                output, _ = child.communicate(timeout=30)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.communicate()
+            self.assertEqual(child.returncode, 0, output)
+            return
         started=threading.Event();lock=threading.Lock();count=[];old=KernGDWD.fit
         def slow(learner,*args,**kwargs):
             if threading.current_thread() is not threading.main_thread():
@@ -170,5 +191,11 @@ class ParallelBaseIntegrationTests(unittest.TestCase):
                 np.testing.assert_array_equal(a.predict(self.X),b.predict(self.X))
                 np.testing.assert_allclose(a.consensus_scores_,b.consensus_scores_,atol=1e-9,rtol=1e-9)
                 self.assertEqual(a.base_execution_['effective_jobs'],4)
+
+
+if __name__ == '__main__' and sys.argv[1:] == ['--pending-interrupt-probe']:
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    unittest.main(argv=[sys.argv[0]],
+                  defaultTest='ParallelBaseIntegrationTests.test_real_pending_python_interrupt_cancels_queued_work')
 
 

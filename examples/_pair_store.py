@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import pickle
 import re
+import stat
 import threading
 import time
 import uuid
@@ -18,6 +19,14 @@ import uuid
 
 class StoreMismatch(RuntimeError):
     """Identity, committed-artifact integrity or namespace contract failed."""
+
+
+def _storage_error(error):
+    name = type(error).__name__
+    try:
+        return f'{name}: {error}'
+    except Exception:
+        return f'{name}: Error message could not be formatted'
 
 
 def canonical(value):
@@ -137,7 +146,7 @@ class PairStore:
             except OSError as error:
                 # The authoritative fold lease remains held. Optional storage
                 # initialization failure may retain ordinary validated fitting.
-                session._disabled_error = f'{type(error).__name__}: {error}'
+                session._disabled_error = _storage_error(error)
                 session._disabled_reason = 'storage_initialization_failure'
             yield session
         finally:
@@ -191,7 +200,7 @@ class _Session:
             except OSError as error:
                 # We own the directory but cannot establish its cache identity.
                 # This session may compute, but must neither load nor publish.
-                self._disabled_error = f'{type(error).__name__}: {error}'
+                self._disabled_error = _storage_error(error)
                 self._disabled_reason = 'parent_write_failure'
                 return
         # Only absent-manifest payloads and recognized partials are abandoned.
@@ -205,7 +214,7 @@ class _Session:
         except OSError as error:
             # Failure to reclaim optional artifacts must not prevent a valid
             # fresh fit. Do not read or add cache entries in this session.
-            self._disabled_error = f'{type(error).__name__}: {error}'
+            self._disabled_error = _storage_error(error)
             self._disabled_reason = 'reclaim_failure'
 
     def _pair_bytes(self):
@@ -230,10 +239,12 @@ class _Session:
                  'save_seconds': 0.0, 'historical_fit_seconds': 0.0,
                  'lock_wait_seconds': self.lock_wait_seconds,
                  'timing_rule': 'fit_seconds is current compute only; historical_fit_seconds is prior work on reuse; lock_wait_seconds is repeated session context, not additive'}
+        payload_failure = None
         if self._disabled_error is None and receipt_path.exists():
             started = time.perf_counter()
             saved, _ = _read_envelope(receipt_path)
-            if (not isinstance(saved, dict) or saved.get('schema') != 1
+            if (not isinstance(saved, dict) or type(saved.get('schema')) is not int
+                    or saved['schema'] != 1
                     or saved.get('kind') != 'completed-pair'
                     or saved.get('parent_sha256') != self.store.identity_sha256
                     or canonical(saved.get('key_identity')) != canonical(key_identity)
@@ -243,31 +254,74 @@ class _Session:
             if (type(historical) not in (int, float) or not math.isfinite(historical)
                     or historical < 0):
                 raise StoreMismatch('Invalid historical fit time')
+            if (type(saved.get('model_bytes')) is not int or saved['model_bytes'] < 0
+                    or not isinstance(saved.get('model_sha256'), str)
+                    or re.fullmatch(r'[0-9a-f]{64}', saved['model_sha256']) is None
+                    or 'mathematical_state' not in saved):
+                raise StoreMismatch('Malformed pair payload metadata')
             try:
-                data = model_path.read_bytes()
+                attributes = model_path.lstat()
+            except FileNotFoundError as error:
+                payload_failure = ('payload_read_failure', _storage_error(error))
             except OSError as error:
-                raise StoreMismatch('Committed pair payload is unreadable') from error
-            if (len(data) != saved.get('model_bytes')
-                    or digest(data) != saved.get('model_sha256')):
-                raise StoreMismatch('Pair payload size or checksum mismatch')
-            # Identity, filename, byte count and checksum all precede loading.
+                # An unverifiable namespace is not an ordinary missing payload.
+                raise StoreMismatch('Cannot verify pair payload namespace') from error
+            else:
+                if (not stat.S_ISREG(attributes.st_mode)
+                        or getattr(attributes, 'st_file_attributes', 0)
+                        & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)):
+                    raise StoreMismatch('Pair payload is not an owned regular file')
+                try:
+                    data = model_path.read_bytes()
+                except OSError as error:
+                    payload_failure = ('payload_read_failure', _storage_error(error))
+                else:
+                    if (len(data) != saved['model_bytes']
+                            or digest(data) != saved['model_sha256']):
+                        payload_failure = ('payload_integrity_failure',
+                                           'Pair payload size or checksum mismatch')
+            if payload_failure is None:
+                # Identity, filename, byte count and checksum precede loading.
+                # Deserialization, model validation and mathematical-state
+                # disagreements remain strict; they are not storage misses.
+                try:
+                    model = pickle.loads(data)
+                except Exception as error:
+                    raise StoreMismatch('Committed pair payload cannot be deserialized') from error
+                validate(model)
+                if canonical(self.store._snapshot(model)) != canonical(saved.get('mathematical_state')):
+                    raise StoreMismatch('Restored mathematical state mismatch')
+                event.update(status='reused', historical_fit_seconds=historical,
+                             model_bytes=len(data), load_seconds=time.perf_counter() - started,
+                             cache_committed=True)
+                return model, event
+            # Keep the damaged entry unchanged and do not deserialize it. Only
+            # this exact pair is refitted; healthy sibling entries still reuse.
+            self._check()
+            checked = self.store._owned_file(model_name)
             try:
-                model = pickle.loads(data)
-            except Exception as error:
-                raise StoreMismatch('Committed pair payload cannot be deserialized') from error
-            validate(model)
-            if canonical(self.store._snapshot(model)) != canonical(saved.get('mathematical_state')):
-                raise StoreMismatch('Restored mathematical state mismatch')
-            event.update(status='reused', historical_fit_seconds=historical,
-                         model_bytes=len(data), load_seconds=time.perf_counter() - started,
-                         cache_committed=True)
-            return model, event
+                after = checked.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                raise StoreMismatch('Cannot verify failed pair payload namespace') from error
+            else:
+                if (not stat.S_ISREG(after.st_mode)
+                        or getattr(after, 'st_file_attributes', 0)
+                        & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)):
+                    raise StoreMismatch('Pair payload namespace changed')
+            event['failed_load_seconds'] = time.perf_counter() - started
 
         started = time.perf_counter()
         model = compute()
         event['fit_seconds'] = time.perf_counter() - started
         # Validation is outside the optional I/O exception handler.
         validate(model)
+        if payload_failure is not None:
+            self._check()
+            event.update(status='fitted_unsaved', cache_committed=False,
+                         cache_reason=payload_failure[0], cache_error=payload_failure[1])
+            return model, event
         if self._disabled_error is not None:
             event.update(status='fitted_unsaved', cache_committed=False,
                          cache_reason=self._disabled_reason, cache_error=self._disabled_error)
@@ -296,7 +350,7 @@ class _Session:
             event.update(status='fitted_saved' if committed else 'fitted_unsaved',
                          cache_reason='post_commit_failure' if committed else 'write_failure',
                          cache_committed=committed,
-                         cache_error=f'{type(error).__name__}: {error}')
+                         cache_error=_storage_error(error))
         event['save_seconds'] = time.perf_counter() - started
         return model, event
 
@@ -330,11 +384,11 @@ class _Session:
                 self._remove(name)
                 removed.append(name)
         except OSError as error:
-            event.update(status='cleanup_incomplete', cache_error=f'{type(error).__name__}: {error}')
+            event.update(status='cleanup_incomplete', cache_error=_storage_error(error))
         try:
             event['remaining_pair_bytes'] = self._pair_bytes()
         except OSError as error:
             event.update(status='cleanup_incomplete', remaining_pair_bytes=None,
-                         remaining_bytes_error=f'{type(error).__name__}: {error}')
+                         remaining_bytes_error=_storage_error(error))
         event['cleanup_seconds'] = time.perf_counter() - started
         return event
