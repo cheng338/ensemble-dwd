@@ -6,23 +6,46 @@ running repository tests does not prove which exact artifacts were imported.
 Editable installations, import configuration and a different installed DWD
 dependency can change the tested code.
 
-For artifact qualification, the existing CI helper checks both imported package
+For artifact qualification, the paired DWD checkout's CI helper checks both imported package
 origins, distribution versions and installed bytes against the chosen wheels.
 It also verifies DWD's native or portable route contract. Tests run from a
 detached bundle containing fixtures, examples and metadata but neither package's
 importable source root.
 
+## Development CI
+
+The four jobs use Ubuntu and Windows with Python 3.11 and 3.12. Before enabling
+CI for a new development pair, push the matching DWD revision and set the
+repository Actions variable `DWD_DEVELOPMENT_REF` to its full 40-hex commit
+SHA. Each job checks the requested SHA against the DWD checkout and the event
+SHA against the Ensemble checkout. Its summary records both commits and the
+SHA-256 of each verified wheel. The [release lock](../requirements-dwd.txt) records the hashes of the
+DWD 2.0.2 wheels distributed for Ensemble DWD 0.4.1.
+
+Three jobs check that CVXPY is absent from the isolated test environment.
+Ubuntu 3.12 installs the paired DWD wheel with its `socp` extra and pins Clarabel
+0.11.0 for its FAER backend. This job builds the Ensemble sdist, compares its
+tests and fixtures with tracked checkout bytes, then builds the wheel and the
+detached test bundle from the verified extraction. It checks the README body,
+metadata separator and exact unconditional DWD requirement in both distributions.
+
+Each job checks dependency consistency and runs the complete detached suite
+once. On Ubuntu 3.12 the JUnit report must show the real adaptive Clarabel
+refit passed, including four FAER threads on the CV fits and one on the selected
+refit. On each native Windows job the report must show the real ordered-gradient
+reducer ran in both the Ensemble base and final learners.
+
 ## Prepare the paired artifacts
 
-- Use the source and tests for the same release as the selected wheels.
-  Ensemble DWD `0.4.0` requires DWD `2.0.1`.
+- Use the source and tests that produced the selected wheels. This checkout pairs
+  Ensemble DWD `0.4.1` with DWD `2.0.2`.
+  For the earlier Ensemble DWD 0.4.0 and DWD 2.0.1 wheels, use the
+  [0.4.0 test procedure](https://github.com/cheng338/ensemble-dwd/blob/v0.4.0/docs/installed-tests.md)
+  and the corresponding release sources.
 - Put exactly one compatible DWD wheel in its dedicated directory and exactly
   one ensemble-DWD wheel in another. The commands below expect a native DWD
-  wheel. The staged native wheel is tagged `cp312-cp312-win_amd64` and fits
-  64-bit Windows CPython 3.12. For a native check on Linux or CPython 3.11,
-  build a wheel from the DWD 2.0.1 sdist for that OS and interpreter, with the
-  native helpers enabled. Alternatively, select the portable wheel and the
-  `--backend portable` check below. See the DWD [native build guide](https://github.com/cheng338/dwd/blob/v2.0.1/docs/compiled_residual.md).
+  wheel built for the target OS and interpreter. For a portable check, build
+  the DWD wheel with `DWD_BUILD_ACCEL=0` and select `--backend portable`.
 - Replace every quoted absolute-path placeholder. Choose a new environment and
   an absent test-bundle destination outside both source checkouts.
 - This recipe's route checker targets standard GIL-enabled x86-64 CPython 3.11
@@ -51,13 +74,27 @@ installations for this artifact check.
 
 ## Install, verify and test
 
+Build the development wheels from matching source revisions in the activated
+environment. For each DWD build mode (native or portable), use a separate
+clean checkout or fresh source-archive extraction and an empty wheel output
+directory. This keeps compiled files from an earlier build out of the wheel.
+The commands disable pip's wheel cache. See the
+[DWD build instructions](https://github.com/cheng338/dwd/blob/v2.0.2/docs/compiled_residual.md#building-and-installing).
+
+Set `DWD_BUILD_ACCEL=1` for a native build or `DWD_BUILD_ACCEL=0` for a portable build in the shell where you run these commands.
+
+```shell
+python -m pip wheel --no-cache-dir --no-deps --wheel-dir "/absolute/path/dwd-wheels" "/absolute/path/dwd-source"
+python -m pip wheel --no-cache-dir --no-deps --wheel-dir "/absolute/path/ensemble-wheels" "/absolute/path/ensemble-source"
+```
+
 ```shell
 python -I -B "/absolute/path/ensemble-source/tests/ci_artifacts.py" install --wheel-dir "/absolute/path/dwd-wheels"
 python -I -B "/absolute/path/ensemble-source/tests/ci_artifacts.py" install --wheel-dir "/absolute/path/ensemble-wheels" --extras test
 python -m pip check
 python -I -B "/absolute/path/ensemble-source/tests/ci_artifacts.py" bundle --source "/absolute/path/ensemble-source" --destination "/absolute/path/ensemble-installed-tests"
 cd "/absolute/path/ensemble-installed-tests"
-python -I -B tests/ci_artifacts.py check --dwd-wheel-dir "/absolute/path/dwd-wheels" --ensemble-wheel-dir "/absolute/path/ensemble-wheels" --backend native --route-contract current --expected-platform windows --expected-python 3.12
+python -I -B "/absolute/path/dwd-source/tests/ci_artifacts.py" check --dwd-wheel-dir "/absolute/path/dwd-wheels" --ensemble-wheel-dir "/absolute/path/ensemble-wheels" --backend native --route-contract current --expected-platform windows --expected-python 3.12
 python -I -B -m pytest tests -o "python_files=test*.py" -ra
 ```
 
@@ -77,7 +114,30 @@ Isolation with `-I`, avoiding bytecode with `-B`, using `-P` or changing pytest'
 import mode does not by itself bind an import to a particular wheel. The exact
 artifact check and detached test bundle provide that evidence together.
 
-Use `--route-contract current` for Ensemble DWD 0.4.0 with DWD 2.0.1.
-For the historical Ensemble DWD 0.3.15 and DWD 1.3.19 pair, the checker also
-accepts `--route-contract released-1.3.19`. The [CI workflow](../.github/workflows/tests.yml)
-builds and checks paired artifacts.
+Use `--route-contract current` for this package pair. The standalone
+Ensemble helper retains `--route-contract released-1.3.19` for the historical
+Ensemble DWD 0.3.15 and DWD 1.3.19 pair. The [CI workflow](../.github/workflows/tests.yml)
+builds and checks the current pair.
+
+### Targeted dependency checks before a release
+
+When changing label handling or the numerical dependency bounds, use a fresh
+Python 3.12 test environment with the paired wheels and detached tests described
+above. NumPy 2.2.6 exposed a difference in how mixed byte and integer labels
+are converted. The following cases check membership, overlapping classes and
+the selected predictions across parallel fitting and refitting.
+
+```shell
+python -m pip install "numpy==2.2.6" "scipy==1.15.3" "pandas==2.2.2" "scikit-learn==1.6.1" "joblib==1.6.0" "threadpoolctl==3.7.0"
+python -m pip check
+python -I -B -m pytest tests/test_object_ovo_labels.py::test_mixed_iterator_report_membership tests/test_object_ovo_labels.py::test_mixed_report_rejects_overlapping_classes tests/test_parallel_base.py::ParallelBaseIntegrationTests::test_numerical_identity_clone_pickle_and_refit -q
+```
+
+For changes to scikit-learn support, run the following test with version 1.6.1
+in the same environment. It checks all three public cross-validation functions
+with metadata routing enabled and the default `params` argument, comparing
+fold accuracies and out-of-fold predictions with manual fits.
+
+```shell
+python -I -B -m pytest tests/test_routed_cv.py -q
+```

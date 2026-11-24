@@ -36,11 +36,13 @@ Reserved.** A software license has not yet been selected or granted. See
 On interpreters using an affected non-UTF-8 encoding, scikit-learn 1.9.1's
 HTML renderer can raise `UnicodeDecodeError` when displaying an estimator or a
 pipeline containing it. Fitting and text display remain available. See DWD's
-[scikit-learn display guide](https://github.com/cheng338/dwd/blob/v2.0.1/docs/dependency_display.md).
+[scikit-learn display guide](https://github.com/cheng338/dwd/blob/v2.0.2/docs/dependency_display.md).
 
-## Install from source
+## Install the matching packages from source
 
-Ensemble DWD `0.4.0` requires DWD `2.0.1`. With the two
+Ensemble DWD `0.4.1` requires DWD `2.0.2`, NumPy 1.26.3 or later,
+SciPy 1.11.4 or later, and threadpoolctl 3.7.0 or later for native thread
+limits and runtime inspection. With the two matching
 source directories side by side, run this from the `ensemble-dwd`
 directory in your development environment. Pip checks the version requirement
 and installs both packages together.
@@ -49,15 +51,15 @@ and installs both packages together.
 python -m pip install ../dwd .
 ```
 
-## Install release artifacts
+## Install the 0.4.1 release
 
 Python 3.11 or later is required. For a published release, the matching DWD
-wheels come from the [DWD 2.0.1 release assets](https://github.com/cheng338/dwd/releases/tag/v2.0.1).
-From the extracted Ensemble DWD 0.4.0 source directory, install the dependency
+wheels come from the [DWD 2.0.2 release assets](https://github.com/cheng338/dwd/releases/tag/v2.0.2).
+From the extracted Ensemble DWD 0.4.1 source directory, install the dependency
 with hash verification before installing this package.
 
 ```shell
-python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v2.0.1 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
+python -m pip install --no-index --find-links https://github.com/cheng338/dwd/releases/expanded_assets/v2.0.2 --no-deps --force-reinstall --require-hashes -r requirements-dwd.txt
 python -m pip install .
 ```
 
@@ -74,11 +76,11 @@ After installing the locked DWD dependency, build and install a local wheel:
 ```shell
 python -m pip install build
 python -m build
-python -m pip install dist/ensemble_dwd-0.4.0-py3-none-any.whl
+python -m pip install dist/ensemble_dwd-0.4.1-py3-none-any.whl
 ```
 
-The Ensemble package pins the DWD version. Its `requirements-dwd.txt` also
-pins the SHA-256 hashes of the Windows native and portable wheels. The lock installation
+Ensemble DWD 0.4.1 pins DWD 2.0.2. Its `requirements-dwd.txt` also pins the
+SHA-256 hashes of the Windows native and portable 2.0.2 wheels. The lock installation
 uses only the specified release assets or local wheels and reinstalls DWD so an
 existing copy does not bypass hash verification. Other numerical dependencies
 must already be installed or available from an index. Installing `dwd` by name
@@ -88,8 +90,10 @@ Pip selects the matching wheel. The native Windows AMD64 wheel uses CPython
 3.12. The portable wheel supports Python 3.11+. To select the portable build
 explicitly, place only that wheel in `wheels`. On Linux, the corresponding DWD
 source distribution can also be built with native helpers. The
-[compiled-helper guide](https://github.com/cheng338/dwd/blob/v2.0.1/docs/compiled_residual.md)
+[compiled-helper guide](https://github.com/cheng338/dwd/blob/v2.0.2/docs/compiled_residual.md)
 describes the compiler and runtime requirements.
+
+## Test the matching package pair
 
 Complete-suite validation targets Python 3.11 and 3.12. Python 3.13 and later
 Python 3.x releases are supported without dedicated complete-suite runs.
@@ -97,12 +101,12 @@ Recorded numerical checks cover 3.11 through 3.13; forward eligibility does not
 claim testing on future interpreters. Earlier 3.13 results retain their
 historical scope. This runtime change leaves the ensemble method unchanged.
 
-To run the current repository's test suite, use a separate development or CI
-environment. Install DWD 2.0.1, then run these commands from the Ensemble DWD
-0.4.0 source directory.
+To run this checkout's test suite, use a fresh development or CI environment.
+Run these commands from the Ensemble DWD checkout with the matching
+DWD source in `../dwd`.
 
 ```shell
-python -m pip install ".[test]"
+python -m pip install ../dwd ".[test]"
 python -m pytest tests -o "python_files=test*.py" -ra
 ```
 
@@ -114,16 +118,18 @@ exact paired DWD and ensemble-DWD artifacts with detached tests and origin check
 
 The test extra includes pandas for the binary and multiclass DataFrame
 feature-name checks. A missing or broken pandas import fails those tests rather
-than skipping them. Pandas remains optional for ordinary package use. The CI
-minimum-dependency job fixes pandas at 2.2.3 to retain its NumPy 1.26.4 baseline;
-the other CI jobs may use newer pandas versions.
+than skipping them. Pandas remains optional for ordinary package use. The test
+extra requires pandas 2.2.2 or later on Python 3.11 and 3.12, and pandas
+2.2.3 or later on Python 3.13 and later.
 
 The dependency also reuses bounded temporary buffers and avoids repeated work
 within eligible prediction calls. These changes apply to base and final DWD
 estimators without altering disjoint sampling, selection or the fitted objective.
-Development CI builds the paired DWD wheel from `cheng338/dwd`. The
-`DWD_DEVELOPMENT_REF` repository variable can select a specific DWD commit.
-With it unset, CI uses the DWD repository's default branch.
+Development CI builds the paired DWD wheel from `cheng338/dwd`. Push the
+matching DWD development source first, then set the `DWD_DEVELOPMENT_REF`
+repository variable to its full 40-hex commit SHA. Each run records the two
+checked-out commits and both wheel hashes. To repeat an earlier pair, select
+the Ensemble commit and DWD SHA recorded in that run's summary.
 
 New DWD ensembles default to `affine_computation='joint'`. Replace the former
 explicit affine `'auto'` in constructors, pipelines and grids before refitting.
@@ -182,7 +188,7 @@ the argument and use the documented keyword boundaries for other controls.
 Saved DWD metadata requests are not rewritten, and cloning retains stale
 requests; construct a fresh estimator from its parameters and reapply only
 supported requests before refitting. See DWD's
-[argument and metadata migration](https://github.com/cheng338/dwd/blob/v2.0.1/docs/fitting_and_conic_persistence.md#fitting-arguments-and-metadata).
+[argument and metadata migration](https://github.com/cheng338/dwd/blob/v2.0.2/docs/fitting_and_conic_persistence.md#fitting-arguments-and-metadata).
 
 DWD's separate conic DWD/SVM persistence and margin-expression repairs do not
 change this package's kernel ensemble algorithms. `EnsembleKernelSVM` uses
@@ -299,13 +305,15 @@ leave already scaled pixels unchanged. The pipeline applies no further
 pixel transformation. Any learned preprocessing belongs inside the CV pipeline.
 
 ```python
+from joblib import parallel_config
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
+from threadpoolctl import threadpool_limits
 from ensemble_dwd import EnsembleKernelDWD, mnist_param_grid
 
 pipeline = Pipeline([
     ('ensemble', EnsembleKernelDWD(
-        cache_dir='.ensemble-dwd-cache', store_base_estimators=False,
+        cache_dir='.ensemble-dwd-cache', store_base_estimators=False, base_jobs=1,
     )),
 ])
 search = GridSearchCV(
@@ -315,9 +323,14 @@ search = GridSearchCV(
     scoring='accuracy', n_jobs=1, error_score='raise',
 )
 # Run explicitly when the data and computational budget are ready:
-# search.fit(X_train_unit, y_train)
-# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
+# with parallel_config(n_jobs=1), threadpool_limits(limits=1):
+#     search.fit(X_train_unit, y_train)
+#     search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
+
+The search's `n_jobs` sets the number of CV workers. Its timed full-training
+refit runs in the calling process, where the scope sets one job and one
+native thread and the ensemble uses one base worker.
 
 This example stops on every fit error, including an expected
 single-class selection. For a broad search, use the checkpointed example
@@ -476,6 +489,12 @@ change the default DWD objective tolerance (`1e-5`) or iteration cap (100).
 The legacy `run_search_workflow` helper remains a nonresumable coarse/local
 workflow. It preserves all parent parameters during local refinement and
 retains a better coarse candidate when local results do not improve it.
+The generic, adaptive and recovery helpers share the final timing policy.
+For the paired package's CVXPY DWD or SVM, including one fitted by
+`SelectFromModel`, they time explicit Clarabel with one solver thread when
+using SciPy compilation or when CVXPY's CPP compiler already uses one thread.
+Other conic routes retain their solver choice and held-out evaluation. The
+receipt explains each null duration. See [native threads by phase](docs/method.md#native-threads-by-phase).
 
 Without `--run`, the example previews its budget and does not load data.
 It accepts local NumPy archives with Keras keys `x_train/y_train/x_test/y_test`,
@@ -485,25 +504,11 @@ test split before CV.
 
 Choose a positive `--jobs` count for the available RAM; the default is 1.
 Dispatched CV work is bounded by that count, each worker uses one native thread,
-and base models fit sequentially. Optional `--final-native-threads N` sets a
-positive integer limit for each detected native BLAS/OpenMP pool during the
-selected full-training pipeline fit. Its default is also 1; CV and held-out
-prediction stay at one native thread. This is a library-pool limit, not a total
-CPU limit or a physical-core assignment. Wider final budgets require sequential
-nested estimators and may change numerical rounding. Before CV, a dry run
-checks that a nondefault budget can actually be set and restored, without
-fitting or silently reducing the request. The actual final fit is checked
-again; early feasibility does not reserve future runtime availability. Default
-1 skips this separate budget probe and additional runtime authority.
-
-For the nonresumable `run_search_workflow` helper, a final budget above one
-checks native-library identity, observed pool limits, continuity across CV and
-the final fit, and restoration. It does not attest the complete installation;
-receipts state `source_installation_attestation=false`, and installed code must
-remain unchanged during use. Strict phase helpers and adaptive, checkpoint and
-recovery workflows retain their complete/frozen source and runtime checks.
-See [native threads by phase](docs/method.md#native-threads-by-phase) for these
-distinct policies, measured workflow costs and their limits.
+and base models fit sequentially. Timed final fitting and held-out prediction
+use one estimator worker and one native thread. The selected pipeline is cloned
+with each exposed `n_jobs` and `base_jobs` set to 1. The optional
+`--final-native-threads` argument accepts only 1. See
+[native threads by phase](docs/method.md#native-threads-by-phase).
 
 New runs require a fresh `--output-dir`; the default creates a
 unique `results/mnist-*` directory. `--cache-dir` selects a trusted base cache
@@ -651,8 +656,8 @@ may have occurred before prediction started. Once completion is committed,
 verified replay returns saved results with `model=None` and
 `resumed_completed=True`, without restoring a predictor.
 
-Ordinary `--resume` keeps the original budget and identity. If an accepted
-final fit needs a different native-thread budget, the example Python API
+Ordinary `--resume` requires the original settings and identity. If an accepted
+final fit needs a separate attempt, the example Python API
 [`recover_final_fit`](docs/method.md#explicit-final-only-recovery) can run that
 fit in a new, nonoverlapping attempt directory without repeating CV. It
 requires the prospective accepted handoff and the same configured, unfitted
@@ -677,8 +682,9 @@ estimator subclasses. Inspect `cache_hit_`, `cache_key_`, and `cache_status_`
 after fitting to see whether the base stage was reused. For
 `EnsembleKernelDWD`, `base_execution_` describes the fitted base result's
 producing policy; on a hit, its parallel worker/runtime observations are
-historical. They do not count new base fits. Use a fresh `fit_profile()`
-context for current completed-call counts, as explained in
+historical. After a successful fit with the built-in base stage, `cache_hit_`
+and the length of `subset_indices_` distinguish newly fitted bases from reused
+bases. See
 [parallel base diagnostics](docs/parallel-base-fitting.md#caching-diagnostics-and-interruption).
 Use this opt-in when repeated base fits are expensive enough to outweigh
 provenance checks, locking and cache I/O. Cheap fits, including small SVM
@@ -786,14 +792,16 @@ pixels already in `[0, 1]`, dividing raw `0-255` values by 255 once and leaving
 already scaled values unchanged. No further pixel transformation is applied.
 
 ```python
+from joblib import parallel_config
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
+from threadpoolctl import threadpool_limits
 from ensemble_dwd import EnsembleKernelDWD, OvOClassifier, mnist_param_grid
 
 pipeline = Pipeline([
     ('ovo', OvOClassifier(EnsembleKernelDWD(
         M=5, random_state=42, store_base_estimators=False,
-        cache_dir='.ensemble-dwd-cache',
+        cache_dir='.ensemble-dwd-cache', base_jobs=1,
     ), n_jobs=1)),
 ])
 # A single candidate's parameters are shared across all class pairs.
@@ -802,8 +810,9 @@ search = GridSearchCV(
     cv=StratifiedKFold(5, shuffle=True, random_state=42),
     scoring='accuracy', n_jobs=1, error_score='raise',
 )
-# search.fit(X_train_unit, y_train)
-# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
+# with parallel_config(n_jobs=1), threadpool_limits(limits=1):
+#     search.fit(X_train_unit, y_train)
+#     search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
 
 Each class pair uses the same binary procedure for selection and refitting. Only
@@ -811,6 +820,13 @@ its final classifier votes. Ties select the smallest sorted original label;
 decision-score magnitudes do not break ties. Labels retain
 their input dtype, including strings and large integers. `vote_counts(X)`
 returns integer counts in `classes_` order, not probabilities.
+
+In `0.4.1`, direct fits and accuracy scoring preserve large class IDs
+from pandas sparse `uint64` arrays, nullable integer arrays, and categoricals
+with sparse integer categories. When scikit-learn splits the data outside the estimator,
+prepare large integer targets before calling the search. For a zero-filled
+sparse Series, `y.to_numpy(dtype="uint64", copy=True)` preserves adjacent
+IDs above `2**53`. Use the original Series before any lossy row selection.
 
 Numeric `gamma` is shared across all pairs. With `gamma='scale'`, each pair
 resolves its own value and shares it within that pair's base and final fits.
@@ -823,6 +839,24 @@ inside each worker. For a standalone fit, pair parallelism can be enabled
 through `n_jobs`. Prediction streams pair votes in batches controlled by
 `prediction_batch_size=1024`. Retaining only final models with
 `store_base_estimators=False` reduces memory without changing predictions.
+
+In Ensemble DWD `0.4.1`, `OvOClassifier.fit` preserves the feature
+layout of contiguous transposes of NumPy memory maps. Before sending pairs
+to process workers, it copies features or labels backed by a copy-on-write
+map (mode `'c'`) so workers see the parent's private edits. It also copies
+mapped features or labels that reverse an axis of length greater than one,
+such as `X_map[::-1]` or `X_map[:, ::-1]`. Each affected input is copied
+once per fit. Serial and threaded pair fits use the parent-visible arrays
+directly.
+
+With the earlier `0.4.0` release, make an owning copy of each affected
+input before calling `OvOClassifier.fit` with process workers. This applies
+to contiguous transposes whose order differs from the backing map, privately
+edited features or labels, and reversed mapped views. Use
+`X = np.array(X, order='K', copy=True)` or `y = np.array(y, copy=True)` as
+appropriate. With either version, make the same copies before calling an
+outer process-parallel `GridSearchCV.fit`. The outer search sends inputs to
+workers before the classifier receives them.
 
 Inspect `pairs_`, `estimators_` and `pair_indices_` after fitting. A child's
 sampled/selected indices are local to that pair; map them through its
@@ -859,7 +893,7 @@ For binary and multiclass examples of `EnsembleKernelSVM`, see
 
 # Results and boundaries
 
-See the [0.4.0 changelog](CHANGELOG.md#040) for this release's changes.
+See the [changelog](CHANGELOG.md) for the development changes and published releases.
 The [November 19 comparison](VALIDATION.md#2026-11-19-paired-candidate-comparison)
 reports timings for wide-feature DWD fitting and complete workflows on Windows and Linux.
 The [0.3.4 release notes](docs/candidate_changes.md#historical-release-034) and

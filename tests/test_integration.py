@@ -1,5 +1,6 @@
 """Small real-solver integration checks; no downloaded datasets are required."""
 
+import os
 import pickle
 import tempfile
 import unittest
@@ -14,7 +15,9 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.estimator_checks import check_estimator
+from threadpoolctl import threadpool_info, threadpool_limits
 
+from grid_search_test_support import fit_with_serial_refit
 from ensemble_dwd import EnsembleKernelDWD
 
 
@@ -30,6 +33,18 @@ def shared_gamma_score(estimator, X, y):
         if learner.kernel_kws["gamma"] != model.gamma_:
             raise AssertionError("A learner resolved a different kernel coefficient")
     return model.gamma_
+
+
+class RecordingScaler(StandardScaler):
+    def fit(self, X, y=None, sample_weight=None):
+        self.fit_pid_ = os.getpid()
+        self.fit_jobs_ = joblib.effective_n_jobs(None)
+        self.fit_native_threads_ = [pool["num_threads"] for pool in threadpool_info()]
+        return super().fit(X, y, sample_weight=sample_weight)
+
+
+def fit_pid_score(estimator, X, y):
+    return estimator["scale"].fit_pid_
 
 
 class IntegrationTests(unittest.TestCase):
@@ -73,7 +88,7 @@ class IntegrationTests(unittest.TestCase):
         cv = list(StratifiedKFold(n_splits=3, shuffle=True, random_state=11).split(self.X, self.y))
         search = GridSearchCV(pipeline, {"ensemble__lambd": [0.02, 0.1]},
                               cv=cv, scoring="accuracy", n_jobs=1, error_score="raise")
-        search.fit(self.X, self.y)
+        fit_with_serial_refit(search, self.X, self.y)
         self.assertEqual(len(search.cv_results_["params"]), 2)
         expected = []
         for params in search.cv_results_["params"]:
@@ -107,19 +122,33 @@ class IntegrationTests(unittest.TestCase):
         # in each fold, so a coefficient computed from the entire dataset would
         # be observable. The ordinary standardized pipeline is tested above.
         pipeline = Pipeline([
-            ("scale", StandardScaler(with_std=False)),
+            ("scale", RecordingScaler(with_std=False)),
             ("ensemble", self.estimator().set_params(gamma="scale", max_iter=6)),
         ])
         cv = list(StratifiedKFold(n_splits=3, shuffle=True, random_state=29)
                   .split(self.X, self.y))
         serial = GridSearchCV(
             pipeline, {"ensemble__lambd": [0.03, 0.1]}, cv=cv,
-            scoring={"accuracy": "accuracy", "resolved_gamma": shared_gamma_score},
+            scoring={"accuracy": "accuracy", "resolved_gamma": shared_gamma_score,
+                     "fit_pid": fit_pid_score},
             refit="accuracy", error_score="raise", n_jobs=1, pre_dispatch=2,
-        ).fit(self.X, self.y)
+        )
+        fit_with_serial_refit(serial, self.X, self.y)
         parallel = clone(serial).set_params(n_jobs=2)
-        with joblib.parallel_config(backend="loky", inner_max_num_threads=1):
-            parallel.fit(self.X, self.y)
+        with (joblib.parallel_config(backend="loky", n_jobs=2, inner_max_num_threads=1),
+              threadpool_limits(limits=2)):
+            original = threadpool_info()
+            fit_with_serial_refit(parallel, self.X, self.y)
+            self.assertEqual(threadpool_info(), original)
+            self.assertEqual(joblib.effective_n_jobs(None), 2)
+        refit = parallel.best_estimator_["scale"]
+        self.assertEqual(refit.fit_pid_, os.getpid())
+        self.assertEqual(refit.fit_jobs_, 1)
+        self.assertEqual(set(refit.fit_native_threads_), {1})
+        self.assertEqual(parallel.best_estimator_["ensemble"].base_jobs, 1)
+        for fold in range(len(cv)):
+            pids = parallel.cv_results_[f"split{fold}_test_fit_pid"]
+            self.assertTrue(np.all(pids != refit.fit_pid_))
         for key in ["mean_test_accuracy", "mean_test_resolved_gamma",
                     "rank_test_accuracy"]:
             assert_allclose(parallel.cv_results_[key], serial.cv_results_[key],

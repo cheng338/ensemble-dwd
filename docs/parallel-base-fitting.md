@@ -77,30 +77,29 @@ claiming that the current fit ran those base workers. In particular:
 - Sequential results have a synthesized policy summary; they do not
   contain a captured sequential worker-runtime inventory.
 
-For current work, inspect `cache_hit_` and, when counts are needed, use a
-fresh `fit_profile()` context around the fit:
+After a successful `EnsembleKernelDWD.fit` using the built-in base stage,
+the cache outcome and the number of subsets tell you how many base learners
+this call fitted or reused.
 
 ```python
-from ensemble_dwd.profiling import fit_profile
-
-with fit_profile() as profile:
-    fitted = estimator.fit(X, y)
-print(fitted.cache_hit_)
+fitted = estimator.fit(X, y)
+bases = len(fitted.subset_indices_)
+print("Base learners fitted", 0 if fitted.cache_hit_ else bases)
+print("Base learners reused", bases if fitted.cache_hit_ else 0)
 print(fitted.base_execution_)  # policy associated with the fitted bases
-print(profile.as_dict()["counts"])  # work completed in this context
 ```
 
-With one successful cache-hit fit in that context, `base_fit_completed`
-and `base_scoring_completed` are zero, `reused_base_learners` is `M`, and
-`final_fit_completed` is one. No current parallel base-worker profiles
-are added by that hit. This does not mean the complete fit does no work:
-cache verification and I/O, selection, and the fresh final fit still run.
-`base_execution_` does not describe the final learner's execution.
+Every successful call fits one fresh final learner. On a cache hit the call
+also verifies and reads the cache and performs selection. For partial work
+on an interrupted or failed fit, inspect the exception's
+`ensemble_failure_context` when available. See [ensemble failure evidence](method.md#ensemble-failure-evidence).
 
-Profiling records the parent parallel stage as elapsed wall time and stores
-individual worker profiles separately. Worker times overlap and must not be
-added to parent wall time. Completed-fit and scoring counts include completed
-workers even when the caller is interrupted before receiving their results.
+For elapsed fit-stage measurements, use one estimator worker and one native
+thread throughout the fit. See the [serial profiling example](method.md#optional-fit-profiling).
+When interpreting existing parallel profiles, worker intervals can overlap
+with each other and with the parent's elapsed time. Completed-fit and scoring
+counts include completed workers even when the caller was interrupted before
+receiving their results.
 
 While waiting, the caller periodically returns to Python so pending interrupts
 can be processed on Windows. An interruption cancels work that has not started,

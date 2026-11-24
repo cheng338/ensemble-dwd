@@ -19,6 +19,7 @@ from sklearn.model_selection import ParameterGrid, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from threadpoolctl import threadpool_limits
+from workflow_refit_support import record_full_pipeline_fits
 
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM
 
@@ -126,9 +127,9 @@ class RatioWorkflowTests(unittest.TestCase):
 
     def test_generated_ratios_reuse_only_matching_seeds_and_refit_once(self):
         folder = new_run_directory(self.root / 'reuse')
-        with patch.object(adaptive_search, 'clone', wraps=adaptive_search.clone) as final_clone:
+        with record_full_pipeline_fits(self.X, self.y) as final_fits:
             result = self.execute(folder)
-        self.assertEqual(final_clone.call_count, 1)
+        self.assertEqual(final_fits, [result['model']])
         self.assertEqual([stage['name'] for stage in result['stages']], ['coarse', 'ratio-local-1'])
         self.assertEqual(len(result['cv_results']['params']), 4)
         self.assertEqual(sum(stage['checkpoint']['executed_folds'] for stage in result['stages']), 8)
@@ -234,14 +235,15 @@ class RatioWorkflowTests(unittest.TestCase):
         EndpointRatioSurface.fits = []
         with patch.object(adaptive_search, 'next_search_stage', side_effect=stages), \
                 patch.object(adaptive_search, 'next_ratio_stage', side_effect=observe_actual_ratio_policy), \
-                patch.object(adaptive_search, 'clone', side_effect=final_clone) as final_fit, \
+                patch.object(adaptive_search, 'clone', side_effect=final_clone), \
+                record_full_pipeline_fits(self.X, self.y) as final_fits, \
                 patch.object(adaptive_search, 'accuracy_score', side_effect=final_score) as test_score, \
                 contextlib.redirect_stdout(io.StringIO()):
             result = adaptive_search.run_adaptive_search(
                 pipeline, grid, self.X, self.y, self.test_X, self.test_y, self.folds,
                 folder, config=config, ratio_refinement=ratio)
         self.assertTrue(accepted)
-        self.assertEqual(final_fit.call_count, 1)
+        self.assertEqual(final_fits, [result['model']])
         self.assertEqual(test_score.call_count, 1)
         self.assertEqual([fit for fit in EndpointRatioSurface.fits if fit[0] == 40], [(40, .4, 42)])
         self.assertEqual(result['review']['state'], 'accepted')

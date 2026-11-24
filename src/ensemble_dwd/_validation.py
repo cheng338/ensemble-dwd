@@ -4,6 +4,27 @@ import numpy as np
 from scipy.sparse import issparse
 
 
+def _label_value(value):
+    """Return a scalar for reporting, preserving the payload of boxed NumPy text."""
+    if isinstance(value, np.str_):
+        return str.__getitem__(value, slice(None))
+    if isinstance(value, np.bytes_):
+        return bytes.__getitem__(value, slice(None))
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def _class_mask(y, label):
+    """Compare rows to one representative in the array's label domain."""
+    if y.dtype.kind in "OT":
+        # A scalar text operand can be inferred as fixed-width and lose
+        # its trailing NULs. Assign a single element to avoid invoking
+        # array conversion on a custom object representative.
+        representative = np.empty(1, dtype=y.dtype)
+        representative[0] = label
+        return y == representative
+    return y == label
+
+
 def _reject_complex(value, name):
     """Reject complex scalars even when an object array hides their dtype.
 

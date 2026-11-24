@@ -130,8 +130,8 @@ The default `q=1` matches the dissertation's stated loss. Generalized positive
 
 ### Public solver API upgrade
 
-Ensemble DWD 0.4.0 requires DWD 2.0.1. DWD 2.0.0 removes the public
-`implementation` and `solver_mode` selectors. It also removes `implicit_P`
+Ensemble DWD 0.4.0 introduced this migration with DWD 2.0.1. DWD 2.0.0
+removed the public `implementation` and `solver_mode` selectors and `implicit_P`
 from `KernGDWD`. `KernGDWDCV` already omitted that argument, and the
 linear estimators continue to accept it.
 Ensemble DWD calls the optimized solver directly. An older Ensemble that
@@ -299,7 +299,7 @@ their existing construction. Neither policy guarantees universally correct
 rounding or identical predictions for every batch shape. These policies are
 provided by the paired DWD dependency. See the [package metadata](../pyproject.toml)
 for the required DWD version and the [dependency lock](../requirements-dwd.txt)
-for the released artifact hashes.
+for the DWD 2.0.2 wheel hashes used by Ensemble DWD 0.4.1.
 
 Direct computation supports the named `kernel='rbf'` with the corrected Schur
 solver used by this estimator. Set gamma through the usual top-level `gamma`
@@ -462,9 +462,17 @@ The package offers an opt-in context for measuring ensemble-DWD
 work without adding an estimator parameter:
 
 ```python
+from joblib import parallel_config
+from threadpoolctl import threadpool_limits
+from ensemble_dwd import EnsembleKernelDWD
 from ensemble_dwd.profiling import fit_profile
 
-with fit_profile() as profile:
+model = EnsembleKernelDWD(base_jobs=1)
+with (
+    parallel_config(backend="sequential", n_jobs=1),
+    threadpool_limits(limits=1),
+    fit_profile() as profile,
+):
     model.fit(X_train, y_train)
 
 observations = profile.as_dict()
@@ -500,7 +508,7 @@ changed package sources still changes the existing cache provenance; enabling
 or disabling the context within the same installation does not.
 
 For native DWD residual dispatch, use the separate optional
-`dwd.profiling.residual_profile()` context in the paired DWD 2.0.1 release.
+`dwd.profiling.residual_profile()` context in the paired DWD dependency.
 The contexts can be combined, but their nested times
 must not be added to ensemble stage times.
 
@@ -970,69 +978,37 @@ component while preserving the identity and worker checks above.
 
 ### Native threads by phase
 
-All three tuning commands accept optional `--final-native-threads N`, a positive
-integer with default 1. The example APIs expose the same setting as
-`run_adaptive_search(..., final_native_threads=N)` and
-`run_search_workflow(..., final_native_threads=N)`. It applies to the complete
-selected full-training pipeline fit: preprocessing, ensemble base fits,
-consensus scoring and the fresh final learner. For sequential OvO it applies
-to every class pair. CV, ratio refinement, numerical confirmation and held-out
-prediction retain their existing one-native-thread scopes.
+The tuning presets use one estimator worker and one native thread for the
+selected full-training fit and held-out prediction. The optional CLI
+argument `--final-native-threads` and the Python parameter `final_native_threads`
+accept only 1. The helpers use joblib's sequential backend and limit loaded
+BLAS/OpenMP pools. They set the owned final clone's exposed `n_jobs` and
+`base_jobs` to 1 for supported compositions. These include a pipeline,
+the package's OvO wrapper and scikit-learn's `SelectFromModel`. The scopes
+restore the caller's active backend and pool limits on exit.
 
-`--jobs` controls concurrent CV candidate/fold tasks or equivalent-fold groups.
-The final-thread setting instead limits each detected native BLAS/OpenMP pool;
-it is not a total machine CPU limit, a worker count or physical-core affinity.
-There is no automatic CPU allocation policy. A nondefault final budget requires
-every exposed nested estimator `n_jobs` setting to be explicitly 1. That check
-does not control workers hidden inside custom estimators or callable kernels.
-Native limits act across the Python process, so do not run unrelated numerical
-work in another Python thread while these workflow scopes are active.
+When the paired package's CVXPY DWD or SVM participates in fitting, the
+helpers bound explicit Clarabel through `max_threads=1` if it supports that
+option and compilation uses SciPy or a CPP compiler already set to one
+thread. Other solver configurations still fit and score. A null fit duration
+and its receipt reason identify the unavailable comparison. Prediction with
+fitted conic coefficients can still be timed independently.
 
-The objective and ensemble procedure remain unchanged, but native reduction
-rounding can change scores, stopping decisions, selected rows or labels. More
-threads do not guarantee a faster fit. The SVM comparator accepts the shared
-workflow option; additional BLAS threads do not parallelize its LIBSVM solver.
+Nested scikit-learn searches can replace estimator options during fitting.
+Custom cloning can share fitted state, and other meta-estimators may manage
+their children independently. The helpers preserve those models' options and
+omit comparable fit and prediction times. Accuracy and whole-invocation
+accounting continue. Callers supplying third-party code that starts private
+worker pools must configure those pools for their measurements.
 
-Before CV, a nondefault requested final budget receives a feasibility dry run:
-enter the requested native scope, verify the observed limits and restore the
-one-thread workflow scope, without fitting. An unavailable request raises
-rather than being silently clamped. The final fit retains its own checks
-because an early probe cannot guarantee later runtime availability.
+`--jobs` controls concurrent CV candidates, folds or equivalent-fold groups.
+The run records retain the CV configuration and the selected parameters.
+The refit receipt records the effective worker settings. Adaptive checkpoints
+also bind the selected estimator and its single-worker final configuration
+in the accepted handoff. Source and runtime checks still apply on recovery.
 
-The nonresumable `run_search_workflow` uses a native-resource policy when
-`final_native_threads > 1`. Its `noncheckpoint-native-scope-v1` receipts retain
-fresh native-pool identities, binary digests and path-alias checks, requested
-thread counts and pool multiplicity, continuity from preflight through CV and
-the actual final fit, and restoration. This policy does not inspect the
-complete installed source tree or attest source, `METADATA`, unloaded files
-and additional callable origins. Receipts explicitly record
-`source_installation_attestation=false`. Installed code must remain unchanged
-during use; this is less provenance coverage than a complete runtime
-fingerprint, and neither policy is a security sandbox. The policy applies
-across workload sizes, not only to the ordinary timing case below.
-
-The public strict helpers in `examples/phase_threads.py`, adaptive search,
-checkpoint/resume and final-only recovery retain their full/frozen runtime
-checks. This includes adaptive search's first preflight, before a runtime has
-been frozen: a missing frozen runtime does not select the noncheckpoint
-policy. The strict preflight retains complete source/runtime identities
-before entering and after restoring its scope. Inside the empty widened scope
-it uses the same native-pool observer as the complete fingerprint, avoiding
-repeated broad source inspection there. These inner observations are
-native-only, not complete runtime snapshots. An unfinished matching resume
-checks again before continuing work; a verified completed replay does not
-probe a budget it will not use.
-
-For resumable workflows, the requested final budget and helper source remain
-part of checkpoint identity. Nondefault final-fit receipts record the observed
-native runtime before and after fitting and check restoration to the CV
-runtime, including on failure or interruption. Default 1 still validates the
-requested value, then skips the separate budget probe, additional runtime
-authority and extra thread-limit scope. Its receipt references the existing
-workflow scope and frozen CV provenance where available. The accepted-handoff
-and scoring checks below still perform their own runtime and data
-verification. Base-cache keys include observed thread counts, keeping entries
-from different budgets separate.
+The following measurements describe earlier versions that supported wider
+final-fit budgets.
 
 Fixed paired comparisons on 8 November 2026 measured the new noncheckpoint
 policy against the previous complete-fingerprint implementation at the same
@@ -1061,16 +1037,15 @@ process-startup costs.
 Ordinary `--resume` still requires the original budget and identity. Changed
 helper sources, common libraries or the saved worker runtime invalidate reuse;
 use a fresh run after such a change. Coordinator-only pool differences remain
-subject to the runtime-role checks above. A separate explicit final-only attempt may change the final budget
-under the conditions below. Neither path changes estimator defaults, search
-grids, selected parameters or the original completed CV records.
+subject to the runtime-role checks above. The current timing policy applies
+to both ordinary resume and explicit final-only attempts.
 
 ### Explicit final-only recovery
 
 The resumable adaptive workflow commits an accepted handoff before the final
 fit, after coefficient, ratio and any configured confirmation checks have
 authorized the selected model. `examples/final_recovery.py` provides
-`recover_final_fit` for an explicit final-budget correction using that handoff.
+`recover_final_fit` for an explicit final fit using that handoff.
 It does no CV search and does not activate completed-pair recovery for the
 final fit. The legacy nonresumable `run_search_workflow` has no such handoff.
 
@@ -1078,8 +1053,8 @@ Supply the original training and held-out arrays and an unfitted pipeline
 configured exactly as selected, including the original preprocessing, concrete
 parameter types and declared final refit seed. Common sources/libraries and
 the saved CV-worker identity must still match under the runtime-role checks.
-The requested final native budget may differ in a separate attempt; the model,
-data and selection are unchanged. Public `selection.json` or
+Recovery checks both the supplied selected pipeline and the single-worker
+clone used for timing. Public `selection.json` or
 `review.json` reports do not replace the checksummed accepted handoff; older
 runs without it cannot be migrated by this API.
 
@@ -1100,21 +1075,18 @@ source_run = Path("results/mnist-search").resolve()
 attempt_dir = source_run.with_name(source_run.name + "-final-retry")
 result = recover_final_fit(
     final_pipeline, X_train, y_train, X_test, y_test,
-    source_run, attempt_dir, final_native_threads=2,
+    source_run, attempt_dir, final_native_threads=1,
 )
 ```
 
 The attempt directory must be new and must not equal, contain, or lie inside
 the source run directory; a sibling is suitable. The helper validates the
-typed pipeline against the handoff rather than reconstructing an estimator
-from JSON. The explicit final budget still requires sequential nested
-estimators when it is wider than one.
+typed pipeline against the handoff and applies the saved execution policy
+to an owned clone.
 
-Use `resume=True` with the same attempt directory and the same budget to
-continue an unscored failed attempt or replay its completed result. To change
-the budget again after an unscored failure, choose another new attempt
-directory. Each attempt keeps its own immutable identity and receipts; it
-does not relabel the original run as completed under the new budget. A source
+Use `resume=True` with the same attempt directory to continue an unscored
+failed attempt or replay its completed result. Each attempt keeps its own
+immutable identity and receipts. A source
 lease excludes competing final jobs, and ordinary resume cannot ignore a
 registered final-only attempt.
 

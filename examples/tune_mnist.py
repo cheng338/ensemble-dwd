@@ -49,7 +49,8 @@ from mnist_preprocessing import (add_preprocessing_arguments, make_preprocessor,
 
 from phase_threads import (add_final_thread_argument, report_final_threads,
                            final_thread_policy_sha256,
-                           validate_final_native_threads,
+                           validate_timed_native_threads, configure_final_model, clone_final_model,
+                           timed_model_phase,
                            _noncheckpoint_preflight_final_native_threads,
                            _noncheckpoint_final_fit_threads, _NATIVE_SCOPE_POLICY)
 
@@ -351,14 +352,11 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     continue. The default leaves the DWD workflow unchanged. KeyboardInterrupt
     and SystemExit preserve completed records, mark the run interrupted and
     propagate; this legacy helper does not support resuming the run.
-    final_native_threads changes only the selected full-training pipeline
-    fit. CV and held-out prediction remain at one native thread. The default
-    is one; wider budgets require every exposed nested n_jobs to be one.
-    This noncheckpoint scope verifies native resources and restoration; it does
-    not attest package/source installation identity. Keep installed code unchanged
-    during a run. Checkpointed and recovery workflows retain their full guards.
+    final_native_threads accepts only 1. jobs controls CV. The final scope sets
+    one job and one thread for loaded native pools. The receipt explains any
+    unavailable fit timing for nested searches, shared models or conic solvers.
     """
-    final_native_threads = validate_final_native_threads(final_native_threads, pipeline)
+    final_native_threads = validate_timed_native_threads(final_native_threads)
     run_dir = _resolved_public_path(run_dir)
     failure_dir = _io_path(run_dir / 'failures')
     if not failure_dir.is_dir():
@@ -471,17 +469,20 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
             start = perf_counter()
             try:
-                final_model = clone(pipeline).set_params(**parameters)
-                final_runtime = {}
-                with _noncheckpoint_final_fit_threads(
+                final_model, source_may_share = clone_final_model(clone, pipeline, parameters)
+                final_runtime = configure_final_model(final_model, source_may_share=source_may_share)
+                if 'timing_unavailable' in final_runtime:
+                    start = None
+                with timed_model_phase(), _noncheckpoint_final_fit_threads(
                         final_native_threads, final_model, final_runtime, preflight=native_preflight):
                     final_model.fit(X_train, y_train)
             except Exception as error:
                 write_failure_json(run_dir / 'refit.json', {
-                    'state': 'failed', **selection, 'wall_seconds': perf_counter() - start,
+                    'state': 'failed', **selection,
+                    'wall_seconds': None if start is None else perf_counter() - start,
                     'failure': exception_details(error), 'native_runtime': final_runtime})
                 raise
-            refit_seconds = perf_counter() - start
+            refit_seconds = None if start is None else perf_counter() - start
             # This completion record exists even if later test scoring fails.
             write_json_atomic(run_dir / 'refit.json', {
                 'state': 'completed', **selection, 'wall_seconds': refit_seconds,
@@ -491,11 +492,16 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 write_json_atomic(run_dir / 'review.json', review, replace=True)
             phase = 'held_out_scoring'
             write_json_atomic(run_dir / 'status.json', {'state': 'running', 'phase': phase}, replace=True)
-            test_accuracy = float(accuracy_score(y_test, final_model.predict(X_test)))
+            with timed_model_phase():
+                test_accuracy = float(accuracy_score(y_test, final_model.predict(X_test)))
             completed = {**selection, 'refit_seconds': refit_seconds,
-                         'held_out_accuracy': test_accuracy, 'final_native_threads': final_native_threads,
+                         'held_out_accuracy': test_accuracy,
+                         'final_native_threads': None if refit_seconds is None else final_native_threads,
                          'final_thread_runtime_policy': _NATIVE_SCOPE_POLICY,
                          'source_installation_attestation': False}
+            for key in ('timing_unavailable', 'prediction_timing_unavailable'):
+                if key in final_runtime:
+                    completed[key] = final_runtime[key]
             write_json_atomic(run_dir / 'completed.json', completed)
             if review is not None:
                 review['held_out_scored'] = True
@@ -517,7 +523,10 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
         raise
     print(f"Best CV accuracy: {selection['mean_cv_accuracy']:.4f}")
     print(f'Best parameters: {parameters}')
-    print(f'Final refit seconds: {refit_seconds:.4f}')
+    if refit_seconds is None:
+        print(f"Final refit timing unavailable: {completed['timing_unavailable']}")
+    else:
+        print(f'Final refit seconds: {refit_seconds:.4f}')
     print(f'Held-out test accuracy: {test_accuracy:.4f}')
     return {'coarse_search': coarse, 'selected_search': search, 'model': final_model,
             'completed': completed, 'selection': selection, 'review': review, 'run_dir': run_dir}

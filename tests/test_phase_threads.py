@@ -10,8 +10,10 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from joblib import effective_n_jobs, parallel_config
 from runtime_test_support import synthetic_runtime
-from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
+from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin, clone
+from sklearn.neighbors import KNeighborsTransformer
 from sklearn.pipeline import Pipeline
 from threadpoolctl import threadpool_info, threadpool_limits
 
@@ -88,7 +90,78 @@ class PhaseSurface(ClassifierMixin, BaseEstimator):
         return y if (self.lambd, self.gamma) == (4., 4.) else 1 - y
 
 
+class WorkerSurface(PhaseSurface):
+    events = []
+
+    def __init__(self, lambd=4., gamma=4., n_jobs=1, base_jobs=1):
+        super().__init__(lambd=lambd, gamma=gamma, n_jobs=n_jobs)
+        self.base_jobs = base_jobs
+
+    def record(self, stage, X):
+        type(self).events.append((stage, len(X), self.n_jobs, self.base_jobs,
+                                  effective_n_jobs(2), observed_counts()))
+
+    def fit(self, X, y):
+        self.record('fit', X)
+        return super().fit(X, y)
+
+    def predict(self, X):
+        self.record('predict', X)
+        return super().predict(X)
+
+
 class PhaseHelperTests(unittest.TestCase):
+    def test_dynamic_clone_hook_cannot_change_a_shared_component(self):
+        class SharedModel:
+            def __init__(self):
+                self.model = WorkerSurface(n_jobs=3, base_jobs=2)
+
+            def __getattr__(self, name):
+                if name == '__sklearn_clone__':
+                    return lambda: self
+                return getattr(self.model, name)
+
+            def get_params(self, deep=True):
+                return self.model.get_params(deep=deep)
+
+            def set_params(self, **options):
+                self.model.set_params(**options)
+                return self
+
+        owner = SharedModel()
+        for template in (owner, Pipeline([('learner_', owner)])):
+            selected = clone(template)
+            self.assertIs(selected['learner_'] if isinstance(selected, Pipeline) else selected, owner)
+            receipt = phase_threads.configure_final_model(selected)
+            self.assertEqual((owner.n_jobs, owner.base_jobs), (3, 2))
+            self.assertEqual(receipt['worker_parameters'], {})
+            self.assertEqual(receipt['timing_unavailable'], receipt['prediction_timing_unavailable'])
+
+    def test_distinct_nested_steps_have_distinct_worker_records(self):
+        transform = KNeighborsTransformer(n_neighbors=1, n_jobs=3)
+        classifier = PhaseSurface(n_jobs=2)
+        model = Pipeline([('a_', Pipeline([('b', transform)])),
+                          ('a', Pipeline([('_b', classifier)]))])
+        receipt = phase_threads.configure_final_model(model)
+        self.assertEqual((transform.n_jobs, classifier.n_jobs), (1, 1))
+        self.assertEqual(receipt['worker_parameters'],
+                         {'["a_","b","n_jobs"]': 1, 'a___b__n_jobs': 1})
+
+    def test_step_names_are_preserved_when_setting_real_worker_parameters(self):
+        for name in ('n_jobs', 'base_jobs'):
+            with self.subTest(step=name):
+                classifier = WorkerSurface(n_jobs=3, base_jobs=2)
+                inner = Pipeline([(name, classifier)])
+                model = Pipeline([('base_jobs', np.str_('passthrough')), ('n_jobs', inner)])
+                receipt = phase_threads.configure_final_model(model)
+                self.assertIs(model['n_jobs'][name], classifier)
+                self.assertEqual(model['base_jobs'], 'passthrough')
+                self.assertEqual((classifier.n_jobs, classifier.base_jobs), (1, 1))
+                self.assertEqual(receipt['worker_parameters'], {
+                    f'n_jobs__{name}__n_jobs': 1, f'n_jobs__{name}__base_jobs': 1})
+                X = np.array([[0, 0], [1, 1]])
+                np.testing.assert_array_equal(model.fit(X, X[:, 1]).predict(X), X[:, 1])
+
     def setUp(self):
         self.threads = 1
         self.runtime = {'source': 'unchanged', 'native_pools': [{'num_threads': 1, 'filepath': 'test'}]}
@@ -223,37 +296,37 @@ class PhaseWorkflowTests(unittest.TestCase):
                 self.pipeline, self.grid, self.X, self.y, self.test_X, self.test_y,
                 self.folds, run_dir, config=self.config, resume=resume, **kwargs)
 
-    def assert_scope_events(self, count):
+    def assert_scope_events(self):
         for events in (PhaseTransform.fits, PhaseSurface.fits):
             self.assertTrue(any(n == 20 for n, pools in events))
             for n, pools in events:
-                self.assertTrue(all(value == (count if n == 20 else 1) for path, value in pools))
+                self.assertTrue(all(value == 1 for path, value in pools))
         self.assertTrue(any(n == 8 for n, pools in PhaseSurface.predictions))
         self.assertTrue(all(value == 1 for n, pools in PhaseSurface.predictions for path, value in pools))
 
-    def test_adaptive_opt_in_scopes_full_pipeline_and_records_metadata(self):
+    def test_adaptive_scopes_full_pipeline_and_records_metadata(self):
         with threadpool_limits(limits=3):
             before = observed_counts()
-            result = self.run_workflow(final_native_threads=2)
+            result = self.run_workflow(final_native_threads=1)
             self.assertEqual(observed_counts(), before)
-        self.assert_scope_events(2)
+        self.assert_scope_events()
         settings = json.loads((self.base / 'run/run.json').read_text())['settings']
         self.assertEqual(settings['native_threads'], 1)
-        self.assertEqual(settings['final_native_threads'], 2)
+        self.assertEqual(settings['final_native_threads'], 1)
         self.assertEqual(settings['held_out_native_threads'], 1)
         receipt = result['refit']['native_runtime']
-        self.assertTrue(receipt['restored'])
-        self.assertEqual(receipt['requested_native_threads'], 2)
-        self.assertTrue(all(pool['num_threads'] == 2 for pool in receipt['before_fit']['native_pools']))
+        self.assertEqual(receipt['requested_native_threads'], 1)
+        self.assertEqual(receipt['estimator_workers'], 1)
+        self.assertEqual(receipt['worker_parameters'], {'ensemble__n_jobs': 1})
 
-    def test_legacy_opt_in_scopes_full_pipeline_and_restores_caller(self):
+    def test_legacy_scopes_full_pipeline_and_restores_caller(self):
         with threadpool_limits(limits=3):
             before = observed_counts()
-            self.run_workflow(legacy=True, final_native_threads=2)
+            self.run_workflow(legacy=True, final_native_threads=1)
             self.assertEqual(observed_counts(), before)
-        self.assert_scope_events(2)
+        self.assert_scope_events()
         refit = json.loads((self.base / 'run/refit.json').read_text())
-        self.assertTrue(refit['native_runtime']['restored'])
+        self.assertEqual(refit['native_runtime']['requested_native_threads'], 1)
 
     def test_implicit_and_explicit_default_match_fit_and_prediction_events(self):
         first = self.run_workflow('implicit')
@@ -263,7 +336,7 @@ class PhaseWorkflowTests(unittest.TestCase):
         self.assertEqual(events, (PhaseTransform.fits, PhaseSurface.fits, PhaseSurface.predictions))
         self.assertEqual(first['selection'], second['selection'])
         self.assertEqual(first['completed']['held_out_accuracy'], second['completed']['held_out_accuracy'])
-        self.assert_scope_events(1)
+        self.assert_scope_events()
 
     def test_final_failures_interrupts_and_exit_restore_both_scopes(self):
         for legacy in (False, True):
@@ -275,47 +348,47 @@ class PhaseWorkflowTests(unittest.TestCase):
                     with threadpool_limits(limits=3):
                         before = observed_counts()
                         with self.assertRaises(error_type):
-                            self.run_workflow(name, legacy=legacy, final_native_threads=2)
+                            self.run_workflow(name, legacy=legacy, final_native_threads=1)
                         self.assertEqual(observed_counts(), before)
                     self.assertFalse(any(n == 8 for n, pools in PhaseSurface.predictions))
                     status = json.loads((self.base / name / 'status.json').read_text())
                     self.assertEqual(status['phase'], 'final_refit')
                     if error_type is not ValueError or legacy:
-                        self.assertTrue(status['final_runtime']['restored'])
+                        self.assertEqual(status['final_runtime']['state'], 'failed')
                     else:
                         refit = json.loads((self.base / name / 'refit.json').read_text())
-                        self.assertTrue(refit['native_runtime']['restored'])
+                        self.assertEqual(refit['native_runtime']['state'], 'failed')
 
     def test_interrupted_final_resume_retains_cv_and_completed_replay_is_idle(self):
         PhaseSurface.fail_final = KeyboardInterrupt
         with self.assertRaises(KeyboardInterrupt):
-            self.run_workflow(final_native_threads=2)
+            self.run_workflow(final_native_threads=1)
         cv_fits = [event for event in PhaseSurface.fits if event[0] != 20]
         PhaseSurface.fail_final = None
-        result = self.run_workflow(resume=True, final_native_threads=2)
+        result = self.run_workflow(resume=True, final_native_threads=1)
         self.assertEqual(cv_fits, [event for event in PhaseSurface.fits if event[0] != 20])
         counts = (len(PhaseSurface.fits), len(PhaseSurface.predictions))
-        replay = self.run_workflow(resume=True, final_native_threads=2)
+        replay = self.run_workflow(resume=True, final_native_threads=1)
         self.assertTrue(replay['resumed_completed'])
         self.assertEqual(result['refit'], replay['refit'])
         self.assertEqual(counts, (len(PhaseSurface.fits), len(PhaseSurface.predictions)))
 
     def test_changed_final_budget_rejects_resume_without_status_mutation(self):
-        self.run_workflow(final_native_threads=2)
+        self.run_workflow(final_native_threads=1)
         before = (self.base / 'run/status.json').read_bytes()
         counts = (len(PhaseSurface.fits), len(PhaseSurface.predictions))
-        with self.assertRaises(cv_checkpoint.CheckpointError):
-            self.run_workflow(resume=True, final_native_threads=1)
+        with self.assertRaisesRegex(ValueError, 'final_native_threads'):
+            self.run_workflow(resume=True, final_native_threads=2)
         self.assertEqual((self.base / 'run/status.json').read_bytes(), before)
         self.assertEqual(counts, (len(PhaseSurface.fits), len(PhaseSurface.predictions)))
 
     def test_changed_phase_helper_hash_rejects_completed_resume(self):
-        self.run_workflow(final_native_threads=2)
+        self.run_workflow(final_native_threads=1)
         before = (self.base / 'run/status.json').read_bytes()
         counts = (len(PhaseSurface.fits), len(PhaseSurface.predictions))
         with patch.object(adaptive_search, 'final_thread_policy_sha256', return_value='changed-helper'):
             with self.assertRaises(cv_checkpoint.CheckpointError):
-                self.run_workflow(resume=True, final_native_threads=2)
+                self.run_workflow(resume=True, final_native_threads=1)
         self.assertEqual((self.base / 'run/status.json').read_bytes(), before)
         self.assertEqual(counts, (len(PhaseSurface.fits), len(PhaseSurface.predictions)))
 
@@ -327,19 +400,30 @@ class PhaseWorkflowTests(unittest.TestCase):
             self.assertFalse((self.base / name / 'run.json').exists())
             self.assertEqual(PhaseSurface.fits, [])
 
-    def test_nested_parallel_pipeline_rejects_before_fits(self):
-        self.pipeline.set_params(ensemble__n_jobs=2)
-        with self.assertRaisesRegex(ValueError, 'n_jobs=1'):
-            self.run_workflow(final_native_threads=2)
-        self.assertFalse((self.base / 'run/run.json').exists())
-        self.assertEqual(PhaseSurface.fits, [])
-
-    def test_candidate_cannot_override_serial_pair_requirement_at_final_fit(self):
-        self.grid['ensemble__n_jobs'] = [2]
-        with self.assertRaisesRegex(ValueError, 'n_jobs=1'):
-            self.run_workflow(final_native_threads=2)
-        self.assertFalse(any(n == 20 for n, pools in PhaseSurface.fits))
-        self.assertFalse(any(n == 8 for n, pools in PhaseSurface.predictions))
+    def test_cv_preserves_worker_options_and_final_fit_and_prediction_use_one(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                self.reset_events()
+                WorkerSurface.events = []
+                candidate = WorkerSurface(n_jobs=3, base_jobs=4)
+                self.pipeline.set_params(ensemble=candidate)
+                self.grid['ensemble__n_jobs'] = [2]
+                with parallel_config(backend='threading', n_jobs=3), threadpool_limits(3):
+                    before = observed_counts()
+                    result = self.run_workflow('workers-' + str(legacy), legacy=legacy)
+                    self.assertEqual(observed_counts(), before)
+                    self.assertEqual(effective_n_jobs(None), 3)
+                final = [row for row in WorkerSurface.events
+                         if (row[0], row[1]) in {('fit', 20), ('predict', 8)}]
+                self.assertEqual([row[:5] for row in final],
+                                 [('fit', 20, 1, 1, 1), ('predict', 8, 1, 1, 1)])
+                self.assertTrue(all(n == 1 for row in final for _, n in row[5]))
+                cv = [row for row in WorkerSurface.events if row[0] == 'fit' and row[1] < 20]
+                self.assertTrue(cv)
+                self.assertTrue(all(row[2:4] == (2, 4) for row in cv))
+                self.assertEqual((candidate.n_jobs, candidate.base_jobs), (3, 4))
+                self.assertEqual(self.grid['ensemble__n_jobs'], [2])
+                self.assertEqual(result['selection']['parameters']['ensemble__n_jobs'], 2)
 
 
 class PhaseCLITests(unittest.TestCase):
@@ -348,15 +432,16 @@ class PhaseCLITests(unittest.TestCase):
             with self.subTest(module=module.__name__):
                 output = io.StringIO()
                 with redirect_stdout(output):
-                    module.main(['--final-native-threads', '2'])
-                self.assertIn('CV 1 per worker; final pipeline fit 2; held-out scoring 1', output.getvalue())
+                    module.main(['--final-native-threads', '1'])
+                self.assertIn('CV 1 per worker; final pipeline fit 1; held-out scoring 1', output.getvalue())
 
-    def test_three_previews_reject_nonpositive_budget(self):
+    def test_three_previews_reject_unsupported_budgets(self):
         for module in (tune_mnist, tune_mnist_multiclass, tune_mnist_svm):
-            with self.subTest(module=module.__name__), patch('sys.stderr', io.StringIO()):
-                with self.assertRaises(SystemExit) as raised:
-                    module.main(['--final-native-threads', '0'])
-                self.assertEqual(raised.exception.code, 2)
+            for value in ('0', '2'):
+                with self.subTest(module=module.__name__, value=value), patch('sys.stderr', io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        module.main(['--final-native-threads', value])
+                    self.assertEqual(raised.exception.code, 2)
 
     def test_three_run_entrypoints_forward_budget_to_shared_workflow(self):
         class StopBeforeSearch(Exception):
@@ -378,8 +463,8 @@ class PhaseCLITests(unittest.TestCase):
                         with self.assertRaises(StopBeforeSearch):
                             module.main(['--data', 'fixture.npz', '--run', '--no-cache',
                                          '--output-dir', str(Path(folder) / module.__name__),
-                                         '--final-native-threads', '2'])
-                    self.assertEqual(run.call_args.kwargs['final_native_threads'], 2)
+                                         '--final-native-threads', '1'])
+                    self.assertEqual(run.call_args.kwargs['final_native_threads'], 1)
 
 
 class RealPhaseRuntimeTests(unittest.TestCase):

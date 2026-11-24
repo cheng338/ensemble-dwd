@@ -1,7 +1,7 @@
 """Final-only recovery preserves accepted selection and held-out-use guards.
 
 Parents are newly computed tiny CV fixtures. Recovery retains their exact folds
-and accepted configured pipeline; only the explicit final thread budget changes.
+and exercises the selected pipeline with a single worker and native thread.
 """
 from contextlib import redirect_stdout
 from copy import deepcopy
@@ -66,7 +66,8 @@ def assert_completed_reports(result, training_labels, test_labels, expected_pred
         test_labels, expected_prediction)
     assert completed['held_out_classification']['accuracy'] == completed['held_out_accuracy']
     assert refit['native_runtime']['state'] == 'completed'
-    assert refit['native_runtime']['restored'] is True
+    assert refit['native_runtime']['requested_native_threads'] == 1
+    assert refit['native_runtime']['estimator_workers'] == 1
     for key in ('fit_seconds', 'pipeline_fit_seconds', 'fit_management_seconds',
                 'scoring_seconds', 'held_out_prediction_seconds',
                 'held_out_accuracy_scoring_seconds'):
@@ -100,7 +101,7 @@ class RecoveryFixture:
         self.original_cv = workflow.hashes(cv_only=True)
         self.original_handoff = self.handoff.read_bytes()
 
-    def recover(self, name='attempt', *, budget=2, resume=False, **overrides):
+    def recover(self, name='attempt', *, budget=1, resume=False, **overrides):
         args = dict(final_pipeline=self.model, X_train=self.w.X, y_train=self.w.y,
                     X_test=self.w.test_X, y_test=self.w.test_y,
                     source_run=self.source, attempt_dir=self.w.root / name,
@@ -117,14 +118,10 @@ class RecoveryFixture:
 @pytest.fixture
 def parent(tmp_path, monkeypatch):
     workflow = Workflow(tmp_path, monkeypatch)
-    # A real accepted tiny counting-estimator CV is committed. The cap changes
-    # only after its six folds, so early preflight succeeds but final guard fails.
-    workflow.cap_after_cv = 2
-    with pytest.raises(cv_checkpoint.CheckpointError, match='wrong active budget'):
-        workflow.run(budget=4)
+    workflow.pipeline.set_params(ensemble__n_jobs=2)
+    workflow.interrupt_after_handoff()
     assert event_counts(workflow) == (6, 0, 0)
     assert (workflow.root / 'run/cv-checkpoints/finalization/handoff.json').is_file()
-    workflow.cap_after_cv = None
     result = RecoveryFixture(workflow)
     assert result.original_cv and any('folds/' in p for p in result.original_cv)
     protect_cv(monkeypatch)
@@ -168,7 +165,20 @@ def test_rechecksummed_heldout_tamper_does_not_change_parent_authority(parent):
     assert not parent.barrier.exists()
 
 
-def test_corrected_budget_fits_once_retains_cv_and_restores_native_scope(parent, record_property):
+@pytest.mark.parametrize('missing', ['selected_estimator', 'final_estimator'])
+def test_rechecksummed_handoff_requires_both_model_identities(parent, missing):
+    payload = json.loads(parent.handoff.read_text())['payload']
+    del payload[missing]
+    cv_checkpoint._write_receipt(parent.handoff, payload)
+    with pytest.raises(cv_checkpoint.CheckpointError, match='^Invalid accepted final-selection handoff$'):
+        parent.recover()
+    assert event_counts(parent.w) == (6, 0, 0)
+    assert parent.w.hashes(cv_only=True) == parent.original_cv
+    assert not parent.barrier.exists()
+    assert not (parent.w.root / 'attempt').exists()
+
+
+def test_serial_recovery_fits_once_retains_cv_and_restores_native_scope(parent, record_property):
     arrays = [x.copy() for x in (parent.w.X, parent.w.y, parent.w.test_X, parent.w.test_y)]
     with threadpool_limits(limits=3):
         before = observed_counts()
@@ -177,7 +187,10 @@ def test_corrected_budget_fits_once_retains_cv_and_restores_native_scope(parent,
     assert event_counts(parent.w) == (6, 1, 1)
     assert result['model'] is not None and result['completed']['held_out_accuracy'] == 1.
     assert result['model'].get_params()['ensemble__lambd'] == 4.
-    assert all(value == 2 for path, value in PhaseSurface.fits[-1][1])
+    assert parent.model.get_params()['ensemble__n_jobs'] == 2
+    assert result['model'].get_params()['ensemble__n_jobs'] == 1
+    assert result['completed']['native_runtime']['worker_parameters'] == {'ensemble__n_jobs': 1}
+    assert all(value == 1 for path, value in PhaseSurface.fits[-1][1])
     assert all(value == 1 for path, value in PhaseSurface.predictions[-1][1])
     assert parent.barrier.is_file()
     assert_completed_reports(result, parent.w.y, parent.w.test_y, parent.w.test_y)
@@ -186,7 +199,7 @@ def test_corrected_budget_fits_once_retains_cv_and_restores_native_scope(parent,
         np.testing.assert_array_equal(current, old)
     record_property('final_recovery_work', json.dumps(dict(
         cv_fits=6, new_final_fits=1, held_out_predictions=1,
-        requested_final_threads=2, original_cv_sha256=parent.original_cv,
+        requested_final_threads=1, original_cv_sha256=parent.original_cv,
         handoff_sha256=digest(parent.handoff), caller_restored=True), sort_keys=True))
 
 
@@ -195,7 +208,6 @@ def test_completed_replay_returns_reports_not_estimator_and_does_no_work(parent)
     completion = parent.w.root / 'attempt/completed.json'
     committed = completion.read_bytes()
     before = deepcopy((PhaseSurface.fits, PhaseSurface.predictions, parent.w.scopes))
-    parent.w.cap = 1  # Completed replay must not perform a new budget probe.
     replay = parent.recover(resume=True)
     assert replay['resumed_completed'] is True and replay['model'] is None
     assert replay['completed'] == first['completed']
@@ -219,13 +231,15 @@ def test_changed_data_refuses_before_fit_or_prediction(parent, field):
     parent.unchanged()
 
 
-@pytest.mark.parametrize('change', ['parameter', 'typed-parameter', 'preprocessor'])
+@pytest.mark.parametrize('change', ['parameter', 'typed-parameter', 'selected-worker', 'preprocessor'])
 def test_changed_configured_pipeline_refuses(parent, change):
     model = clone(parent.model)
     if change == 'parameter':
         model.set_params(ensemble__lambd=1.)
     elif change == 'typed-parameter':
         model.set_params(ensemble__lambd=np.float64(4.))
+    elif change == 'selected-worker':
+        model.set_params(ensemble__n_jobs=1)
     else:
         model.set_params(transform='passthrough')
     before = event_counts(parent.w)
@@ -335,7 +349,7 @@ def test_late_non_count_runtime_drift_blocks_scoring(parent, monkeypatch):
     with threadpool_limits(limits=3):
         before = observed_counts()
         with pytest.raises(cv_checkpoint.CheckpointError,
-                           match='^Final-fit runtime changed beyond its thread budget$'):
+                           match='^Execution and coordinator common runtime differs: python$'):
             parent.recover()
         assert observed_counts() == before
     assert event_counts(parent.w) == (6, 1, 0)
@@ -344,10 +358,9 @@ def test_late_non_count_runtime_drift_blocks_scoring(parent, monkeypatch):
 
 
 def test_unsupported_budget_refuses_without_clamp_or_model_work(parent):
-    parent.w.cap = 2
     with threadpool_limits(limits=3):
         before = observed_counts()
-        with pytest.raises(cv_checkpoint.CheckpointError, match='wrong active budget'):
+        with pytest.raises(ValueError, match='final_native_threads'):
             parent.recover(budget=4)
         assert observed_counts() == before
     assert event_counts(parent.w) == (6, 0, 0)
@@ -381,7 +394,7 @@ def test_failed_final_fit_retains_original_error_and_same_attempt_can_resume(
     parent.unchanged()
 
 
-def test_failed_unscored_attempt_allows_new_budget_not_changed_same_identity(parent, monkeypatch):
+def test_failed_unscored_attempt_allows_new_serial_attempt(parent, monkeypatch):
     real_fit = PhaseSurface.fit
     failure = RuntimeError('first final attempt failed before scoring')
     def failed(self, X, y):
@@ -390,18 +403,17 @@ def test_failed_unscored_attempt_allows_new_budget_not_changed_same_identity(par
     with monkeypatch.context() as patch:
         patch.setattr(PhaseSurface, 'fit', failed)
         with pytest.raises(RuntimeError) as caught:
-            parent.recover(budget=2)
+            parent.recover(budget=1)
         assert caught.value is failure
     identity = (parent.w.root / 'attempt/identity.json').read_bytes()
     before = event_counts(parent.w)
-    with pytest.raises(cv_checkpoint.CheckpointError,
-                       match=r'^Checkpoint identity mismatch: .*identity\.json$'):
+    with pytest.raises(ValueError, match='final_native_threads'):
         parent.recover(budget=4, resume=True)
     assert event_counts(parent.w) == before
     assert (parent.w.root / 'attempt/identity.json').read_bytes() == identity
-    second = parent.recover('corrected-attempt', budget=4)
+    second = parent.recover('corrected-attempt', budget=1)
     assert second['completed']['held_out_accuracy'] == 1.
-    assert all(n == 4 for path, n in PhaseSurface.fits[-1][1])
+    assert all(n == 1 for path, n in PhaseSurface.fits[-1][1])
     assert event_counts(parent.w) == (6, 2, 1)
     parent.unchanged()
 
@@ -466,7 +478,7 @@ def test_scoring_failure_blocks_same_new_and_normal_attempts(parent, monkeypatch
         assert event_counts(parent.w) == (6, 1, 1)
     with pytest.raises(cv_checkpoint.CheckpointError,
                        match='^Held-out scoring has already been reserved;'):
-        parent.w.run(resume=True, budget=4)
+        parent.w.run(resume=True, budget=1)
     assert event_counts(parent.w) == (6, 1, 1)
     assert parent.barrier.read_bytes() == barrier
     assert refits[0].read_bytes() == retained_refit
@@ -503,7 +515,7 @@ def test_completed_child_cannot_be_bypassed_via_new_destination(parent):
     before = event_counts(parent.w)
     with pytest.raises(cv_checkpoint.CheckpointError,
                        match='^Held-out scoring has already been reserved;'):
-        parent.recover('new-path', budget=4)
+        parent.recover('new-path', budget=1)
     assert event_counts(parent.w) == before
     parent.unchanged()
 
@@ -610,7 +622,7 @@ def test_needs_review_never_publishes_accepted_handoff(tmp_path, monkeypatch):
                         stopping_reason='controlled finite test hold'))
         return original_stage(results, grid, config, state)
     monkeypatch.setattr(adaptive_search, 'next_search_stage', hold)
-    result = workflow.run(budget=2)
+    result = workflow.run(budget=1)
     assert result['review']['state'] == 'needs_review'
     assert event_counts(workflow) == (6, 0, 0)
     assert not (workflow.root / 'run/cv-checkpoints/finalization/handoff.json').exists()
@@ -618,7 +630,7 @@ def test_needs_review_never_publishes_accepted_handoff(tmp_path, monkeypatch):
 
 def test_normal_completed_run_cannot_be_forked_for_rescoring(tmp_path, monkeypatch):
     workflow = Workflow(tmp_path, monkeypatch)
-    workflow.run(budget=2)
+    workflow.run(budget=1)
     assert event_counts(workflow) == (6, 1, 1)
     prepared = RecoveryFixture(workflow)
     protect_cv(monkeypatch)
@@ -676,7 +688,7 @@ def test_real_ensemble_recovery_matches_same_configured_reference_without_cv_rep
         patch.setattr(EnsembleKernelDWD, 'fit', stop_final)
         with pytest.raises(KeyboardInterrupt) as caught, redirect_stdout(io.StringIO()):
             adaptive_search.run_adaptive_search(pipeline, grid, X, y, Xt, yt, folds, source,
-                config=config, final_native_threads=2, reuse_equivalent_folds=False)
+                config=config, final_native_threads=1, reuse_equivalent_folds=False)
         assert caught.value is original
     assert fit_rows == [24, 24, 24, 24, 48]
     retained = {str(p.relative_to(source)): digest(p)
@@ -691,21 +703,20 @@ def test_real_ensemble_recovery_matches_same_configured_reference_without_cv_rep
         return real_fit(self, data, labels, *args, **kwargs)
     monkeypatch.setattr(EnsembleKernelDWD, 'fit', count_final)
     result = final_recovery.recover_final_fit(configured, X, y, Xt, yt,
-        source, tmp_path / 'real-attempt', final_native_threads=2)
+        source, tmp_path / 'real-attempt', final_native_threads=1)
     assert fit_rows == [48] and result['model'] is not None
     reference = clone(configured)
-    with threadpool_limits(limits=2):
+    with threadpool_limits(limits=1):
         reference.fit(X, y)
+        reference_prediction = reference.predict(Xt)
+        np.testing.assert_array_equal(result['model'].decision_function(Xt), reference.decision_function(Xt))
+        np.testing.assert_array_equal(result['model'].predict(Xt), reference_prediction)
     assert fit_rows == [48, 48]
-    reference_prediction = reference.predict(Xt)
-    for actual, expected in ((result['model'].decision_function(Xt), reference.decision_function(Xt)),
-                             (result['model'].predict(Xt), reference_prediction)):
-        np.testing.assert_array_equal(actual, expected)
     assert_completed_reports(result, y, yt, reference_prediction)
     assert all(digest(source / path) == value for path, value in retained.items())
     before = len(fit_rows)
     replay = final_recovery.recover_final_fit(configured, X, y, Xt, yt,
-        source, tmp_path / 'real-attempt', final_native_threads=2, resume=True)
+        source, tmp_path / 'real-attempt', final_native_threads=1, resume=True)
     assert replay['model'] is None and replay['resumed_completed'] is True
     assert len(fit_rows) == before
     record_property('ir16_real_final_recovery', json.dumps(dict(

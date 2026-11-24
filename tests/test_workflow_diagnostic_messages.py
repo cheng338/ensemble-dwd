@@ -355,10 +355,7 @@ def test_failed_adaptive_fit_retains_primary_during_work_publication(
 
 
 def test_recovery_optional_failures_preserve_final_claim_and_replay(workflow, monkeypatch):
-    workflow.cap_after_cv = 2
-    with pytest.raises(cv_checkpoint.CheckpointError, match="wrong active budget"):
-        workflow.run(budget=4)
-    workflow.cap_after_cv = None
+    workflow.interrupt_after_handoff()
     recovery = RecoveryFixture(workflow)
     protect_cv(monkeypatch)
     for module, name in ((work_reporting, "summarize_cache_diagnostics"),

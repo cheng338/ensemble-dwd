@@ -314,7 +314,7 @@ def test_preflight_seeds_source_authority_used_before_actual_final_fit(runtime):
 
 
 @pytest.mark.parametrize('legacy', [False, True], ids=['adaptive', 'legacy'])
-def test_cap_failure_precedes_workflow_fingerprints_cv_and_persisted_artifacts(
+def test_wide_budget_rejection_precedes_workflow_fingerprints_cv_and_artifacts(
         runtime, tmp_path, monkeypatch, legacy):
     from test_final_thread_preflight import Workflow
     from test_phase_threads import PhaseSurface, PhaseTransform
@@ -339,10 +339,11 @@ def test_cap_failure_precedes_workflow_fingerprints_cv_and_persisted_artifacts(
             forbidden()
         return array(value, *args, **kwargs)
     monkeypatch.setattr(np, 'array', no_heldout_copy)
-    with pytest.raises(cp.CheckpointError):
+    with pytest.raises(ValueError, match='final_native_threads'):
         workflow.run(legacy=legacy, budget=4)
     assert workflow.cv_count == workflow.final_count == workflow.held_out_count == 0
     assert workflow.hashes() == {} and runtime.active == 3
+    assert not runtime.scopes
 
 
 @pytest.mark.parametrize('budget_kind', ['one', 'two', 'host'])

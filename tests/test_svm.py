@@ -21,6 +21,7 @@ from sklearn.utils.estimator_checks import check_estimator
 from sklearn.utils.validation import check_is_fitted
 from threadpoolctl import threadpool_limits
 
+from grid_search_test_support import fit_with_serial_refit
 from ensemble_dwd import EnsembleKernelDWD, IneligibleSelectionError, OvOClassifier
 from ensemble_dwd.svm import EnsembleKernelSVM
 
@@ -435,7 +436,7 @@ class SVMCacheAndIntegrationTests(unittest.TestCase):
         search = GridSearchCV(pipeline, candidates, cv=folds, n_jobs=2,
                               pre_dispatch=2, error_score='raise')
         with joblib.parallel_config(backend='loky', inner_max_num_threads=1):
-            search.fit(self.X, self.y)
+            fit_with_serial_refit(search, self.X, self.y)
         self.assertTrue(is_classifier(search.best_estimator_))
         assert_array_equal(search.classes_, np.unique(self.y))
         for row, parameters in enumerate(search.cv_results_['params']):

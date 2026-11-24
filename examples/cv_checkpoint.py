@@ -54,6 +54,8 @@ from search_support import (CandidateEvaluator, array_fingerprint, data_fingerpr
 from search_support import (ACCURACY_AGGREGATION, accuracy_fraction, accuracy_evidence,
                             apply_accuracy_evidence, score_ranks, score_value)
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
+from ensemble_dwd._validation import _class_mask, _label_value
+from dwd._validation import exact_sparse_uint64_target
 from work_reporting import summarize_records
 import mnist_preprocessing
 from mnist_preprocessing import UnitPixelScaler
@@ -1178,6 +1180,11 @@ def _saved_identity(path, *, schema=SCHEMA):
     return identity, payload['identity_sha256']
 
 
+def _training_labels(y):
+    # The caller can reuse these observations for every subset and pair.
+    return y if type(y) is np.ndarray else np.asarray(exact_sparse_uint64_target(y))
+
+
 def _row_diagnostics(rows, y=None):
     """Compact row identities, relative to this fitted model's training data."""
     rows = np.asarray(rows)
@@ -1187,10 +1194,10 @@ def _row_diagnostics(rows, y=None):
     result = {'size': len(rows), 'order_sha256': array_fingerprint(rows)['sha256'],
               'set_sha256': array_fingerprint(np.unique(rows))['sha256']}
     if y is not None:
-        labels = np.asarray(y)
+        labels = _training_labels(y)
         if labels.ndim == 1 and np.all((rows >= 0) & (rows < len(labels))):
             classes, counts = np.unique(labels[rows], return_counts=True)
-            result['class_counts'] = [{'label': json_safe(label), 'count': int(count)}
+            result['class_counts'] = [{'label': json_safe(_label_value(label)), 'count': int(count)}
                                       for label, count in zip(classes, counts)]
     return result
 
@@ -1223,6 +1230,10 @@ def diagnostics(estimator, y=None):
     if solver:
         result['solver_diagnostics'] = solver
     final = getattr(estimator, 'final_estimator_', None)
+    fitted_ovo = isinstance(estimator, OvOClassifier) and hasattr(estimator, 'estimators_')
+    if y is not None and (fitted_ovo or hasattr(estimator, 'subset_indices_')
+                          or hasattr(estimator, 'selected_indices_')):
+        y = _training_labels(y)
     if hasattr(estimator, 'subset_indices_'):
         result['subset_sizes'] = [len(rows) for rows in estimator.subset_indices_]
         result['subset_rows'] = [_row_diagnostics(rows, y) for rows in estimator.subset_indices_]
@@ -1231,18 +1242,18 @@ def diagnostics(estimator, y=None):
         result['selected_rows'] = _row_diagnostics(estimator.selected_indices_, y)
     if final is not None and final is not estimator:
         result['final_estimator'] = diagnostics(final)
-    if isinstance(estimator, OvOClassifier) and hasattr(estimator, 'estimators_'):
+    if fitted_ovo:
         # Only OvO's fitted children represent class pairs. Binary ensembles
         # already summarize their base fits in base_diagnostics_.
         result['pairwise_estimators'] = []
         for pair, child in zip(estimator.pairs_, estimator.estimators_, strict=True):
             pair_y = None
             if y is not None:
-                labels = np.asarray(y)
-                included = (labels == pair[0]) | (labels == pair[1])
-                pair_y = np.where(labels[included] == pair[0], 1, -1)
+                first = _class_mask(y, pair[0])
+                included = first | _class_mask(y, pair[1])
+                pair_y = np.where(first[included], 1, -1)
             result['pairwise_estimators'].append(
-                {'pair': json_safe(pair), 'diagnostics': diagnostics(child, pair_y)})
+                {'pair': json_safe(tuple(map(_label_value, pair))), 'diagnostics': diagnostics(child, pair_y)})
     return result
 
 

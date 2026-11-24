@@ -23,8 +23,8 @@ from search_support import (_resolved_public_path, data_fingerprint, exception_m
                             json_safe, write_json_atomic)
 
 
-_HANDOFF_SCHEMA = 'accepted-final-handoff-role-v2'
-_ATTEMPT_SCHEMA = 'final-only-attempt-role-v2'
+_HANDOFF_SCHEMA = 'accepted-final-handoff-role-v3'
+_ATTEMPT_SCHEMA = 'final-only-attempt-role-v3'
 
 
 def _error(message):
@@ -142,6 +142,7 @@ def _handoff(folder, parent, parent_digest):
     if (value.get('schema') != _HANDOFF_SCHEMA
             or value.get('artifact') != 'accepted_final_selection'
             or value.get('review_state') != 'accepted'
+            or 'selected_estimator' not in value or 'final_estimator' not in value
             or not _same(value.get('parent_provenance'), parent['provenance'])
             or not _same(value.get('training'), parent['data'])):
         _error('Invalid accepted final-selection handoff')
@@ -173,7 +174,7 @@ def assert_normal_final_allowed(checkpoint):
         _error('An explicit final-only attempt exists; ordinary resume cannot ignore it')
 
 
-def publish_final_handoff(checkpoint, model, X_test, y_test, selection, review):
+def publish_final_handoff(checkpoint, model, X_test, y_test, selection, review, *, source_may_share=False):
     """Commit the accepted branch's exact configured model, before any fit.
 
     The accepted workflow branch is the decision producer. This function does
@@ -218,7 +219,12 @@ def publish_final_handoff(checkpoint, model, X_test, y_test, selection, review):
                 or selection.get('cv_seeds') != list(checkpoint.cv_seeds)):
             _error('Final sampling seed differs from the accepted selection')
         parameters[checkpoint.seed_parameter] = sampling['refit_seed']
-    expected = clone(checkpoint.estimator).set_params(**parameters)
+    expected, expected_may_share = phase_threads.clone_final_model(
+        clone, checkpoint.estimator, parameters,
+        original_risks=checkpoint.provenance['settings'].get('clone_risk_paths', ()))
+    source_may_share = source_may_share or expected_may_share
+    selected_identity = checkpoint_module._stable(expected)
+    expected_resources = phase_threads.configure_final_model(expected, source_may_share=source_may_share)
     model_identity = checkpoint_module._stable(model)
     if not _same(model_identity, checkpoint_module._stable(expected)):
         _error('Configured final model differs from the accepted parameters')
@@ -231,12 +237,16 @@ def publish_final_handoff(checkpoint, model, X_test, y_test, selection, review):
         'parent_provenance': parent['provenance'], 'sources': sources,
         'training': parent['data'], 'held_out': held_out,
         'held_out_identity': held_out_identity,
-        'final_estimator': model_identity,
+        'selected_estimator': selected_identity, 'final_estimator': model_identity,
         'selection_identity': checkpoint_module._stable(selection),
         'review_identity': checkpoint_module._stable(review),
         'selection': json_safe(selection), 'review': json_safe(review),
         'original_final_native_threads': checkpoint.provenance['settings']['final_native_threads'],
     }
+    if 'conic_threads' in expected_resources:
+        value['clarabel_cap_applied'] = True
+    if source_may_share:
+        value['clone_may_share'] = True
     path = checkpoint.folder / 'finalization' / 'handoff.json'
     value = _immutable(path, value)
     return {'path': str(path), 'parent_identity_sha256': digest,
@@ -299,12 +309,14 @@ def _check_current(folder, parent, handoff, arrays, *, frozen_runtime=None):
     return _runtime(parent, frozen_runtime=frozen_runtime)
 
 
-def _failure(attempt_dir, identity, invocation, phase, error):
+def _failure(attempt_dir, identity, invocation, phase, error, runtime):
     """Failure reporting must never replace a fit/predict/interrupt exception."""
     try:
         value = {'identity_sha256': identity, 'artifact': 'failed_final_invocation',
                  'invocation': invocation, 'phase': phase, 'state': 'failed',
                  'exception_type': type(error).__name__, 'message': str(error)}
+        if 'timing_unavailable' in runtime:
+            value['native_runtime'] = runtime
         _immutable(attempt_dir / 'invocations' / (invocation + '.json'), value)
         write_json_atomic(attempt_dir / 'status.json', value, replace=True)
     except BaseException:
@@ -325,7 +337,7 @@ def _optional_report(factory):
 
 def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
                       source_run, attempt_dir, *, final_native_threads, resume=False):
-    """Run only an explicit budget-specific final fit and held-out evaluation.
+    """Fit the accepted final clone and score held-out data under its recorded policy.
 
     Supply the already selected, unfitted pipeline. Its typed identity must
     exactly match the handoff; parameters are never reconstructed from JSON.
@@ -338,6 +350,7 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
     """
     if type(resume) is not bool:
         raise ValueError('resume must be boolean')
+    requested = phase_threads.validate_timed_native_threads(final_native_threads)
     source_run, attempt_dir = _resolved_public_path(source_run), _resolved_public_path(attempt_dir)
     source_io = checkpoint_module._io_path(source_run)
     output = checkpoint_module._io_path(attempt_dir)
@@ -347,25 +360,33 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
     folder = source_io / 'cv-checkpoints'
     if not folder.is_dir() or not (folder / 'identity.json').is_file():
         _error('The source is not an existing checkpointed adaptive run')
-    model = clone(final_pipeline)
-    requested = phase_threads.validate_final_native_threads(final_native_threads, model)
-    model_identity = checkpoint_module._stable(model)
+    model, caller_may_share = phase_threads.clone_final_model(clone, final_pipeline)
+    selected_identity = checkpoint_module._stable(model)
     arrays = _own_data(X_train, y_train, X_test, y_test)
     with checkpoint_module._Lease(folder / 'session.lock'), threadpool_limits(limits=1):
         parent, parent_digest = _parent(folder)
         _completed_parent(folder, parent_digest)
         handoff, handoff_digest = _handoff(folder, parent, parent_digest)
         final_runtime = checkpoint_module._stable(_check_current(folder, parent, handoff, arrays))
+        if not _same(selected_identity, handoff['selected_estimator']):
+            _error('Supplied configured pipeline differs from the accepted final model')
+        source_may_share = caller_may_share or handoff.get('clone_may_share', False)
+        runtime_receipt = phase_threads.configure_final_model(
+            model, accepted_cap=handoff.get('clarabel_cap_applied', False), source_may_share=source_may_share)
+        model_identity = checkpoint_module._stable(model)
         if not _same(model_identity, handoff['final_estimator']):
             _error('Supplied configured pipeline differs from the accepted final model')
         identity = {
             'schema': _ATTEMPT_SCHEMA, 'parent_identity_sha256': parent_digest,
             'handoff_sha256': handoff_digest, 'attempt_dir': str(attempt_dir),
-            'final_native_threads': requested, 'final_estimator': model_identity,
+            'final_native_threads': requested,
+            'selected_estimator': selected_identity, 'final_estimator': model_identity,
             'training': handoff['training'], 'held_out': handoff['held_out'],
             'runtime': final_runtime, 'sources': handoff['sources'],
             'cv_execution_runtime_sha256': checkpoint_module._digest(parent['runtime']),
         }
+        if source_may_share:
+            identity['clone_may_share'] = True
         replay_complete = resume and (output / 'completed.json').exists()
         if replay_complete:
             # No new execution: authenticate the historical role pin, and keep
@@ -432,14 +453,14 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
             _check_current(folder, parent, handoff, arrays, frozen_runtime=final_runtime)
             if not _same(checkpoint_module._stable(model), model_identity):
                 _error('Configured pipeline changed before fitting')
-            runtime_receipt = {}
-            started = perf_counter()
-            with phase_threads.final_fit_threads(requested, model, runtime_receipt,
-                                                frozen_runtime=final_runtime):
-                pipeline_started = perf_counter()
+            started = None if 'timing_unavailable' in runtime_receipt else perf_counter()
+            with phase_threads.timed_model_phase(), phase_threads.final_fit_threads(
+                    requested, model, runtime_receipt, frozen_runtime=final_runtime):
+                pipeline_started = None if started is None else perf_counter()
                 model.fit(*arrays[:2])
-                pipeline_fit_seconds = perf_counter() - pipeline_started
-            fit_seconds = perf_counter() - started
+                pipeline_fit_seconds = None if pipeline_started is None else perf_counter() - pipeline_started
+            fit_seconds = None if started is None else perf_counter() - started
+            management_seconds = None if started is None else fit_seconds - pipeline_fit_seconds
             phase = 'final_diagnostics'
             _check_current(folder, parent, handoff, arrays, frozen_runtime=final_runtime)
             # This diagnostic extraction is strict in the original final path.
@@ -449,7 +470,7 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
                 'invocation': invocation, 'state': 'completed',
                 'selection': handoff['selection'], 'wall_seconds': fit_seconds,
                 'pipeline_fit_seconds': pipeline_fit_seconds,
-                'fit_management_seconds': fit_seconds - pipeline_fit_seconds,
+                'fit_management_seconds': management_seconds,
                 'diagnostics': checkpoint_module.diagnostics(model, arrays[1]),
                 'native_runtime': runtime_receipt, 'execution_runtime': final_runtime,
                 'cv_execution_runtime_sha256': checkpoint_module._digest(parent['runtime']),
@@ -464,12 +485,13 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
             phase = 'held_out_scoring'
             _check_current(folder, parent, handoff, arrays, frozen_runtime=final_runtime)
             claim = _reserve_score(folder, parent_digest, handoff_digest, actor)
-            started = perf_counter()
-            prediction = model.predict(arrays[2])
-            prediction_finished = perf_counter()
-            accuracy = float(accuracy_score(arrays[3], prediction))
-            scoring_finished = perf_counter()
-            scoring_seconds = scoring_finished - started
+            with phase_threads.timed_model_phase():
+                started = None if 'prediction_timing_unavailable' in runtime_receipt else perf_counter()
+                prediction = model.predict(arrays[2])
+                prediction_finished = perf_counter()
+                accuracy = float(accuracy_score(arrays[3], prediction))
+                scoring_finished = perf_counter()
+            scoring_seconds = None if started is None else scoring_finished - started
             classification = _optional_report(
                 lambda: evaluation_reporting.classification_report(arrays[3], prediction))
             phase = 'completion_commit'
@@ -477,12 +499,12 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
             value = {
                 'identity_sha256': digest, 'artifact': 'completed_final_attempt',
                 'parent_identity_sha256': parent_digest, 'handoff_sha256': handoff_digest,
-                'invocation': invocation, 'final_native_threads': requested,
+                'invocation': invocation, 'final_native_threads': None if fit_seconds is None else requested,
                 'selection': handoff['selection'], 'held_out_accuracy': accuracy,
                 'fit_seconds': fit_seconds, 'scoring_seconds': scoring_seconds,
                 'pipeline_fit_seconds': pipeline_fit_seconds,
-                'fit_management_seconds': fit_seconds - pipeline_fit_seconds,
-                'held_out_prediction_seconds': prediction_finished - started,
+                'fit_management_seconds': management_seconds,
+                'held_out_prediction_seconds': None if started is None else prediction_finished - started,
                 'held_out_accuracy_scoring_seconds': scoring_finished - prediction_finished,
                 'held_out_classification': classification,
                 'refit': refit,
@@ -492,6 +514,9 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
                 'cv_fits_performed': 0, 'full_pipeline_fit_calls': 1,
                 'held_out_predict_calls': 1,
             }
+            for key in ('timing_unavailable', 'prediction_timing_unavailable'):
+                if key in runtime_receipt:
+                    value[key] = runtime_receipt[key]
             _immutable(output / 'completed.json', value)
             # A supplementary status failure cannot undo the committed result.
             try:
@@ -502,5 +527,5 @@ def recover_final_fit(final_pipeline, X_train, y_train, X_test, y_test,
             return {'model': model, 'resumed_completed': False, 'completed': value,
                     'attempt_dir': attempt_dir, 'source_run': source_run}
         except BaseException as error:
-            _failure(output, digest, invocation, phase, error)
+            _failure(output, digest, invocation, phase, error, runtime_receipt)
             raise

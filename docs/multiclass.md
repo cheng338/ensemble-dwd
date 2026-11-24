@@ -164,14 +164,11 @@ With one seed, ten classes and five folds, the initial 125-candidate stage
 permits up to 168,750 DWD learner fits before caching; the 405-candidate stage
 permits up to 546,750. Adaptive stages are additional work within the total
 candidate budget.
-The preview prints these separately. Optional `--final-native-threads N`
-sets the native BLAS/OpenMP pool limit for the selected full-training pipeline
-fit, including all sequential class pairs. It defaults to 1; outer CV `--jobs`
-also defaults to 1 and can be adjusted independently. CV workers and held-out
-prediction keep one native thread. A wider final budget requires exposed nested
-`n_jobs` settings to remain explicitly 1 and is not a total CPU or core-affinity
-limit. See [native threads by phase](method.md#native-threads-by-phase) for
-rounding, runtime records and resume restrictions.
+The preview prints these separately. The selected full-training fit and
+held-out prediction use one worker and one native thread, including every
+class pair and base learner. The optional `--final-native-threads` argument
+accepts only 1. Outer CV `--jobs` defaults to 1 and controls independent CV
+tasks. See [native threads by phase](method.md#native-threads-by-phase).
 
 Pair fits stay sequential within each outer CV worker. No data are loaded
 without `--run`.

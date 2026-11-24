@@ -1,8 +1,9 @@
 # ensemble-dwd validation
 
-Ensemble DWD 0.4.0 requires DWD 2.0.1. The [package metadata](pyproject.toml)
-and [wheel hash lock](requirements-dwd.txt) identify the current pair. Results
-below apply to the artifacts and workloads named in each entry.
+The [package metadata](pyproject.toml) pins Ensemble DWD 0.4.1 to DWD 2.0.2.
+The [wheel hash lock](requirements-dwd.txt) identifies the native Windows and
+portable DWD 2.0.2 wheels for this release. Results below
+apply to the artifacts and workloads named in each entry.
 
 ## 2026-11-19 paired candidate comparison
 

@@ -410,12 +410,12 @@ class AdaptiveWorkReportingTests(WorkReportingFixture):
         folder = new_run_directory(self.root / 'publication-success')
         with patch.object(adaptive_search, 'write_json_atomic', fail_summary_only), \
                 patch.object(cv_checkpoint, '_fit_fold', wraps=cv_checkpoint._fit_fold) as fits, \
-                patch.object(adaptive_search, 'clone', wraps=adaptive_search.clone) as refits:
+                patch.object(Pipeline, 'fit', autospec=True, side_effect=Pipeline.fit) as model_fits:
             result = self.execute(folder)
         self.assertIsNotNone(result['model'])
         self.assertIsNotNone(result['completed'])
         self.assertEqual(fits.call_count, 4)
-        self.assertEqual(refits.call_count, 1)
+        self.assertEqual(sum(len(call.args[1]) == len(self.X) for call in model_fits.call_args_list), 1)
         self.assertEqual(result['work_summary']['state'], 'completed')
         self.assertTrue((folder / 'completed.json').exists())
         failed_folder = new_run_directory(self.root / 'publication-interruption')
@@ -433,12 +433,12 @@ class AdaptiveWorkReportingTests(WorkReportingFixture):
                     patch.object(adaptive_search, helper,
                                  side_effect=ValueError('controlled reporting calculation failure')), \
                     patch.object(cv_checkpoint, '_fit_fold', wraps=cv_checkpoint._fit_fold) as fits, \
-                    patch.object(adaptive_search, 'clone', wraps=adaptive_search.clone) as refits:
+                    patch.object(Pipeline, 'fit', autospec=True, side_effect=Pipeline.fit) as model_fits:
                 result = self.execute(folder)
             self.assertIsNotNone(result['model'])
             self.assertIsNotNone(result['completed'])
             self.assertEqual(fits.call_count, 4)
-            self.assertEqual(refits.call_count, 1)
+            self.assertEqual(sum(len(call.args[1]) == len(self.X) for call in model_fits.call_args_list), 1)
             self.assertTrue((folder / 'completed.json').exists())
             self.assertTrue((folder / 'cv-checkpoints/artifacts/completed.json').exists())
             with patch.object(cv_checkpoint, '_fit_fold', side_effect=AssertionError('completed replay CV')), \

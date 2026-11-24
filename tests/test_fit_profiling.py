@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from joblib import parallel_config
 from numpy.testing import assert_array_equal
 from sklearn.multiclass import OneVsOneClassifier
 from threadpoolctl import threadpool_limits
@@ -16,6 +17,7 @@ from threadpoolctl import threadpool_limits
 from ensemble_dwd import EnsembleKernelDWD
 from ensemble_dwd._failure_context import failure_context
 from ensemble_dwd.profiling import fit_profile, _stage
+from profiling_test_support import synthetic_fit_profile
 
 
 class SmallDWD:
@@ -34,12 +36,14 @@ class SmallDWD:
 
 class FitProfilingTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(parallel_config(backend="sequential", n_jobs=1))
+        self.enterContext(threadpool_limits(limits=1))
         self.X = np.column_stack((np.linspace(-2., 2., 24), np.cos(np.arange(24))))
         self.y = np.tile([0, 1], 12)
 
     def model(self, **options):
         arguments = dict(M=2, theta=.5, sv_selection_ratio=1., lambd=.05,
-                         gamma=.2, max_iter=3, stopping="fixed", random_state=17)
+                         gamma=.2, max_iter=3, stopping="fixed", random_state=17, base_jobs=1)
         arguments.update(options)
         return EnsembleKernelDWD(**arguments)
 
@@ -55,12 +59,11 @@ class FitProfilingTests(unittest.TestCase):
         self.assertFalse(any("profile" in key for key in model.get_params()))
 
     def test_real_fits_have_exact_state_and_training_predictions(self):
-        with threadpool_limits(limits=1):
-            original = self.fake_fit()
-            with fit_profile() as profile:
-                measured = self.fake_fit()
-            assert_array_equal(original.decision_function(self.X), measured.decision_function(self.X))
-            assert_array_equal(original.predict(self.X), measured.predict(self.X))
+        original = self.fake_fit()
+        with fit_profile() as profile:
+            measured = self.fake_fit()
+        assert_array_equal(original.decision_function(self.X), measured.decision_function(self.X))
+        assert_array_equal(original.predict(self.X), measured.predict(self.X))
         for name in ("classes_", "selected_indices_", "consensus_scores_", "n_iter_", "converged_"):
             assert_array_equal(getattr(original, name), getattr(measured, name))
         for left, right in zip(original.subset_indices_, measured.subset_indices_):
@@ -102,7 +105,7 @@ class FitProfilingTests(unittest.TestCase):
         self.assertEqual(profile.as_dict()["stages"]["fit"]["calls"], 1)
 
     def test_real_cache_hit_records_reuse_without_base_fit_time(self):
-        with tempfile.TemporaryDirectory() as directory, threadpool_limits(limits=1), \
+        with tempfile.TemporaryDirectory() as directory, \
                 patch("ensemble_dwd.estimator._runtime_provenance", return_value={"fixture": "profile"}):
             with fit_profile() as cold:
                 first = self.fake_fit(cache_dir=directory, store_base_estimators=False)
@@ -189,7 +192,7 @@ class FitProfilingTests(unittest.TestCase):
                 self.fake_fit()
             return own.as_dict()
         with patch("ensemble_dwd.estimator.KernGDWD", SmallDWD):
-            with fit_profile() as parent, ThreadPoolExecutor(max_workers=1) as executor:
+            with synthetic_fit_profile() as parent, ThreadPoolExecutor(max_workers=1) as executor:
                 child_report = executor.submit(copy_context().run, child).result()
                 self.fake_fit()
         self.assertEqual(parent.as_dict()["counts"]["fit_completed"], 1)
@@ -202,7 +205,7 @@ class FitProfilingTests(unittest.TestCase):
                 self.fake_fit()
             return own.as_dict()
         async def main():
-            with fit_profile() as parent:
+            with synthetic_fit_profile() as parent:
                 child_report = await asyncio.create_task(child())
                 self.fake_fit()
             return parent.as_dict(), child_report

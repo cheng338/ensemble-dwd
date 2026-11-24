@@ -1,31 +1,86 @@
 """One-versus-one classification with the dissertation's maximum-wins rule."""
 
 from itertools import combinations
+from mmap import mmap
 from numbers import Integral
 
 import numpy as np
 from joblib import Parallel, delayed
-from sklearn.base import BaseEstimator, ClassifierMixin, clone
+from joblib.parallel import get_active_backend
+from sklearn.base import BaseEstimator, clone
+from dwd._validation import ExactLabelClassifierMixin, _discrete_training_labels, exact_sparse_uint64_target
 from sklearn.utils import get_tags
-from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .estimator import IneligibleSelectionError, IneligibleSubsetError, _positive_integer
 from ._failure_context import copy_failure_context
-from ._validation import _reject_complex
+from ._validation import _class_mask, _label_value, _reject_complex
 
 
 def _pair_context(pair):
-    labels = tuple(label.item() if isinstance(label, np.generic) else label
-                   for label in pair)
+    labels = tuple(map(_label_value, pair))
     return f"OVO pair {labels!r}"
 
 
-def _fit_pair(estimator, X, y, indices, pair):
+def _backing_memmap(array):
+    """Find the NumPy map joblib would reopen, including through ndarray views."""
+    base = array
+    seen = set()
+    while (parent := getattr(base, "base", None)) is not None and not isinstance(parent, mmap):
+        if id(base) in seen:
+            return None
+        seen.add(id(base))
+        base = parent
+    return base if isinstance(base, np.memmap) and parent is not None else None
+
+
+def _needs_snapshot(array, backing):
+    if backing is None:
+        return False
+    if backing.mode == "c":
+        return True
+    if array.flags.c_contiguous or array.flags.f_contiguous or min(array.strides) >= 0:
+        return False
+    return any(stride < 0 and size > 1 for stride, size in zip(array.strides, array.shape))
+
+
+def _pair_worker_inputs(X, y, n_jobs):
+    """Preserve the parent's feature rows and labels across joblib dispatch."""
+    if n_jobs == 1 or (X.base is None and y.base is None):
+        return X, y, False
+    X_base = _backing_memmap(X)
+    y_base = _backing_memmap(y)
+    copy_X = _needs_snapshot(X, X_base)
+    copy_y = _needs_snapshot(y, y_base)
+    transpose = False
+    if X_base is not None and not copy_X and X.flags.c_contiguous != X.flags.f_contiguous:
+        # joblib #1934 selects the backing map's order for contiguous views.
+        file_is_fortran = X_base.ndim > 1 and X_base.flags.f_contiguous
+        transpose = X.flags.f_contiguous != file_is_fortran
+    if not (copy_X or copy_y or transpose):
+        return X, y, False
+    backend, _ = get_active_backend()
+    if getattr(backend, "supports_sharedmem", False):
+        return X, y, False
+    if n_jobs is None:
+        n_jobs = Parallel().n_jobs
+    if backend.effective_n_jobs(n_jobs) == 1:
+        return X, y, False
+    # Snapshot parent-private data and reversed views once before the pair loop.
+    if copy_y:
+        y = np.array(y, copy=True, order="K")
+    if copy_X:
+        X = np.array(X, copy=True, order="K")
+    return X.T if transpose else X, y, transpose
+
+
+def _fit_pair(estimator, X, y, indices, pair, transpose=False):
     """Materialize only the pair being fitted in the current worker."""
     try:
+        if transpose:
+            X = X.T
         model = clone(estimator)
-        pair_y = np.where(y[indices] == pair[0], 1, -1)
+        pair_y = np.where(_class_mask(y[indices], pair[0]), 1, -1)
         model.fit(X[indices], pair_y)
         return model
     except IneligibleSubsetError as exc:
@@ -47,7 +102,7 @@ def _fit_pair(estimator, X, y, indices, pair):
         raise
 
 
-class OvOClassifier(ClassifierMixin, BaseEstimator):
+class OvOClassifier(ExactLabelClassifierMixin, BaseEstimator):
     """Fit one binary estimator per class pair and predict by maximum wins.
 
     This implements the multiclass extension in Chang Cheng's dissertation:
@@ -159,9 +214,10 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
         try:
             self._validate_options()
             _reject_complex(X, "Features")
+            y = exact_sparse_uint64_target(y)
             _reject_complex(y, "Labels")
             X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
-            check_classification_targets(y)
+            y = _discrete_training_labels(y)
             classes = np.unique(y)
             if len(classes) < 2:
                 raise ValueError("OvOClassifier requires at least 2 classes; got 1 class.")
@@ -169,11 +225,14 @@ class OvOClassifier(ClassifierMixin, BaseEstimator):
                                      dtype=np.intp)
             pairs = tuple((classes[first], classes[second])
                           for first, second in class_pairs)
-            indices = tuple(np.flatnonzero((y == first) | (y == second))
+            indices = tuple(np.flatnonzero(_class_mask(y, first) | _class_mask(y, second))
                             for first, second in pairs)
             if pair_dispatch is None:
-                models = Parallel(n_jobs=self.n_jobs, pre_dispatch="n_jobs", batch_size=1)(
-                    delayed(_fit_pair)(self.estimator, X, y, rows, pair)
+                parallel = Parallel(n_jobs=self.n_jobs, pre_dispatch="n_jobs", batch_size=1)
+                # Parallel resolves inherited counts and converts them to integers.
+                worker_X, worker_y, transpose = _pair_worker_inputs(X, y, parallel.n_jobs)
+                models = parallel(
+                    delayed(_fit_pair)(self.estimator, worker_X, worker_y, rows, pair, transpose)
                     for rows, pair in zip(indices, pairs)
                 )
             else:

@@ -11,8 +11,9 @@ from threadpoolctl import threadpool_info, threadpool_limits
 from ensemble_dwd import EnsembleKernelDWD
 from ensemble_dwd import _parallel_base as parallel
 from ensemble_dwd import estimator
+from ensemble_dwd import profiling
 from ensemble_dwd._failure_context import failure_context
-from ensemble_dwd.profiling import fit_profile
+from profiling_test_support import synthetic_fit_profile
 
 
 @contextmanager
@@ -68,9 +69,11 @@ def failed_refit(monkeypatch):
                     return submit(len(accepted) + 1, enqueue, tuple(accepted))
 
             monkeypatch.setattr(parallel, "ThreadPoolExecutor", FaultPool)
+            clock = profiling.perf_counter
             with pytest.raises(type(injected)) as caught:
-                with fit_profile() if collect else nullcontext() as profile:
+                with synthetic_fit_profile() if collect else nullcontext() as profile:
                     model.fit(X, y)
+            assert profiling.perf_counter is clock
             assert caught.value is injected
             assert not [name for name in vars(model) if name.endswith("_")]
             assert accepted and all(future.done() for future in accepted)

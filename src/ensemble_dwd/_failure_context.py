@@ -11,6 +11,8 @@ from contextvars import ContextVar
 
 import numpy as np
 
+from ._validation import _class_mask, _label_value
+
 
 _MAX_INTEGER = (1 << 63) - 1
 _MAX_LABEL_LENGTH = 160
@@ -68,7 +70,7 @@ def _label(value):
         result = float(value)
         return result if math.isfinite(result) else None
     if kind is str or kind is np.str_:
-        return str(value) if len(value) <= _MAX_LABEL_LENGTH else None
+        return _label_value(value) if len(value) <= _MAX_LABEL_LENGTH else None
     # Bytes and unfamiliar labels are deliberately not stringified.
     return None
 
@@ -194,7 +196,7 @@ def _class_counts(y, classes, indices=None):
         if indices.size and (np.min(indices) < 0 or np.max(indices) >= y.size):
             return None
         y = y[indices]
-    counts = [int(np.count_nonzero(y == label)) for label in classes]
+    counts = [int(np.count_nonzero(_class_mask(y, label))) for label in classes]
     return counts if sum(counts) == y.size else None
 
 

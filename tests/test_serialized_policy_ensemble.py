@@ -25,6 +25,7 @@ from sklearn.base import clone
 from sklearn.model_selection import GridSearchCV, ParameterGrid
 from sklearn.pipeline import Pipeline
 
+from grid_search_test_support import fit_with_serial_refit
 from dwd.gen_kern_dwd import KernGDWD
 from ensemble_dwd import EnsembleKernelDWD, OvOClassifier
 import ensemble_dwd.estimator as estimator_module
@@ -324,7 +325,8 @@ def test_real_cv_from_missing_template_matches_fresh_current_default(q):
     searches = []
     for subject in (missing, model(q=q, max_iter=2)):
         search = GridSearchCV(subject, {"lambd": [.1]}, cv=2, n_jobs=1,
-                              error_score="raise", return_train_score=True).fit(X, Y)
+                              error_score="raise", return_train_score=True)
+        fit_with_serial_refit(search, X, Y)
         searches.append(search)
         assert_current_fit(search.best_estimator_)
     a, b = searches

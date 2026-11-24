@@ -10,7 +10,8 @@ from sklearn.base import clone
 from threadpoolctl import threadpool_limits,threadpool_info
 from dwd.gen_kern_dwd import KernGDWD
 from ensemble_dwd import EnsembleKernelDWD,OvOClassifier
-from ensemble_dwd.profiling import fit_profile
+from ensemble_dwd import profiling
+from profiling_test_support import synthetic_fit_profile
 from ensemble_dwd._failure_context import failure_context
 import ensemble_dwd._parallel_base as parallel
 
@@ -42,7 +43,7 @@ class ParallelBaseIntegrationTests(unittest.TestCase):
     def test_cache_miss_hit_separate_resource_key_fresh_final(self):
         with tempfile.TemporaryDirectory() as d:
             a=model(cache_dir=d).fit(self.X,self.y);self.assertFalse(a.cache_hit_)
-            with fit_profile() as profile:b=model(cache_dir=d).fit(self.X,self.y)
+            with synthetic_fit_profile() as profile:b=model(cache_dir=d).fit(self.X,self.y)
             self.assertTrue(b.cache_hit_);self.assertEqual(a.cache_key_,b.cache_key_)
             self.assertIsNot(a.final_estimator_,b.final_estimator_)
             self.assertEqual(profile.as_dict()['counts']['reused_base_learners'],5)
@@ -51,13 +52,22 @@ class ParallelBaseIntegrationTests(unittest.TestCase):
             self.assertFalse(c.cache_hit_);self.assertNotEqual(c.cache_key_,a.cache_key_)
             np.testing.assert_array_equal(a.predict(self.X),b.predict(self.X))
     def test_profile_counts_wall_and_worker_time_are_separate(self):
-        with fit_profile() as p:m=model().fit(self.X,self.y)
+        clock = profiling.perf_counter
+        with synthetic_fit_profile() as p:
+            model().fit(self.X, self.y)
+        self.assertIs(profiling.perf_counter, clock)
         r=p.as_dict();self.assertEqual(r['counts']['base_fit_completed'],5)
         self.assertEqual(r['counts']['base_scoring_completed'],5);self.assertEqual(r['counts']['final_fit_completed'],1)
         self.assertEqual(len(r['parallel_worker_profiles']),5)
         self.assertNotIn('base_fit',r['stages'])
         self.assertIn('parallel_base_work',r['stages'])
-        self.assertLessEqual(sum(s['self_seconds'] for s in r['stages'].values()),r['context_wall_seconds']*1.01)
+        for profile in [r, *r['parallel_worker_profiles']]:
+            elapsed = profile['context_wall_seconds']
+            self.assertGreaterEqual(elapsed, 1)
+            self.assertEqual(elapsed, int(elapsed))
+        self.assertEqual(sum(s['self_seconds'] for s in r['stages'].values()),
+                         r['stages']['fit']['inclusive_seconds'])
+        self.assertLess(r['stages']['fit']['inclusive_seconds'], r['context_wall_seconds'])
     def test_storage_false_and_jobs_greater_than_M(self):
         m=model(base_jobs=12,store_base_estimators=False).fit(self.X,self.y)
         self.assertIsNone(m.estimators_);self.assertEqual(m.base_execution_['effective_jobs'],5)
@@ -96,7 +106,7 @@ class ParallelBaseIntegrationTests(unittest.TestCase):
                 if number==1:raise typ('injected worker failure')
                 return original(instance,X,y,*args,**kw)
             m=model()
-            with fit_profile() as p:
+            with synthetic_fit_profile() as p:
                 try:
                     with patch.object(KernGDWD,'fit',failing):m.fit(self.X,self.y)
                 except BaseException as e:err=e
@@ -120,7 +130,7 @@ class ParallelBaseIntegrationTests(unittest.TestCase):
                 raise KeyboardInterrupt('injected parent interruption')
             return original(f,*a,**kw)
         m=model();error=None
-        with fit_profile() as p:
+        with synthetic_fit_profile() as p:
             try:
                 with patch.object(Future,'result',stop_once):m.fit(self.X,self.y)
             except KeyboardInterrupt as e:error=e
@@ -174,7 +184,7 @@ class ParallelBaseIntegrationTests(unittest.TestCase):
             if started.wait(timeout=5):_thread.interrupt_main()
         watcher=threading.Thread(target=interrupt);watcher.start();m=model()
         try:
-            with patch.object(KernGDWD,'fit',slow),fit_profile() as p:
+            with patch.object(KernGDWD,'fit',slow),synthetic_fit_profile() as p:
                 with self.assertRaises(KeyboardInterrupt) as got:m.fit(self.X,self.y)
         finally:watcher.join()
         self.assertEqual(fitted_names(m),[])

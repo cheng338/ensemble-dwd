@@ -1,12 +1,23 @@
 """Scoped final-fit thread budgets for the search examples."""
 import argparse
+from collections.abc import Mapping, Sequence, Set
 from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
+import json
 from numbers import Integral
+import os
 from pathlib import Path
+import sys
+from types import MethodType
 
+import numpy as np
+from joblib import parallel_config
+from sklearn.base import BaseEstimator, MetaEstimatorMixin
+from sklearn.feature_selection import SelectFromModel
+from sklearn.pipeline import Pipeline
 from threadpoolctl import threadpool_limits
+from ensemble_dwd import OvOClassifier
 
 
 def validate_final_native_threads(value, estimator=None):
@@ -23,18 +34,287 @@ def validate_final_native_threads(value, estimator=None):
     return value
 
 
-def _cli_positive(value):
+def validate_timed_native_threads(value):
+    if validate_final_native_threads(value) != 1:
+        raise ValueError('Timed final fitting requires final_native_threads=1.')
+    return 1
+
+
+def _resource_key(path):
+    """Use sklearn labels when they round-trip, and JSON arrays for ambiguous paths."""
+    if not path:
+        return '<root>'
+    name = '__'.join(path)
+    if all(path) and name != '<root>' and not name.startswith('[') and tuple(name.split('__')) == path:
+        return name
+    return json.dumps(path, ensure_ascii=True, separators=(',', ':'))
+
+
+def _unavailable_model_timing(path, reason):
+    message = f'{_resource_key(path)} {reason}'
+    return {'estimator_workers': None, 'worker_parameters': {},
+            'timing_unavailable': message, 'prediction_timing_unavailable': message}
+
+
+def _custom_clone(component):
+    hook = getattr(component, '__sklearn_clone__', None)
+    return hook is not None and not (isinstance(hook, MethodType) and hook.__self__ is component
+                                     and hook.__func__ is BaseEstimator.__sklearn_clone__)
+
+
+def clone_risk_paths(source):
+    """Locate clone inputs whose products could contain caller-owned estimators."""
+    paths = []
+
+    def visit_steps(value, path):
+        if type(value) not in (list, tuple):
+            paths.append(['steps', *path])
+            return
+        for index, pair in enumerate(value):
+            if type(pair) in (list, tuple):
+                visit(pair, [*path, index])
+            else:
+                paths.append(['step_pair', *path, index])
+
+    def visit(value, path):
+        if isinstance(value, type):
+            return
+        kind = type(value)
+        if _custom_clone(value):
+            paths.append(['value', *path])
+        elif kind is dict:
+            for key, item in value.items():
+                if value is source and isinstance(key, str) and key.split('__')[-1] == 'steps':
+                    visit_steps(item, [*path, key])
+                else:
+                    visit(item, [*path, key])
+        elif kind in (list, tuple):
+            for index, item in enumerate(value):
+                visit(item, [*path, index])
+        elif kind in (set, frozenset):
+            if any(clone_risk_paths(item) for item in value):
+                paths.append(['value', *path])
+        elif callable(getattr(value, 'get_params', None)):
+            for key, item in value.get_params(deep=False).items():
+                if kind is Pipeline and key == 'steps':
+                    visit_steps(item, [*path, key])
+                else:
+                    visit(item, [*path, key])
+        elif (kind not in (str, bytes, bytearray, range, np.ndarray)
+              and not (isinstance(value, np.generic) and kind is value.dtype.type)
+              and (isinstance(value, (Mapping, Sequence, Set))
+                   or callable(getattr(value, 'fit', None))
+                   or callable(getattr(value, '__deepcopy__', None)))):
+            # sklearn deep-copies container subclasses. Even an ordinary list
+            # returned by their hook may contain the caller's original steps.
+            paths.append(['value', *path])
+
+    visit(source, [])
+    return paths
+
+
+def _reachable_model_objects(value):
+    """Keep references to reachable estimators across sklearn's parameter updates."""
+    objects = {}
+    pending = [value]
+    seen = set()
+    while pending:
+        item = pending.pop()
+        if isinstance(item, type) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if callable(getattr(item, 'get_params', None)):
+            objects[id(item)] = item
+            if not _custom_clone(item):
+                pending.extend(item.get_params(deep=False).values())
+                if type(item) is Pipeline:
+                    pending.extend(step for _, step in item.steps)
+        elif isinstance(item, Mapping):
+            pending.extend(item.values())
+        elif isinstance(item, (Sequence, Set)) and not isinstance(item, (str, bytes, bytearray, range)):
+            pending.extend(item)
+        elif callable(getattr(item, 'fit', None)):
+            objects[id(item)] = item
+    return objects
+
+
+def _clone_products(model, paths):
+    borrowed = {}
+    for shape, *path in paths:
+        value = model
+        for key in path:
+            if callable(getattr(value, 'get_params', None)):
+                value = value.get_params(deep=False)[key]
+            else:
+                value = value[key]
+        # Pipeline accepts iterable pairs. Their copying protocol can hide a
+        # shared estimator in a container without any estimator interface.
+        roots = [value]
+        if shape != 'value':
+            try:
+                if shape == 'steps':
+                    roots.extend(step for _, step in value)
+                else:
+                    _, step = value
+                    roots.append(step)
+            except (TypeError, ValueError, IndexError):
+                # A non-pipeline estimator may also have an option named steps.
+                pass
+        borrowed.update(_reachable_model_objects(roots))
+    return borrowed
+
+
+def clone_final_model(clone, template, parameters=None, *, original_risks=()):
+    """Apply sklearn's selected replacements, then check which clone risks survived."""
+    template_paths = clone_risk_paths(template)
+    parameter_paths = clone_risk_paths(parameters) if parameters is not None else ()
+    model = clone(template)
+    borrowed = _clone_products(model, [*original_risks, *template_paths])
+    if parameters is not None:
+        replacements = clone(parameters, safe=False)
+        borrowed.update(_clone_products(replacements, parameter_paths))
+        model = model.set_params(**replacements)
+    may_share = bool(borrowed and not borrowed.keys().isdisjoint(_reachable_model_objects(model)))
+    return model, may_share
+
+
+def configure_final_model(model, *, accepted_cap=None, source_may_share=False):
+    """Configure an owned full-training clone and return its timing evidence."""
+    if source_may_share:
+        return _unavailable_model_timing((), 'may contain caller-owned state from cloning the selected model.')
+    pending = [((), model)]
+    nodes = {}
+    updates = []
+    while pending:
+        path, component = pending.pop()
+        kind = type(component)
+        if _custom_clone(component):
+            return _unavailable_model_timing(path, 'has custom cloning and may share caller-owned state.')
+        if isinstance(component, type) or not callable(getattr(kind, 'get_params', None)):
+            return _unavailable_model_timing(path, 'has no verifiable estimator parameter interface.')
+        shallow = component.get_params(deep=False)
+        children = ()
+        if kind is Pipeline:
+            if (type(component.steps) not in (list, tuple)
+                    or any(type(pair) not in (list, tuple) for pair in component.steps)):
+                return _unavailable_model_timing(path, 'has a steps container with unverified cloning behavior.')
+            children = [(name, step) for name, step in component.steps
+                        if step is not None and not (isinstance(step, str) and step == 'passthrough')]
+            other_options = shallow.values()
+        elif kind in (OvOClassifier, SelectFromModel):
+            children = [('estimator', component.estimator)]
+            other_options = [value for option, value in shallow.items() if option != 'estimator']
+        else:
+            # Other compositions may expose children only in their deep parameters.
+            other_options = (shallow.values() if kind.get_params is BaseEstimator.get_params
+                             else component.get_params(deep=True).values())
+        if ((isinstance(component, MetaEstimatorMixin) and kind not in (Pipeline, OvOClassifier, SelectFromModel))
+                or any(not isinstance(value, type) and callable(getattr(value, 'get_params', None))
+                       for value in other_options)):
+            return _unavailable_model_timing(path, 'has unverified worker behavior for its nested estimators.')
+        nodes[path] = component
+        options = {name: 1 for name in shallow if name in ('n_jobs', 'base_jobs')}
+        if options:
+            updates.append((path, component, options))
+        pending.extend((path + (name,), child) for name, child in reversed(children))
+
+    # Check ownership throughout the composition before mutating any component.
+    # Pipeline step names do not have to round-trip through sklearn's '__' syntax.
+    workers = {}
+    for path, component, options in updates:
+        component.set_params(**options)
+        workers.update((_resource_key(path + (option,)), 1) for option in options)
+    receipt = {'estimator_workers': 1, 'worker_parameters': workers}
+    _configure_conic_refit(nodes, receipt, accepted_cap)
+    return receipt
+
+
+def _configure_conic_refit(nodes, receipt, accepted_cap):
+    """Bound the paired packages' CVXPY models on the owned final clone."""
+    # CVXPY is optional. A caller using these classes has already loaded them.
+    classes = tuple(cls for cls in (getattr(sys.modules.get('dwd.socp_dwd'), 'DWD', None),
+                                    getattr(sys.modules.get('dwd.svm'), 'SVM', None))
+                    if isinstance(cls, type))
+    if not classes:
+        return
+    models = [(_resource_key(path), value) for path, value in nodes.items()
+              if isinstance(value, classes)]
+    if not models:
+        return
+    for name, value in models:
+        if type(value) not in classes:
+            reason = f'{name} has custom conic fitting and prediction behavior without a verified thread limit.'
+            receipt.update(timing_unavailable=reason, prediction_timing_unavailable=reason)
+            return
+
+    # Recovery reapplies the cap authenticated by the handoff even if today's
+    # compiler settings prevent comparing a new fit time. The resulting model
+    # is checked against the handoff's exact typed identity before fitting.
+    if accepted_cap is True:
+        for _, value in models:
+            value.set_params(solver_kws={**value.solver_kws, 'max_threads': 1})
+
+    import cvxpy
+    default_backend = os.environ.get('CVXPY_DEFAULT_CANON_BACKEND',
+                                     getattr(cvxpy.settings, 'DEFAULT_CANON_BACKEND', None))
+    backends = {}
+    for name, value in models:
+        if value.solver_kws is not None and type(value.solver_kws) is not dict:
+            receipt['timing_unavailable'] = f'{name} has custom solver behavior without a verified thread limit.'
+            return
+        options = value.solver_kws or {}
+        solver = options.get('solver')
+        backends[name] = options.get('canon_backend') or default_backend
+        # Keep automatic dispatch, fallback order, custom solve methods and
+        # other libraries' private schedulers intact, including their failures.
+        if (type(solver) is not str or solver != 'CLARABEL'
+                or options.get('solver_path') is not None or options.get('method') is not None
+                or backends[name] not in ('CPP', 'SCIPY')):
+            receipt['timing_unavailable'] = (
+                f'{name} uses a CVXPY solve or compilation route without a verified single-thread limit.')
+            return
+
+    import clarabel
+    if not hasattr(clarabel.DefaultSettings(), 'max_threads'):
+        receipt['timing_unavailable'] = 'Installed Clarabel lacks a max_threads control.'
+        return
+    # CPP's setting is global to this process. Preserve it during this fit
+    # and any overlapping CVXPY solves. SciPy uses the enclosing pool scope.
+    if 'CPP' in backends.values() and (
+            not hasattr(cvxpy, 'get_num_threads') or cvxpy.get_num_threads() != 1):
+        receipt['timing_unavailable'] = 'CVXPY CPP compilation requires an existing one-thread setting for timing.'
+        return
+
+    if accepted_cap is False and any(value.solver_kws.get('max_threads') != 1 for _, value in models):
+        receipt['timing_unavailable'] = 'The accepted conic model has no single-thread solver cap.'
+        return
+    if accepted_cap is None:
+        for _, value in models:
+            value.set_params(solver_kws={**value.solver_kws, 'max_threads': 1})
+    receipt['conic_threads'] = {'canonicalization_backends': backends,
+                               'clarabel_max_threads': {name: 1 for name, _ in models}}
+    if 'CPP' in backends.values():
+        receipt['conic_threads']['cvxpy_cpp_threads'] = 1
+
+
+@contextmanager
+def timed_model_phase():
+    """Limit ambient joblib work and all native pools loaded at phase entry."""
+    with parallel_config(backend='sequential', n_jobs=1), threadpool_limits(limits=1):
+        yield
+
+
+def _cli_final_threads(value):
     try:
-        return validate_final_native_threads(int(value))
+        return validate_timed_native_threads(int(value))
     except (ValueError, TypeError) as error:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
 def add_final_thread_argument(parser):
-    parser.add_argument('--final-native-threads', type=_cli_positive, default=1,
-                        help='Native threads for the selected full-training pipeline fit; '
-                             'default 1. CV and held-out scoring remain at one thread; '
-                             'nested pair fitting must remain sequential.')
+    parser.add_argument('--final-native-threads', type=_cli_final_threads, default=1, metavar='1',
+                        help='Timed final fitting and held-out prediction use one worker '
+                             'and one native thread. The only supported value is 1.')
 
 
 def report_final_threads(value):

@@ -261,8 +261,7 @@ def test_real_loaded_native_budget_and_restoration_without_full_inventory(monkey
     assert cp._RUNTIME_PACKAGE_FILES is None and cp._RUNTIME_FILES is None
 
 
-@pytest.mark.parametrize('budget', [1, 2])
-def test_noncheckpoint_workflow_uses_only_native_policy_and_records_it(tmp_path, monkeypatch, budget):
+def test_noncheckpoint_workflow_uses_only_native_policy_and_records_it(tmp_path, monkeypatch):
     workflow = Workflow(tmp_path, monkeypatch)
     def forbidden(*args, **kwargs):
         raise AssertionError('Legacy workflow incorrectly used full installation authority')
@@ -271,7 +270,7 @@ def test_noncheckpoint_workflow_uses_only_native_policy_and_records_it(tmp_path,
     # callback. This synthetic source authority is never presented as real evidence.
     monkeypatch.setattr(cp, '_native_pool_fingerprint',
                         lambda files, *, native_threads: observed_runtime(native_threads=native_threads)['native_pools'])
-    result = workflow.run(legacy=True, budget=budget)
+    result = workflow.run(legacy=True, budget=1)
     assert (workflow.cv_count, workflow.final_count, workflow.held_out_count) == (6, 1, 1)
     assert result['completed']['held_out_accuracy'] == 1.
     for filename in ('run.json', 'refit.json', 'completed.json'):
@@ -289,7 +288,7 @@ def test_adaptive_initial_preflight_stays_strict_without_frozen_runtime(tmp_path
         raise error
     monkeypatch.setattr(cp, 'runtime_fingerprint', refuse)
     with pytest.raises(cp.CheckpointError) as caught:
-        workflow.run(legacy=False, budget=2)
+        workflow.run(legacy=False, budget=1)
     assert caught.value is error
     assert (workflow.cv_count, workflow.final_count, workflow.held_out_count) == (0, 0, 0)
 

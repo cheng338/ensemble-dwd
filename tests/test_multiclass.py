@@ -1,9 +1,11 @@
 """Multiclass voting, estimator, and binary-ensemble integration contracts."""
 
 import itertools
+import os
 import pickle
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import joblib
@@ -16,9 +18,11 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold, check_cv
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.utils.estimator_checks import check_estimator
 from sklearn.utils.validation import check_is_fitted
 
+from grid_search_test_support import fit_with_serial_refit
 from ensemble_dwd import EnsembleKernelDWD, IneligibleSelectionError, IneligibleSubsetError, OvOClassifier
 
 
@@ -33,6 +37,7 @@ class RecordingBinary(ClassifierMixin, BaseEstimator):
         self.failure = failure
 
     def fit(self, X, y):
+        self.fit_pid_ = os.getpid()
         self.X_ = np.array(X, copy=True)
         self.y_ = np.array(y, copy=True)
         self.classes_ = np.unique(y)
@@ -211,7 +216,8 @@ class MulticlassContractTests(unittest.TestCase):
         RecordingScaler.fitted_inputs = []
         search = GridSearchCV(pipeline, {"ovo__estimator__offset": [0.0, 0.2]},
                               cv=folds, scoring="accuracy", n_jobs=1,
-                              error_score="raise").fit(X, y)
+                              error_score="raise")
+        fit_with_serial_refit(search, X, y)
         self.assertEqual(len(RecordingScaler.fitted_inputs), 7)
         for candidate in range(2):
             for fold, (train, _) in enumerate(folds):
@@ -238,6 +244,126 @@ class MulticlassContractTests(unittest.TestCase):
         assert_array_equal(parallel.vote_counts(self.X), serial.vote_counts(self.X))
         restored = pickle.loads(pickle.dumps(parallel))
         assert_array_equal(restored.predict(self.X), serial.predict(self.X))
+
+    def test_memmap_transposes_deliver_exact_training_rows_to_processes(self):
+        reference = self.X.astype(np.float64)
+        serial = self.estimator(n_jobs=1).fit(reference, self.y)
+        with tempfile.TemporaryDirectory() as directory, joblib.parallel_config(
+                backend="loky", n_jobs=2, inner_max_num_threads=1, temp_folder=directory):
+            for order in ("C", "F"):
+                with self.subTest(backing_order=order):
+                    path = Path(directory) / f"features-{order}.npy"
+                    np.save(path, np.array(reference.T, order=order))
+                    backing = np.load(path, mmap_mode="r")
+                    # An ndarray wrapper may hide the memmap from isinstance.
+                    X = np.asarray(backing).T
+                    try:
+                        assert_array_equal(X, reference)
+                        parallel = self.estimator(n_jobs=None).fit(X, self.y)
+                    finally:
+                        del X, backing
+                    for child, expected in zip(parallel.estimators_, serial.estimators_):
+                        self.assertNotEqual(child.fit_pid_, os.getpid())
+                        assert_array_equal(child.X_, expected.X_)
+                        assert_array_equal(child.y_, expected.y_)
+                        assert_array_equal(child.predict(reference), expected.predict(reference))
+                    assert_array_equal(parallel.vote_counts(reference), serial.vote_counts(reference))
+                    assert_array_equal(parallel.predict(reference), serial.predict(reference))
+
+    def test_private_memmap_features_and_labels_deliver_parent_values_to_processes(self):
+        reference = self.X.astype(np.float64)
+        expected_X = reference.copy()
+        expected_X[::2] += 1000
+        expected_y = (self.y + 1) % 3
+        with tempfile.TemporaryDirectory() as directory, joblib.parallel_config(
+                backend="loky", n_jobs=2, inner_max_num_threads=1, temp_folder=directory):
+            label_path = Path(directory) / "labels.npy"
+            np.save(label_path, self.y)
+            y = np.asarray(np.load(label_path, mmap_mode="c"))
+            try:
+                y[:] = expected_y
+                for layout, saved, view in (
+                        ("direct", reference, lambda a: a),
+                        ("transpose", reference.T.copy(), lambda a: a.T),
+                        ("strided", np.repeat(reference, 2, axis=0), lambda a: a[::2])):
+                    with self.subTest(layout=layout):
+                        path = Path(directory) / f"features-{layout}.npy"
+                        np.save(path, saved)
+                        X = view(np.asarray(np.load(path, mmap_mode="c")))
+                        try:
+                            X[::2] += 1000
+                            model = self.estimator(n_jobs=None).fit(X, y)
+                        finally:
+                            del X
+                        self.assertEqual(model.pairs_, tuple(itertools.combinations(range(3), 2)))
+                        for (a, b), indices, child in zip(
+                                model.pairs_, model.pair_indices_, model.estimators_):
+                            rows = np.flatnonzero((expected_y == a) | (expected_y == b))
+                            self.assertNotEqual(child.fit_pid_, os.getpid())
+                            assert_array_equal(indices, rows)
+                            assert_array_equal(child.X_, expected_X[rows])
+                            assert_array_equal(child.y_, np.where(expected_y[rows] == a, 1, -1))
+                        assert_array_equal(np.load(path), saved)
+            finally:
+                del y
+            assert_array_equal(np.load(label_path), self.y)
+
+    def test_memmap_transport_only_copies_private_process_arguments(self):
+        from ensemble_dwd.multiclass import _pair_worker_inputs
+
+        reference = self.X.astype(np.float64)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "features.npy"
+            np.save(path, reference)
+            with joblib.parallel_config(backend="loky", n_jobs=2):
+                for mode in ("r", "r+"):
+                    backing = np.load(path, mmap_mode=mode)
+                    for same_order in (backing, np.asarray(backing), backing[::2],
+                                       backing[:1], reference, reference.T):
+                        X, y, transpose = _pair_worker_inputs(same_order, self.y, None)
+                        self.assertIs(X, same_order)
+                        self.assertIs(y, self.y)
+                        self.assertFalse(transpose)
+                    X, y, transpose = _pair_worker_inputs(np.asarray(backing).T, self.y, None)
+                    self.assertTrue(transpose)
+                    self.assertTrue(np.shares_memory(X, backing))
+                    assert_array_equal(X, backing)
+                    self.assertIs(y, self.y)
+                    del X, backing, same_order
+
+            private = np.load(path, mmap_mode="c")
+            X, y = np.asarray(private).T, private[:, 0]
+            for backend, jobs in (("loky", 1), ("threading", None)):
+                with joblib.parallel_config(backend=backend, n_jobs=2):
+                    worker_X, worker_y, transpose = _pair_worker_inputs(X, y, jobs)
+                    self.assertIs(worker_X, X)
+                    self.assertIs(worker_y, y)
+                    self.assertFalse(transpose)
+            del private, X, y, worker_X, worker_y
+
+        # Third-party array-interface owners may have their own base attribute.
+        class ArrayOwner:
+            __array_interface__ = reference.__array_interface__
+
+        owner = ArrayOwner()
+        owner.base = owner
+        array = np.asarray(owner)
+        X, y, transpose = _pair_worker_inputs(array, self.y, 2)
+        self.assertIs(X, array)
+        self.assertIs(y, self.y)
+        self.assertFalse(transpose)
+
+    def test_memmap_large_non_native_endian_labels_in_process_workers(self):
+        native = np.arange(140000, dtype=np.int64) % 4
+        labels = native.astype(native.dtype.newbyteorder("S"))
+        self.assertGreater(labels.nbytes, 1024 ** 2)
+        features = native.astype(np.float64).reshape(-1, 1)
+        tree = DecisionTreeClassifier(max_depth=2, random_state=54)
+        with tempfile.TemporaryDirectory() as directory, joblib.parallel_config(
+                backend="loky", inner_max_num_threads=1, temp_folder=directory,
+                max_nbytes="1M"):
+            model = OvOClassifier(tree, n_jobs=2).fit(features, labels)
+        assert_array_equal(model.predict(features), native)
 
     def test_numerical_pair_failure_is_visible_and_clears_previous_and_partial_state(self):
         model = self.estimator().fit(self.X, self.y)

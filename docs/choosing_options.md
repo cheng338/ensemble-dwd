@@ -1,6 +1,6 @@
 # Choosing Ensemble options
 
-These choices apply to Ensemble DWD 0.4.0 with DWD 2.0.1. For new DWD fits,
+These choices apply to Ensemble DWD 0.4.1 with DWD 2.0.2. For new DWD fits,
 `affine_computation='joint'` is the default. Replace explicit affine `'auto'`
 in constructors and search grids with `'joint'`. The separate residual-order
 default is still `'auto'`. See the [upgrade guide](method.md#public-solver-api-upgrade).
@@ -93,16 +93,7 @@ outweigh the base work.
 | `base_jobs > 1` on DWD | A standalone binary ensemble has enough independent base work to amortize scheduling, and the caller owns the numerical runtime and has memory for concurrent learners. | At most `M` base workers, one native numerical thread each, then a separate final fit. Leave at 1 under already-parallel CV unless the combined budget is explicit. Custom/unsupported cases can remain sequential; inspect `base_execution_` together with `cache_hit_`. On a hit, execution metadata describes the cached producer; see [parallel base diagnostics](parallel-base-fitting.md#caching-diagnostics-and-interruption). |
 | `OvOClassifier.n_jobs > 1` | Pair fitting is the selected parallel level in a standalone multiclass fit. | Leave at 1 when outer CV supplies concurrency. Pair data/models and any inner base workers multiply resource use. Prediction remains separate from pair-fit scheduling. |
 | Example `--jobs N` | Enough independent CV work exists to use multiple processes within the fit-specific memory budget. | Examples use one native thread per outer worker. Do not multiply it by unrestricted pair/base workers; higher concurrency is not a speed guarantee. |
-| Example `--final-native-threads N` | The selected full-training pipeline fit dominates and a measured comparison shows useful native-library scaling while all nested fitting stays sequential. | Defaults to 1. Does not change CV, refinement, confirmation or heldout prediction. Limits detected pools, not total machine CPU or core placement. It does not parallelize a single LIBSVM SVC. |
-
-For `final_native_threads > 1`, the nonresumable `run_search_workflow`
-checks native resources and restoration, assuming installed code remains
-unchanged. It records `source_installation_attestation=false`; it does not
-provide a complete source or installation attestation. Strict phase helpers,
-adaptive search and checkpoint/recovery retain their complete/frozen checks.
-Default 1 does not initialize the additional authority. The measured ordinary
-workflow benefit does not establish larger-workload speed or native-thread
-scaling; see the [policy and timing limits](method.md#native-threads-by-phase).
+| Example `--final-native-threads 1` | Timed final fitting and held-out prediction always use one estimator worker and one native thread. | The argument is optional and accepts only 1. Use `--jobs` to set CV concurrency. |
 
 The caller must not let unrelated Python threads concurrently use or change the
 same numerical runtime during the controlled native-thread phases. See

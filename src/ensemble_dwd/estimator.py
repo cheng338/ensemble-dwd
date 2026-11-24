@@ -7,9 +7,9 @@ from numbers import Integral, Real
 from os import PathLike
 
 import numpy as np
-from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.base import BaseEstimator
+from dwd._validation import ExactLabelClassifierMixin, _discrete_training_labels, exact_sparse_uint64_target
 from sklearn.utils import check_random_state
-from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from dwd.gen_kern_dwd import KernGDWD
@@ -274,7 +274,7 @@ def _base_diagnostics(model):
     return result
 
 
-class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
+class EnsembleKernelDWD(ExactLabelClassifierMixin, BaseEstimator):
     """Fit Chang Cheng's binary ensemble kernel DWD procedure.
 
     Split one uniform random permutation into M disjoint subsets; fit optimized
@@ -428,8 +428,8 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
         policy summary without captured worker-runtime records.
         ``cache_hit_`` identifies reuse. A successful hit performs no new
         base fits or base scoring, but still selects rows and fits a fresh
-        final learner. Use ``ensemble_dwd.profiling.fit_profile`` for
-        completed-call counts in the current execution context.
+        final learner. When ``cache_hit_`` is false, a successful fit using
+        the built-in base stage fits one learner per entry in ``subset_indices_``.
     subset_indices_ : list of integer arrays
         Base training positions relative to the data passed to this fit.
     selected_indices_ : integer array
@@ -801,9 +801,10 @@ class EnsembleKernelDWD(ClassifierMixin, BaseEstimator):
             context["stage"] = "input_validation"
             with _stage("input_validation"):
                 _reject_complex(X, "Features")
+                y = exact_sparse_uint64_target(y)
                 _reject_complex(y, "Labels")
                 X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
-                check_classification_targets(y)
+                y = _discrete_training_labels(y)
                 classes, encoded = np.unique(y, return_inverse=True)
                 if len(classes) < 2:
                     raise ValueError("EnsembleKernelDWD requires two classes; the input contains one class.")

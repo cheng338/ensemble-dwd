@@ -13,6 +13,7 @@ from runtime_test_support import synthetic_runtime
 from sklearn.model_selection import ParameterGrid, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from workflow_refit_support import record_full_pipeline_fits
 
 from ensemble_dwd import EnsembleKernelSVM
 
@@ -75,15 +76,15 @@ class EquivalentFoldWorkflowTests(unittest.TestCase):
             return original(*args, **kwargs)
 
         with patch.object(cv_checkpoint, '_fit_fold', recorded), \
-                patch.object(adaptive_search, 'clone', wraps=adaptive_search.clone) as final_clone:
+                record_full_pipeline_fits(self.X, self.y) as final_fits:
             ordinary = self.execute(new_run_directory(self.root / 'ordinary'), False)
             self.assertEqual([size for size, _ in fits], [20, 20, 20, 20])
-            self.assertEqual(final_clone.call_count, 1)
+            self.assertEqual(final_fits, [ordinary['model']])
             fits.clear()
             folder = new_run_directory(self.root / 'reuse')
             reused = self.execute(folder, True)
             self.assertEqual([size for size, _ in fits], [20, 20])
-            self.assertEqual(final_clone.call_count, 2)
+            self.assertEqual(final_fits, [ordinary['model'], reused['model']])
             final_ratio = reused['selection']['parameters']['ensemble__sv_selection_ratio']
             final = reused['model'].named_steps['ensemble']
             self.assertEqual(len(final.selected_indices_), int(40 * final_ratio))
@@ -103,7 +104,7 @@ class EquivalentFoldWorkflowTests(unittest.TestCase):
             self.assertTrue(resumed['resumed_completed'])
             self.assertIsNone(resumed['model'])
             self.assertEqual(fits, [])
-            self.assertEqual(final_clone.call_count, 2)
+            self.assertEqual(final_fits, [ordinary['model'], reused['model']])
             saved_run = (folder / 'run.json').read_bytes()
             with self.assertRaises(cv_checkpoint.CheckpointError):
                 self.execute(folder, False, resume=True)

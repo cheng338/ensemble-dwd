@@ -133,8 +133,10 @@ leave already scaled pixels unchanged. The pipeline applies no further
 pixel transformation.
 
 ```python
+from joblib import parallel_config
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
+from threadpoolctl import threadpool_limits
 from ensemble_dwd import EnsembleKernelSVM, mnist_svm_param_grid
 
 pipeline = Pipeline([
@@ -148,9 +150,13 @@ search = GridSearchCV(
     scoring="accuracy", n_jobs=2, pre_dispatch=2, error_score="raise",
 )
 # Supply only training data. Keep the final test set held out.
-# search.fit(X_train_unit, y_train)
-# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
+# with parallel_config(n_jobs=1), threadpool_limits(limits=1):
+#     search.fit(X_train_unit, y_train)
+#     search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
+
+The two CV workers evaluate folds. Scikit-learn then times the full-training
+refit in the calling process with one job and one native thread.
 
 This example stops on all fit errors. A broad grid may contain
 ineligible single-class selections; the checkpointed example below can
@@ -270,8 +276,10 @@ and leaving already scaled values unchanged. No further pixel transformation
 is applied.
 
 ```python
+from joblib import parallel_config
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
+from threadpoolctl import threadpool_limits
 from ensemble_dwd import EnsembleKernelSVM, OvOClassifier, mnist_svm_param_grid
 
 pipeline = Pipeline([
@@ -285,8 +293,9 @@ search = GridSearchCV(
     cv=StratifiedKFold(5, shuffle=True, random_state=42),
     scoring='accuracy', n_jobs=1, pre_dispatch=1, error_score='raise',
 )
-# search.fit(X_train_unit, y_train)  # Keep the final test set held out.
-# search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
+# with parallel_config(n_jobs=1), threadpool_limits(limits=1):
+#     search.fit(X_train_unit, y_train)  # Keep the final test set held out.
+#     search.score(X_test_unit, y_test)  # Evaluate only after tuning is complete.
 ```
 
 The default preset has 125 candidates; `broad=True` restores 405. Either can
@@ -305,14 +314,10 @@ pair-level parallelism in a standalone multiclass fit. Avoid running both
 levels with unrestricted worker counts. A single LIBSVM SVC does not expose
 an n_jobs setting; additional BLAS threads do not parallelize that solver.
 
-The tuning command shares optional `--final-native-threads N` with the DWD
-examples. It defaults to 1 and applies only to the selected full-training
-pipeline fit; CV workers and held-out prediction retain one native thread.
-`--jobs` separately controls concurrent CV work and defaults to 1. The native
-setting limits each detected BLAS/OpenMP pool, not total CPU use or physical
-core placement, and is not an SVC speedup claim. See
-[native threads by phase](method.md#native-threads-by-phase) for nested-worker,
-runtime identity and resume restrictions.
+The tuning command uses one estimator worker and one native thread during
+the selected full-training fit and held-out prediction. The optional
+`--final-native-threads` argument accepts only 1. `--jobs` controls concurrent
+CV work and defaults to 1. See [native threads by phase](method.md#native-threads-by-phase).
 
 Changing only the selection ratio can reuse the same base models and margins
 through the process-safe disk cache. The final SVC is always fitted anew.

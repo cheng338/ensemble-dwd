@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 from path_support import extended_path
 from time import perf_counter
 
@@ -174,8 +175,6 @@ def test_default_does_not_observe_or_change_scope(monkeypatch):
 class Workflow:
     def __init__(self, tmp_path, monkeypatch):
         self.root = Path(extended_path(tmp_path))
-        self.cap = 4
-        self.cap_after_cv = None
         self.scopes = []
         rows = np.arange(20)
         self.X = np.column_stack((rows, rows % 2))
@@ -206,9 +205,8 @@ class Workflow:
 
     @contextmanager
     def limits(self, *, limits):
-        cap = self.cap_after_cv if self.cap_after_cv is not None and self.cv_count >= 6 else self.cap
-        self.scopes.append(dict(requested=limits, effective=min(limits, cap)))
-        with real_limits(limits=min(limits, cap)):
+        self.scopes.append(limits)
+        with real_limits(limits=limits):
             yield
 
     @property
@@ -223,7 +221,7 @@ class Workflow:
     def held_out_count(self):
         return sum(n == 8 for n, pools in PhaseSurface.predictions)
 
-    def run(self, *, legacy=False, resume=False, budget=4, name='run'):
+    def run(self, *, legacy=False, resume=False, budget=1, name='run'):
         folder = new_run_directory(self.root / name, resume=resume)
         with redirect_stdout(io.StringIO()):
             args = (self.pipeline, self.grid, self.X, self.y, self.test_X,
@@ -234,6 +232,17 @@ class Workflow:
             return adaptive_search.run_adaptive_search(
                 *args, config=self.config, resume=resume,
                 reuse_equivalent_folds=False, final_native_threads=budget)
+
+    def interrupt_after_handoff(self):
+        publish = adaptive_search.publish_final_handoff
+
+        def stop(*args, **kwargs):
+            publish(*args, **kwargs)
+            raise KeyboardInterrupt('interrupted after accepted handoff')
+
+        with patch.object(adaptive_search, 'publish_final_handoff', stop):
+            with pytest.raises(KeyboardInterrupt, match='interrupted after accepted handoff'):
+                self.run()
 
     def hashes(self, *, cv_only=False):
         root = self.root / 'run'
@@ -249,20 +258,19 @@ def workflow(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('legacy', [False, True], ids=['adaptive', 'legacy'])
-def test_cap_discovery_occurs_at_intended_phase(workflow, legacy, record_property):
-    workflow.cap = 2
+def test_wide_budget_refuses_before_workflow_starts(workflow, legacy, record_property):
     with real_limits(limits=3):
         before = observed_counts()
-        with pytest.raises(cv_checkpoint.CheckpointError, match='wrong active budget'):
-            workflow.run(legacy=legacy)
+        with pytest.raises(ValueError, match='final_native_threads'):
+            workflow.run(legacy=legacy, budget=4)
         assert observed_counts() == before
     assert workflow.final_count == workflow.held_out_count == 0
     assert workflow.cv_count == 0
     files = workflow.hashes()
     assert not files, 'Fresh infeasibility must precede run/status/checkpoint persistence.'
     assert PhaseSurface.predictions == PhaseTransform.fits == []
-    record_property('ir16_cap_evidence', json.dumps(dict(
-        synthetic_requested=4, synthetic_effective=2,
+    record_property('serial_timing_budget_refusal', json.dumps(dict(
+        requested_native_threads=4,
         legacy=legacy, cv_fits=workflow.cv_count, final_fits=workflow.final_count,
         held_out_predictions=workflow.held_out_count, files=files,
         caller_restored=True), sort_keys=True))
@@ -273,25 +281,22 @@ def test_feasible_workflow_keeps_phase_budgets_and_original_data(workflow, legac
     snapshots = [a.copy() for a in (workflow.X, workflow.y, workflow.test_X, workflow.test_y)]
     with real_limits(limits=3):
         before = observed_counts()
-        workflow.run(legacy=legacy, budget=2)
+        workflow.run(legacy=legacy, budget=1)
         assert observed_counts() == before
     assert workflow.cv_count == 6 and workflow.final_count == workflow.held_out_count == 1
     for events in (PhaseSurface.fits, PhaseTransform.fits):
         for n, pools in events:
-            assert all(count == (2 if n == 20 else 1) for path, count in pools)
+            assert all(count == 1 for path, count in pools)
     assert all(count == 1 for n, pools in PhaseSurface.predictions for path, count in pools)
     for original, current in zip(snapshots, (workflow.X, workflow.y, workflow.test_X, workflow.test_y)):
         np.testing.assert_array_equal(current, original)
 
 
-def test_late_cap_drift_refuses_then_same_budget_resumes_without_cv_replay(workflow):
-    workflow.cap_after_cv = 2
-    with pytest.raises(cv_checkpoint.CheckpointError, match='wrong active budget'):
-        workflow.run()
+def test_interrupted_handoff_resumes_without_cv_replay(workflow):
+    workflow.interrupt_after_handoff()
     assert workflow.cv_count == 6 and workflow.final_count == workflow.held_out_count == 0
     retained = workflow.hashes(cv_only=True)
     assert retained and any('folds/' in key for key in retained)
-    workflow.cap_after_cv = None
     result = workflow.run(resume=True)
     assert workflow.cv_count == 6 and workflow.final_count == workflow.held_out_count == 1
     assert workflow.hashes(cv_only=True) == retained
@@ -299,7 +304,7 @@ def test_late_cap_drift_refuses_then_same_budget_resumes_without_cv_replay(workf
 
 
 @pytest.mark.parametrize('completed', [False, True], ids=['unfinished', 'completed'])
-def test_corrected_budget_still_refuses_identity_without_mutation(workflow, completed):
+def test_wide_budget_rejects_resume_without_mutation(workflow, completed):
     if not completed:
         PhaseSurface.fail_final = KeyboardInterrupt
         with pytest.raises(KeyboardInterrupt):
@@ -309,17 +314,19 @@ def test_corrected_budget_still_refuses_identity_without_mutation(workflow, comp
         workflow.run()
     before = workflow.hashes()
     calls = deepcopy((PhaseSurface.fits, PhaseSurface.predictions, workflow.scopes))
-    with pytest.raises(cv_checkpoint.CheckpointError):
+    with pytest.raises(ValueError, match='final_native_threads'):
         workflow.run(resume=True, budget=2)
     assert workflow.hashes() == before
     assert (PhaseSurface.fits, PhaseSurface.predictions, workflow.scopes) == calls
 
 
-def test_completed_replay_does_not_probe_now_unavailable_budget(workflow):
+def test_completed_replay_does_not_probe_final_budget(workflow, monkeypatch):
     first = workflow.run()
     calls = deepcopy((PhaseSurface.fits, PhaseSurface.predictions, workflow.scopes))
     retained = workflow.hashes(cv_only=True)
-    workflow.cap = 2
+    def forbidden(*args, **kwargs):
+        pytest.fail('Completed replay probed a final-fit budget')
+    monkeypatch.setattr(adaptive_search, 'preflight_final_native_threads', forbidden)
     resumed = workflow.run(resume=True)
     assert resumed['resumed_completed'] is True
     assert resumed['refit'] == first['refit']
@@ -327,7 +334,7 @@ def test_completed_replay_does_not_probe_now_unavailable_budget(workflow):
     assert workflow.hashes(cv_only=True) == retained
 
 
-def test_unfinished_resume_preflight_preserves_saved_folds(workflow):
+def test_unfinished_resume_preflight_preserves_saved_folds(workflow, monkeypatch):
     PhaseSurface.fail_final = KeyboardInterrupt
     with pytest.raises(KeyboardInterrupt):
         workflow.run()
@@ -335,8 +342,10 @@ def test_unfinished_resume_preflight_preserves_saved_folds(workflow):
     PhaseSurface.fail_final = None
     retained = workflow.hashes(cv_only=True)
     predictions = deepcopy(PhaseSurface.predictions)
-    workflow.cap = 2
-    with pytest.raises(cv_checkpoint.CheckpointError, match='wrong active budget'):
+    def unavailable(*args, **kwargs):
+        raise cv_checkpoint.CheckpointError('controlled preflight failure')
+    monkeypatch.setattr(adaptive_search, 'preflight_final_native_threads', unavailable)
+    with pytest.raises(cv_checkpoint.CheckpointError, match='controlled preflight failure'):
         workflow.run(resume=True)
     assert workflow.cv_count == 6 and workflow.final_count == 1
     assert PhaseSurface.predictions == predictions

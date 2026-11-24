@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from threadpoolctl import threadpool_info, threadpool_limits
 from ensemble_dwd._failure_context import failure_context
-from ensemble_dwd.profiling import fit_profile
+from profiling_test_support import synthetic_fit_profile
 
 from parallel_error_policy_support import (DEFAULT, STRICT, Sink, PoolObserver, data, model, trigger,
                           caught, install_fit_probe, install_score_probe, assert_same_fit,
@@ -116,7 +116,7 @@ def test_handler_failure_propagates_with_counts_and_no_cache_publication(monkeyp
     observer, sink = PoolObserver(monkeypatch), Sink(fail=True)
     np.seterrcall(sink)
     fitted = model(cache_dir=tmp_path)
-    with np.errstate(divide=mode), fit_profile() as profile:
+    with np.errstate(divide=mode), synthetic_fit_profile() as profile:
         error = caught(lambda: fitted.fit(X, y))
         assert isinstance(error, RuntimeError) and "IR4 callback sentinel" in str(error)
         assert np.geterrcall() is sink and np.geterr()["divide"] == mode
@@ -136,7 +136,7 @@ def test_reused_workers_restore_policy_after_mutation_and_failure(monkeypatch, f
     install_score_probe(monkeypatch, mutate=True, fail_type=failure_type)
     observer, sink = PoolObserver(monkeypatch), Sink()
     np.seterrcall(sink)
-    with np.errstate(**STRICT), fit_profile() as profile:
+    with np.errstate(**STRICT), synthetic_fit_profile() as profile:
         if failure_type is None:
             fitted = model(M=5, theta=.2).fit(X, y)
             assert len(fitted.estimators_) == 5
@@ -177,7 +177,7 @@ def test_real_rbf_underflow_fails_at_base_fit_without_scoring_or_final_fit(monke
     observer = PoolObserver(monkeypatch)
     with np.errstate(under="raise"):
         for jobs in (1, 2):
-            with fit_profile() as profile:
+            with synthetic_fit_profile() as profile:
                 error = caught(lambda: model(base_jobs=jobs, gamma=.5).fit(X, y))
             assert isinstance(error, FloatingPointError) and "underflow" in str(error)
             context = failure_context(error)
@@ -217,7 +217,7 @@ def test_real_sixteen_worker_fit_uses_native_one_and_restores_native_sixteen(mon
     with threadpool_limits(16):
         before = threadpool_info()
         assert before and all(pool["num_threads"] == 16 for pool in before)
-        with np.errstate(**STRICT), fit_profile() as profile:
+        with np.errstate(**STRICT), synthetic_fit_profile() as profile:
             fitted = model(M=16, theta=1/16, base_jobs=16, max_iter=2).fit(X, y)
             assert np.geterr() == STRICT
         assert threadpool_info() == before

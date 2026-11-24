@@ -11,6 +11,7 @@ from sklearn.base import clone
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 
+from grid_search_test_support import fit_with_serial_refit
 from dwd.gen_kern_dwd import KernGDWD
 from ensemble_dwd import EnsembleKernelDWD, OvOClassifier
 import ensemble_dwd.estimator as estimator_module
@@ -115,7 +116,7 @@ def test_removed_auto_grid_is_rejected_not_silently_resolved(monkeypatch, route)
         parameter, labels = 'estimator__affine_computation', np.repeat(['a', 'b', 'c'], 4)
     with pytest.raises(ValueError, match='affine_computation.*standard.*joint'):
         GridSearchCV(subject, {parameter: ['auto']}, cv=2,
-                     n_jobs=1, error_score='raise').fit(X, labels)
+                     n_jobs=1, refit=False, error_score='raise').fit(X, labels)
 
 
 def test_cache_identity_uses_concrete_requested_and_resolved_values(monkeypatch, tmp_path):
@@ -151,7 +152,8 @@ def test_cv_keeps_both_concrete_values_and_refits_selected_policy(route):
     subject = model() if route == 'direct' else Pipeline([('ensemble', model())])
     parameter = 'affine_computation' if route == 'direct' else 'ensemble__affine_computation'
     search = GridSearchCV(subject, {parameter: ['joint', 'standard']}, cv=2,
-                          n_jobs=1, error_score='raise').fit(X, Y)
+                          n_jobs=1, error_score='raise')
+    fit_with_serial_refit(search, X, Y)
     assert [row[parameter] for row in search.cv_results_['params']] == ['joint', 'standard']
     fitted = (search.best_estimator_ if route == 'direct'
               else search.best_estimator_.named_steps['ensemble'])

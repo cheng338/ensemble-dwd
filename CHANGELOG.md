@@ -3,6 +3,60 @@
 This package originated in Chang Cheng's ensemble DWD research scripts
 accompanying his dissertation.
 
+## 0.4.1
+
+- The test extra supports pandas 2.2.2 on Python 3.11 and 3.12 and requires
+  pandas 2.2.3 or later on Python 3.13 and later.
+
+- Require NumPy 1.26.3 or later and SciPy 1.11.4 or later, matching the
+  paired DWD release.
+
+- Ensemble DWD, ensemble SVM and one-versus-one fitting check extended-precision
+  and byte-swapped floating class labels in their original precision. Fractional
+  and nonfinite labels are rejected. Nested learners and accuracy scoring
+  preserve exact IDs that span the upper half of the unsigned 64-bit range.
+
+- Binary Ensemble SVM preserves trailing NULs in class labels when ranking
+  training rows by signed margin. Classification reports compare date and
+  duration labels across units without rounding distinct classes together.
+  Per-class results identify NumPy dates and durations by dtype and tick count.
+
+- One-versus-one fitting preserves trailing NULs in object and variable-width
+  string labels when selecting rows and assigning binary signs. Example
+  class and selection reports use the labels supplied by sparse inputs and
+  distinguish these classes. Classification reports retain distinct large
+  integer IDs when predictions and observations use different numeric dtypes.
+  Reports for mixed text, byte and numeric observations use their observed
+  scalar equality and list classes in first-observed order. Inconsistent
+  comparisons that would assign overlapping classes raise a reporting error.
+  Binary ensemble failure counts also distinguish
+  trailing NULs in supported object labels.
+
+- Preserve the original class identities when scoring a sparse numeric target
+  with an occupied text fill. Fitting rejects the mixed numeric and text
+  classes. When sparse object targets contain dates or durations in different
+  units, fitting preserves distinct labels when it can infer an exact temporal
+  dtype. For these native temporal classes, scoring also accepts the same
+  scalars in a dense object target.
+  Callers can also supply labels in an explicit exact unit. On pandas
+  versions that allow mixed numeric and text storage, scoring also accepts
+  a `str` fill subclass that inherits ordinary string behavior. Ensemble
+  fitting also rejects a sparse iterator that mixes numeric IDs with such
+  strings, including when integer `1` and string `"1"` occur together.
+
+- Binary ensemble and one-versus-one fits reject missing datetime and duration
+  labels (`NaT`) before selecting learners or forming class pairs.
+
+- Preserve large unsigned class labels from pandas sparse targets in binary
+  and one-versus-one classification, including accuracy scoring.
+
+- Declare threadpoolctl 3.7.0 or later as a direct runtime dependency.
+
+- Pin DWD to `2.0.2` and require joblib 1.6.0
+  or later for worker cleanup in process-parallel fits on CPython 3.15.
+  Parallel one-versus-one fits preserve the layout of contiguous
+  transposed memory maps and the parent's private copy-on-write edits.
+
 <a id="0316"></a>
 
 ## 0.4.0

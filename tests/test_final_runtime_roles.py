@@ -115,7 +115,7 @@ def test_pool_added_during_final_fit_refuses_before_scoring(parent, monkeypatch)
     with threadpool_limits(limits=3):
         before = observed_counts()
         with pytest.raises(cv_checkpoint.CheckpointError,
-                           match='runtime changed beyond its thread budget'):
+                           match='Final recovery runtime changed within this execution attempt'):
             parent.recover()
         assert observed_counts() == before
     assert event_counts(parent.w) == (6, 1, 0)

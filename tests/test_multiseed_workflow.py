@@ -18,6 +18,7 @@ from sklearn.model_selection import ParameterGrid, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from threadpoolctl import threadpool_limits
+from workflow_refit_support import record_full_pipeline_fits
 
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
 
@@ -195,9 +196,9 @@ class MultiSeedWorkflowTests(unittest.TestCase):
 
     def test_equivalent_ratios_reuse_within_seed_and_refit_original_ratio_with_declared_seed(self):
         folder = new_run_directory(self.root / 'reuse')
-        with patch.object(adaptive_search, 'clone', wraps=adaptive_search.clone) as final_clone:
+        with record_full_pipeline_fits(self.X, self.y) as final_fits:
             result = self.execute(folder)
-        self.assertEqual(final_clone.call_count, 1)
+        self.assertEqual(final_fits, [result['model']])
         summary = result['coarse_search'].checkpoint_summary_
         self.assertEqual(summary['executed_folds'], 4)
         self.assertEqual(summary['equivalent_reused_folds'], 4)

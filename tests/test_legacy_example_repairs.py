@@ -189,6 +189,7 @@ class LegacyExampleRepairTests(unittest.TestCase):
                     'state': 'interrupted', 'phase': 'final_refit',
                     'exception_type': type(error).__name__, 'resume_supported': False,
                     'final_runtime': {
+                        'estimator_workers': 1, 'worker_parameters': {},
                         'requested_native_threads': 1, 'scope_changed': False,
                         'runtime_policy': 'noncheckpoint-native-scope-v1',
                         'source_installation_attestation': False,

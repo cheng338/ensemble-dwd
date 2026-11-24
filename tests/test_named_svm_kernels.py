@@ -17,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from threadpoolctl import threadpool_limits
 
+from grid_search_test_support import fit_with_serial_refit
 from ensemble_dwd import EnsembleKernelSVM, OvOClassifier
 
 EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
@@ -162,7 +163,8 @@ class NamedKernelSVMTests(unittest.TestCase):
                     'ensemblekernelsvm__degree': [2],
                     'ensemblekernelsvm__coef0': [.5, 1.]},
             cv=StratifiedKFold(3, shuffle=True, random_state=8),
-            error_score='raise', n_jobs=1).fit(X, y)
+            error_score='raise', n_jobs=1)
+        fit_with_serial_refit(search, X, y)
         self.assertEqual(len(search.cv_results_['params']), 4)
 
     def test_base_failure_and_interruption_clear_named_kernel_fit(self):

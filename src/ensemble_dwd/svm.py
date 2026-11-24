@@ -6,10 +6,10 @@ from os import PathLike
 import warnings
 
 import numpy as np
-from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.base import BaseEstimator
+from dwd._validation import ExactLabelClassifierMixin, _discrete_training_labels, exact_sparse_uint64_target
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.svm import SVC
-from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
@@ -50,7 +50,7 @@ def _diagnostics(model):
                 n_support=np.asarray(model.n_support_, dtype=int).copy())
 
 
-class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
+class EnsembleKernelSVM(ExactLabelClassifierMixin, BaseEstimator):
     """Fit sampled SVCs, select near signed consensus margins, and refit.
 
     One uniform random permutation supplies ``M`` disjoint subsets, each with
@@ -308,7 +308,8 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
                 except FloatingPointError as error:
                     raise FloatingPointError("SVC must return finite binary decision values.") from error
             context["stage"] = "base_summary"
-            signed_labels = np.where(y == classes[1], 1.0, -1.0)
+            # A slice preserves the label dtype, including trailing NULs in object strings.
+            signed_labels = np.where(y == classes[1:2], 1.0, -1.0)
             distances = np.abs(signed_labels * consensus - 1.0)
             return dict(consensus=consensus, distances=distances,
                         order=np.argsort(distances, kind="stable"),
@@ -390,9 +391,10 @@ class EnsembleKernelSVM(ClassifierMixin, BaseEstimator):
             self._validate_options()
             context["stage"] = "input_validation"
             _reject_complex(X, "Features")
+            y = exact_sparse_uint64_target(y)
             _reject_complex(y, "Labels")
             X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
-            check_classification_targets(y)
+            y = _discrete_training_labels(y)
             classes, encoded = np.unique(y, return_inverse=True)
             if len(classes) < 2:
                 raise ValueError("EnsembleKernelSVM requires two classes; the input contains one class.")

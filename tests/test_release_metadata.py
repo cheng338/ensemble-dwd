@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_threadpoolctl_floor_is_a_direct_runtime_requirement(self):
+        metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertIn("threadpoolctl>=3.7.0", metadata["project"]["dependencies"])
+
     def test_rights_notice_is_in_package_metadata_and_source_archive(self):
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(metadata["project"]["license"], {"file": "LICENSE"})
@@ -23,11 +27,13 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertFalse(any("OSI Approved" in value
                              for value in metadata["project"]["classifiers"]))
 
-    def test_development_pair_matches_dependency_and_installation_guide(self):
+    def test_release_pair_matches_dependency_and_installation_guide(self):
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dependencies = [value for value in metadata["project"]["dependencies"]
                         if value.startswith("dwd")]
         self.assertEqual(dependencies, [f"dwd=={dwd.__version__}"])
+        citation = (ROOT / "CITATION.cff").read_text(encoding="utf-8")
+        self.assertIn(f"version: {ensemble_dwd.__version__}", citation.splitlines())
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn(f"Ensemble DWD `{ensemble_dwd.__version__}` requires DWD `{dwd.__version__}`", readme)
 
@@ -35,14 +41,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         example_wheels = re.findall(r"dist/(ensemble_dwd-[^\s]+\.whl)", readme)
         self.assertEqual(example_wheels,
-                         ["ensemble_dwd-0.4.0-py3-none-any.whl"])
+                         [f"ensemble_dwd-{ensemble_dwd.__version__}-py3-none-any.whl"])
 
     def test_published_dwd_version_and_both_wheel_hashes_are_locked(self):
         metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         lock = (ROOT / "requirements-dwd.txt").read_text(encoding="utf-8")
         lines = [line.strip() for line in lock.splitlines()
                  if line.strip() and not line.startswith("#")]
-        self.assertEqual(lines[0].removesuffix("\\").strip(), "dwd==2.0.1")
+        self.assertEqual(lines[0].removesuffix("\\").strip(), f"dwd=={dwd.__version__}")
         hashes = re.findall(r"--hash=sha256:([a-f0-9]{64})", lock)
         self.assertEqual(len(hashes), 2)
         self.assertEqual(len(set(hashes)), 2)
@@ -50,7 +56,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("--no-index --find-links wheels --no-deps --force-reinstall --require-hashes", readme)
         self.assertIn("-r requirements-dwd.txt", readme)
-        self.assertIn("releases/expanded_assets/v2.0.1", readme)
+        self.assertIn(f"releases/expanded_assets/v{dwd.__version__}", readme)
 
 
 if __name__ == "__main__":

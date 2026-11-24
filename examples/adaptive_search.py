@@ -43,8 +43,9 @@ from evaluation_reporting import (classification_report, numerical_check_summary
 from stage_reporting import (candidate_budget, grid_proposal, publish_report,
                              safe_report, workload_plan)
 from near_coordinates import disclose
-from phase_threads import (final_fit_threads, final_thread_policy_sha256,
-                           validate_final_native_threads, preflight_final_native_threads)
+from phase_threads import (clone_final_model, clone_risk_paths, configure_final_model,
+                           final_fit_threads, final_thread_policy_sha256,
+                           timed_model_phase, validate_timed_native_threads, preflight_final_native_threads)
 from final_recovery import (assert_normal_final_allowed, publish_final_handoff,
                             reserve_normal_scoring)
 
@@ -663,16 +664,15 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     invalid confirmation holds final fitting. Original scores, selection and
     final-fit settings are retained; stability does not certify convergence.
     An interrupted final refit restarts; it does not use pair-model persistence.
-    final_native_threads changes only that full-training pipeline fit; CV
-    and held-out prediction stay at one native thread. It defaults to one
-    and is frozen on resume. Wider budgets require explicit n_jobs=1 for
-    every exposed nested estimator; runtime observations are recorded.
-    Accepted selection is committed before final fitting. An explicit separate
-    recover_final_fit attempt may change only the final thread budget while
-    preserving the verified CV evidence. Once held-out scoring is reserved,
+    final_native_threads accepts only 1. jobs controls CV. The final scope sets
+    one job and one thread for loaded native pools. Receipts identify phases
+    whose private worker settings prevent a comparable timing.
+    Accepted selection and the configured final model are committed before
+    fitting. A separate recover_final_fit attempt uses the same timing policy
+    and verified CV evidence. Once held-out scoring is reserved,
     an incomplete scoring attempt is not automatically repeated.
     """
-    final_native_threads = validate_final_native_threads(final_native_threads, pipeline)
+    final_native_threads = validate_timed_native_threads(final_native_threads)
     invocation_started = perf_counter()
     invocation_id = uuid.uuid4().hex
     config = AdaptiveSearchConfig() if config is None else config
@@ -754,6 +754,9 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                              'final_native_threads': final_native_threads, 'held_out_native_threads': 1,
                              'error_policy': error_policy, 'parameters': parameter_snapshot(pipeline),
                              'user': {} if settings is None else settings}}
+    original_risks = clone_risk_paths(pipeline)
+    if original_risks:
+        metadata['settings']['clone_risk_paths'] = original_risks
     if reuse_equivalent_folds:
         metadata['settings']['reuse_equivalent_folds'] = reuse_equivalent_folds
     if pair_recovery:
@@ -803,7 +806,8 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                     confirmation.update(state=state, wall_seconds=incomplete['elapsed_seconds'])
             elif kind in ('final_refit', 'held_out_scoring'):
                 target = refit if kind == 'final_refit' else scoring
-                target.update(state=state, wall_seconds=now - active_work['started'])
+                start = active_work['started']
+                target.update(state=state, wall_seconds=None if start is None else now - start)
         known = [stage['work_summary'] for stage in work_stages if stage['work_summary'] is not None]
         missing = [stage['name'] for stage in work_stages if stage['work_summary'] is None]
         original = aggregate_work_summaries(known)
@@ -1059,27 +1063,35 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                 refit_parameters[seed_parameter] = refit_seed
             pipeline_fit_seconds = None
             try:
-                model = clone(checkpoint.estimator).set_params(**refit_parameters)
-                publish_final_handoff(checkpoint, model, X_test, y_test, selection, review)
-                final_runtime = {}
-                with final_fit_threads(final_native_threads, model, final_runtime,
-                                       frozen_runtime=checkpoint.runtime):
-                    pipeline_started = perf_counter()
+                model, source_may_share = clone_final_model(
+                    clone, checkpoint.estimator, refit_parameters, original_risks=original_risks)
+                final_runtime = configure_final_model(model, source_may_share=source_may_share)
+                if 'timing_unavailable' in final_runtime:
+                    started = active_work['started'] = None
+                    refit_work['timing_unavailable'] = final_runtime['timing_unavailable']
+                publish_final_handoff(checkpoint, model, X_test, y_test, selection, review,
+                                      source_may_share=source_may_share)
+                with timed_model_phase(), final_fit_threads(final_native_threads, model, final_runtime,
+                                                           frozen_runtime=checkpoint.runtime):
+                    pipeline_started = None if started is None else perf_counter()
                     model.fit(checkpoint.X, checkpoint.y)
-                    pipeline_fit_seconds = perf_counter() - pipeline_started
+                    if pipeline_started is not None:
+                        pipeline_fit_seconds = perf_counter() - pipeline_started
             except Exception as error:
                 write_failure_json(run_dir / 'refit.json', {'state': 'failed', **selection,
-                    'wall_seconds': perf_counter() - started, 'failure': exception_details(error),
+                    'wall_seconds': None if started is None else perf_counter() - started,
+                    'failure': exception_details(error),
                     'native_runtime': final_runtime}, replace=True)
                 raise
-            refit_seconds = perf_counter() - started
+            refit_seconds = None if started is None else perf_counter() - started
+            management_seconds = None if started is None else refit_seconds - pipeline_fit_seconds
             refit = {'state': 'completed', **selection, 'wall_seconds': refit_seconds,
                      'pipeline_fit_seconds': pipeline_fit_seconds,
-                     'fit_management_seconds': refit_seconds - pipeline_fit_seconds,
+                     'fit_management_seconds': management_seconds,
                      'diagnostics': checkpoint.diagnostics(model, checkpoint.y), 'native_runtime': final_runtime}
             refit_work.update(state='completed', wall_seconds=refit_seconds,
                               pipeline_fit_seconds=pipeline_fit_seconds,
-                              fit_management_seconds=refit_seconds - pipeline_fit_seconds)
+                              fit_management_seconds=management_seconds)
             try:
                 refit_work['base_cache'] = summarize_cache_diagnostics(refit['diagnostics'])
             except Exception as error:
@@ -1103,15 +1115,20 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
             checkpoint.check_runtime()
             scoring_work.update(state='running', attempted=True)
             active_work = {'kind': 'held_out_scoring', 'started': perf_counter()}
+            if 'prediction_timing_unavailable' in final_runtime:
+                active_work['started'] = None
+                scoring_work['timing_unavailable'] = final_runtime['prediction_timing_unavailable']
             reserve_normal_scoring(checkpoint)
-            prediction_started = perf_counter()
-            predictions = model.predict(X_test)
-            prediction_finished = perf_counter()
-            accuracy = float(accuracy_score(y_test, predictions))
-            scoring_finished = perf_counter()
-            prediction_seconds = prediction_finished - prediction_started
+            with timed_model_phase():
+                prediction_started = None if active_work['started'] is None else perf_counter()
+                predictions = model.predict(X_test)
+                prediction_finished = perf_counter()
+                accuracy = float(accuracy_score(y_test, predictions))
+                scoring_finished = perf_counter()
+            prediction_seconds = None if prediction_started is None else prediction_finished - prediction_started
             accuracy_scoring_seconds = scoring_finished - prediction_finished
-            scoring_work.update(state='completed', wall_seconds=scoring_finished - active_work['started'],
+            scoring_seconds = None if active_work['started'] is None else scoring_finished - active_work['started']
+            scoring_work.update(state='completed', wall_seconds=scoring_seconds,
                                 prediction_seconds=prediction_seconds,
                                 accuracy_scoring_seconds=accuracy_scoring_seconds)
             active_work = None
@@ -1119,7 +1136,10 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
                          'pipeline_fit_seconds': pipeline_fit_seconds,
                          'held_out_prediction_seconds': prediction_seconds,
                          'held_out_accuracy_scoring_seconds': accuracy_scoring_seconds,
-                         'final_native_threads': final_native_threads}
+                         'final_native_threads': None if refit_seconds is None else final_native_threads}
+            for key in ('timing_unavailable', 'prediction_timing_unavailable'):
+                if key in final_runtime:
+                    completed[key] = final_runtime[key]
             reporting_started = perf_counter()
             try:
                 completed['held_out_classification'] = classification_report(y_test, predictions)

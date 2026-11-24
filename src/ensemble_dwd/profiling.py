@@ -1,9 +1,12 @@
 """Optional, execution-local timing of binary ensemble DWD fit stages.
 
-Use ``with fit_profile() as profile: model.fit(X, y)`` and then
-``profile.as_dict()``. This also collects the binary fits of a sequential
-one-vs-one wrapper. It does not change estimator options, numerical operations,
-sampling, or cached results, and never stores the profile on the estimator.
+For fit-stage measurements, use one estimator worker, a sequential joblib
+backend and one native thread throughout the fit. See the "Optional fit
+profiling" example in ``docs/method.md``. Read the results with
+``profile.as_dict()``. A sequential one-vs-one wrapper collects its binary
+fits in the same profile. Profiling does not change estimator options,
+numerical operations, sampling, or cached results, and never stores the
+profile on the estimator.
 
 Each stage reports inclusive, child, and self wall time. Inclusive times overlap;
 sum self times, not inclusive times, to allocate the measured fit work. Cache
@@ -168,8 +171,8 @@ def fit_profile():
 
     Profiling is off unless this context is entered. Disabled instrumentation
     makes no clock calls. Managed base-fit workers attach their individual
-    profiles to the parent collector. For independent parallel fits, use a
-    separate context in each worker and collect those profiles explicitly.
+    profiles to the parent collector. Profiles opened in independent parallel
+    fits remain local to their workers.
     """
     return _FitProfile()
 
