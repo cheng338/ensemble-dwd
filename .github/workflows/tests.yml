@@ -71,10 +71,11 @@ jobs:
       - name: Prepare tests outside the package source tree
         run: |
           bundle="$RUNNER_TEMP/ensemble-installed-tests"
-          python -I -B tests/ci_artifacts.py bundle --source . --destination "$bundle"
+          release_source="$RUNNER_TEMP/ensemble-release-bundle-source"
+          mkdir -p "$release_source"
+          git archive "$ENSEMBLE_RELEASE_REF" | tar -xf - -C "$release_source"
+          python -I -B tests/ci_artifacts.py bundle --source "$release_source" --destination "$bundle"
           git show "$ENSEMBLE_RELEASE_REF:.github/workflows/tests.yml" > "$bundle/.github/workflows/tests.yml"
-          cp .github/temp_probe_observer.py .github/temp_probe_native.py "$bundle/tests/"
-          printf '\npytest_plugins = ["temp_probe_observer"]\n' >> "$bundle/tests/conftest.py"
       - name: Verify both installed wheels with the paired DWD route checks
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: >-
@@ -96,47 +97,6 @@ jobs:
                   wheel = report[key]
                   print(f"- {Path(wheel['wheel']).name} SHA-256 `{wheel['wheel_sha256']}`", file=summary)
           PY
-      - name: Prepare diagnostic output collection
-        run: |
-          cat > "$RUNNER_TEMP/run-temp-probe.sh" <<'SH'
-          status=0
-          python -I -B -m pytest "$@" || status=$?
-          python -I -B - <<'PY'
-          import os
-          from pathlib import Path
-          directory = Path(os.environ['TEMP_DIAG_OUT'])
-          files = sorted(p for p in directory.glob('*') if p.is_file() and p.suffix in {'.jsonl', '.trace', '.log'})
-          if not files:
-              print('The observer produced no diagnostic files.')
-          for path in files:
-              print(f'::group::{path.name}')
-              print(path.read_text(encoding='utf-8', errors='replace'))
-              print('::endgroup::')
-          PY
-          printf -- '- %s pytest exit code `%s`\n' "$PROBE_STAGE" "$status" | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "$status"
-          SH
-      - name: Run the focused fresh-process test
-        id: focused
+      - name: Verify the temporary-directory probe
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        env:
-          TEMP_DIAG_OUT: ${{ runner.temp }}/temp-probe-focused
-          PROBE_STAGE: Focused
-        run: >-
-          bash "$RUNNER_TEMP/run-temp-probe.sh"
-          tests/test_temporary_paths.py::test_fresh_process_keeps_requested_deep_temp_and_restores_environment
-          -o "python_files=test*.py" -ra --junitxml=focused-results.xml
-      - name: Run the complete bundled test suite
-        id: full
-        if: ${{ !cancelled() && (steps.focused.outcome == 'success' || steps.focused.outcome == 'failure') }}
-        working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        env:
-          TEMP_DIAG_OUT: ${{ runner.temp }}/temp-probe-full
-          PROBE_STAGE: Full
-        run: >-
-          bash "$RUNNER_TEMP/run-temp-probe.sh"
-          tests -o "python_files=test*.py" -ra --junitxml=results.xml
-      - name: Require the real ordered-gradient base and final fit to pass
-        if: ${{ !cancelled() && (steps.full.outcome == 'success' || steps.full.outcome == 'failure') }}
-        working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        run: python -I -B tests/ci_pair.py result --junit results.xml --require native
+        run: python -I -B "${{ github.workspace }}/.github/verify_temp_probe.py"
