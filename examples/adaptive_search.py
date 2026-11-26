@@ -20,9 +20,9 @@ from time import perf_counter
 import numpy as np
 from joblib import hash as parameter_hash, parallel_config
 from sklearn.base import clone
-from sklearn.metrics import accuracy_score
 from sklearn.model_selection import ParameterGrid
 from threadpoolctl import threadpool_limits
+from dwd._validation import _SparseTextObservations
 from cv_checkpoint import (CheckpointedCV, validate_cv_seeds, validate_seed,
                            validate_seed_parameters, check_selection_state)
 
@@ -33,6 +33,7 @@ from search_support import (_io_path, _resolved_public_path, bare_parameters, da
 from tune_mnist import fully_valid_candidate_mask, ranked_valid_indices
 from search_support import score_value, score_token, token_value, comparable_tokens, equal_score_tokens
 from search_support import score_nonimproving
+from search_support import label_accuracy_score as accuracy_score, preserve_text_sequence
 from ratio_refinement import (RatioRefinementConfig, next_ratio_stage,
                               validate_ratio_grid)
 from numerical_confirmation import (NumericalConfirmationConfig, validate_confirmation,
@@ -732,12 +733,15 @@ def run_adaptive_search(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     failure_dir = _io_path(run_dir / 'failures')
     if not failure_dir.is_dir():
         raise ValueError('Create a fresh run directory with new_run_directory first.')
-    folds = _check_folds(folds, len(y_train))
+    folds = _check_folds(folds, len(X_train))
     if not resume:
         preflight_final_native_threads(final_native_threads, pipeline)
     # Own the held-out values too: the saved identity must describe what is
     # eventually scored even if a caller modifies its arrays during CV.
-    X_test, y_test = np.array(X_test, copy=True), np.array(y_test, copy=True)
+    y_train = preserve_text_sequence(y_train)
+    X_test = np.array(X_test, copy=True)
+    y_test = preserve_text_sequence(y_test)
+    y_test = np.array(y_test, copy=True, subok=isinstance(y_test, _SparseTextObservations))
     X_test.setflags(write=False)
     y_test.setflags(write=False)
     identity = {'training': data_fingerprint(X_train, y_train),

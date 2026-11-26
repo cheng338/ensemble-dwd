@@ -8,7 +8,10 @@ from os import PathLike
 
 import numpy as np
 from sklearn.base import BaseEstimator
-from dwd._validation import ExactLabelClassifierMixin, _discrete_training_labels, exact_sparse_uint64_target
+from dwd._validation import (
+    ExactLabelClassifierMixin, _comparison_labels, _discrete_training_labels, _validate_prepared_X_y,
+    exact_sparse_uint64_target,
+)
 from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_is_fitted, validate_data
 
@@ -17,7 +20,7 @@ from dwd.gen_kern_dwd import KernGDWD
 from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
 from ._failure_context import attach_failure_context, failure_context_scope, uses_implementation
 from .profiling import _profiled, _record_cache_result, _stage
-from ._validation import _reject_complex
+from ._validation import _label_value, _reject_complex, _same_classes
 
 
 class IneligibleSelectionError(ValueError):
@@ -690,7 +693,7 @@ class EnsembleKernelDWD(ExactLabelClassifierMixin, BaseEstimator):
                 context["base_fit_calls_completed"] += 1
                 context["stage"] = "base_validation"
                 with _stage("base_validation"):
-                    if not np.array_equal(model.classes_, classes):
+                    if not _same_classes(model.classes_, classes):
                         raise ValueError("All DWD learners must use the same ordered binary labels.")
                 context["stage"] = "base_scoring"
                 with _stage("base_scoring"), np.errstate(over="ignore", invalid="ignore"):
@@ -803,9 +806,11 @@ class EnsembleKernelDWD(ExactLabelClassifierMixin, BaseEstimator):
                 _reject_complex(X, "Features")
                 y = exact_sparse_uint64_target(y)
                 _reject_complex(y, "Labels")
-                X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
+                X, y = _validate_prepared_X_y(X, y, estimator=self, accept_sparse=False, dtype=np.float64)
                 y = _discrete_training_labels(y)
-                classes, encoded = np.unique(y, return_inverse=True)
+                classes, encoded = np.unique(_comparison_labels(y), return_inverse=True)
+                if y.dtype.kind == "T":
+                    classes = classes.astype(y.dtype)
                 if len(classes) < 2:
                     raise ValueError("EnsembleKernelDWD requires two classes; the input contains one class.")
                 if len(classes) > 2:
@@ -851,7 +856,7 @@ class EnsembleKernelDWD(ExactLabelClassifierMixin, BaseEstimator):
             context["final_fit_calls_completed"] = 1
             context["stage"] = "final_validation"
             with _stage("final_validation"):
-                if not np.array_equal(final_model.classes_, classes):
+                if not _same_classes(final_model.classes_, classes):
                     raise ValueError("The final DWD must use the same ordered binary labels.")
             context["stage"] = "finalization"
             self.classes_ = classes
@@ -893,7 +898,7 @@ class EnsembleKernelDWD(ExactLabelClassifierMixin, BaseEstimator):
                 "selected_size": len(selected),
                 "selection_ratio_realized": len(selected) / n,
                 "classes": [
-                    {"label": label.item() if isinstance(label, np.generic) else label,
+                    {"label": _label_value(label),
                      "training_count": int(count), "selected_count": int(retained),
                      "training_fraction": int(count) / n,
                      "selected_fraction": int(retained) / len(selected),

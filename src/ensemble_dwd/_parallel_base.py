@@ -12,6 +12,7 @@ from threading import Barrier, BrokenBarrierError, Lock, local, current_thread, 
 import numpy as np
 from threadpoolctl import threadpool_info, threadpool_limits
 from ._failure_context import attach_failure_context, uses_implementation
+from ._validation import _same_classes
 from .profiling import _active_profile, _stage, fit_profile, _record_parallel_profiles
 
 _LOCAL = local()
@@ -86,7 +87,7 @@ def parallel_base_stage(model, X, y, classes, subsets, kernel_kws):
                 row['fit_done'] = 1
                 row['stage'] = 'base_validation'
                 with _stage('base_validation'):
-                    if not np.array_equal(learner.classes_, classes):
+                    if not _same_classes(learner.classes_, classes):
                         raise ValueError(
                             'All DWD learners must use the same ordered binary labels.'
                         )

@@ -36,8 +36,10 @@ name = "ensemble_dwd"
 test = [
     "pytest>=9.0.3",
     "psutil>=7.2.0",
-    "pandas>=2.2.2; python_version < '3.13'",
-    "pandas>=2.2.3; python_version >= '3.13'",
+    "pandas>=2.2.0; python_version < '3.13'",
+    "pandas>=2.2.3; python_version == '3.13'",
+    "pandas>=2.3.3; python_version == '3.14'",
+    "pandas>=3.0.6; python_version >= '3.15'",
 ]
 
 [tool.flit.sdist]

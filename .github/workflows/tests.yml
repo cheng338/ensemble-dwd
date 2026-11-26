@@ -140,8 +140,27 @@ jobs:
                   print(f"- {Path(wheel['wheel']).name} SHA-256 `{wheel['wheel_sha256']}`", file=summary)
           PY
       - name: Run the complete bundled test suite
+        if: ${{ !matrix.socp }}
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: python -I -B -m pytest tests -o "python_files=test*.py" -ra --junitxml=results.xml
+      - name: Run the bundled tests with conic imports in a separate process
+        if: matrix.socp
+        working-directory: ${{ runner.temp }}/ensemble-installed-tests
+        run: |
+          # Optional solvers can load a separate BLAS after a cache snapshot.
+          conic_tests=(
+            tests/test_adaptive_conic_refit.py
+            tests/test_nested_search_refit_timing.py
+            tests/test_noncheckpoint_conic_refit.py
+          )
+          ignore_conic=()
+          for file in "${conic_tests[@]}"; do
+            ignore_conic+=("--ignore=$file")
+          done
+          status=0
+          python -I -B -m pytest tests "${ignore_conic[@]}" -o "python_files=test*.py" -ra --junitxml=results.xml || status=1
+          python -I -B -m pytest "${conic_tests[@]}" -o "python_files=test*.py" -ra --junitxml=conic-results.xml || status=1
+          exit "$status"
       - name: Require the real ordered-gradient base and final fit to pass
         if: runner.os == 'Windows'
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
@@ -149,4 +168,4 @@ jobs:
       - name: Require the real adaptive conic refit to pass
         if: matrix.socp
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        run: python -I -B tests/ci_pair.py result --junit results.xml --require conic
+        run: python -I -B tests/ci_pair.py result --junit conic-results.xml --require conic

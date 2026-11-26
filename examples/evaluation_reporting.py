@@ -15,7 +15,7 @@ from sys import modules
 
 import numpy as np
 
-from dwd._validation import (_PLAIN_REAL_TYPES, _SelectedTemporalObservations, _custom_comparison_types,
+from dwd._validation import (_PLAIN_REAL_TYPES, _SelectedTemporalObservations, _comparison_labels, _custom_comparison_types,
                              _is_boxed_nat, _is_temporal_nat, _label_source_and_target, _numeric_abc_instance,
                              _original_label_vector, _pandas_target_array, _python_label, _sparse_text_fill,
                              _temporal_label_key, _unbox_numeric_array, exact_label_matches, exact_sparse_uint64_target)
@@ -350,6 +350,7 @@ def classification_report(actual, predicted):
 
 
 def _ordered_report_classes(actual, predicted):
+    actual, predicted = _comparison_labels(actual), _comparison_labels(predicted)
     dtype = np.result_type(actual.dtype, predicted.dtype)
     if dtype.kind == 'f' and any(v.dtype.kind in 'iu' and
             np.iinfo(v.dtype).bits > np.finfo(dtype).nmant + 1 for v in (actual, predicted)):
@@ -375,7 +376,7 @@ def selection_composition(diagnostics, y):
     the complete recorded selected counts agree with the recorded set size.
     """
     facts = diagnostics if isinstance(diagnostics, Mapping) else {}
-    labels = np.asarray(exact_sparse_uint64_target(y))
+    labels = _comparison_labels(np.asarray(exact_sparse_uint64_target(y)))
     if labels.ndim != 1 or not labels.size:
         return {'available': False, 'reason': 'training labels unavailable'}
     if 'pairwise_estimators' in facts:

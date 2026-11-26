@@ -7,14 +7,17 @@ import warnings
 
 import numpy as np
 from sklearn.base import BaseEstimator
-from dwd._validation import ExactLabelClassifierMixin, _discrete_training_labels, exact_sparse_uint64_target
+from dwd._validation import (
+    ExactLabelClassifierMixin, _comparison_labels, _discrete_training_labels, _validate_prepared_X_y,
+    exact_sparse_uint64_target,
+)
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.svm import SVC
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from ._cache import _CacheIdentityError, _cached_base_stage, _runtime_provenance, _RuntimeVerifier
 from ._failure_context import attach_failure_context, failure_context_scope, uses_implementation
-from ._validation import _reject_complex
+from ._validation import _reject_complex, _same_classes
 from .estimator import (
     IneligibleSelectionError,
     _finite_real,
@@ -287,7 +290,7 @@ class EnsembleKernelSVM(ExactLabelClassifierMixin, BaseEstimator):
                 model = self._make_estimator(gamma).fit(X[indices], y[indices])
                 context["base_fit_calls_completed"] += 1
                 context["stage"] = "base_validation"
-                if not np.array_equal(model.classes_, classes):
+                if not _same_classes(model.classes_, classes):
                     raise ValueError("All SVC learners must use the same ordered binary labels.")
                 context["stage"] = "base_scoring"
                 with np.errstate(over="ignore", invalid="ignore"):
@@ -393,9 +396,13 @@ class EnsembleKernelSVM(ExactLabelClassifierMixin, BaseEstimator):
             _reject_complex(X, "Features")
             y = exact_sparse_uint64_target(y)
             _reject_complex(y, "Labels")
-            X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
+            X, y = _validate_prepared_X_y(X, y, estimator=self, accept_sparse=False, dtype=np.float64)
             y = _discrete_training_labels(y)
+            label_dtype = y.dtype
+            y = _comparison_labels(y)
             classes, encoded = np.unique(y, return_inverse=True)
+            if label_dtype.kind == "T":
+                classes = classes.astype(label_dtype)
             if len(classes) < 2:
                 raise ValueError("EnsembleKernelSVM requires two classes; the input contains one class.")
             if len(classes) > 2:
@@ -432,7 +439,7 @@ class EnsembleKernelSVM(ExactLabelClassifierMixin, BaseEstimator):
             final = self._make_estimator(gamma).fit(X[selected], y[selected])
             context["final_fit_calls_completed"] = 1
             context["stage"] = "final_validation"
-            if not np.array_equal(final.classes_, classes):
+            if not _same_classes(final.classes_, classes):
                 raise ValueError("The final SVC must use the same ordered binary labels.")
             context["stage"] = "final_diagnostics"
             final_diagnostics = _diagnostics(final)
@@ -479,11 +486,13 @@ class EnsembleKernelSVM(ExactLabelClassifierMixin, BaseEstimator):
         size = len(X) if self.prediction_batch_size is None else _positive_integer(
             self.prediction_batch_size, "prediction_batch_size")
         result = np.empty(len(X), dtype=self.classes_.dtype)
+        # Object comparison preserves the trailing NULs in string class IDs.
+        classes = _comparison_labels(self.classes_)
         for start in range(0, len(X), size):
             stop = min(start + size, len(X))
             values = np.asarray(self.final_estimator_.predict(X[start:stop]))
             _reject_complex(values, "SVC predicted labels")
-            if values.shape != (stop - start,) or not np.isin(values, self.classes_).all():
+            if values.shape != (stop - start,) or not np.isin(_comparison_labels(values), classes).all():
                 raise ValueError("SVC must return one valid class label per observation.")
             result[start:stop] = values
         return result

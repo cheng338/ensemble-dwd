@@ -2,6 +2,7 @@
 
 import numpy as np
 from scipy.sparse import issparse
+from dwd._validation import _comparison_labels
 
 
 def _label_value(value):
@@ -15,7 +16,8 @@ def _label_value(value):
 
 def _class_mask(y, label):
     """Compare rows to one representative in the array's label domain."""
-    if y.dtype.kind in "OT":
+    y = _comparison_labels(y)
+    if y.dtype.kind == "O":
         # A scalar text operand can be inferred as fixed-width and lose
         # its trailing NULs. Assign a single element to avoid invoking
         # array conversion on a custom object representative.
@@ -23,6 +25,13 @@ def _class_mask(y, label):
         representative[0] = label
         return y == representative
     return y == label
+
+
+def _same_classes(actual, expected):
+    """Check the complete ordered class names reported by a nested learner."""
+    if expected.dtype.kind == "T":
+        return np.array_equal(np.asarray(actual, dtype=object), _comparison_labels(expected))
+    return np.array_equal(actual, expected)
 
 
 def _reject_complex(value, name):

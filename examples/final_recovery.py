@@ -12,7 +12,6 @@ import warnings
 
 import numpy as np
 from sklearn.base import clone
-from sklearn.metrics import accuracy_score
 from threadpoolctl import threadpool_limits
 
 import cv_checkpoint as checkpoint_module
@@ -20,7 +19,8 @@ import evaluation_reporting
 import phase_threads
 import work_reporting
 from search_support import (_resolved_public_path, data_fingerprint, exception_message,
-                            json_safe, write_json_atomic)
+                            json_safe, label_accuracy_score as accuracy_score, preserve_text_sequence,
+                            write_json_atomic)
 
 
 _HANDOFF_SCHEMA = 'accepted-final-handoff-role-v3'
@@ -281,7 +281,8 @@ def reserve_normal_scoring(checkpoint):
 
 
 def _own_data(X_train, y_train, X_test, y_test):
-    arrays = tuple(np.array(value, copy=True) for value in (X_train, y_train, X_test, y_test))
+    arrays = tuple(np.array(value, copy=True) for value in
+                   (X_train, preserve_text_sequence(y_train), X_test, preserve_text_sequence(y_test)))
     for X, y in (arrays[:2], arrays[2:]):
         if (X.ndim != 2 or y.ndim != 1 or len(X) != len(y)
                 or X.dtype.hasobject or y.dtype.hasobject):

@@ -49,13 +49,13 @@ from sklearn.preprocessing import StandardScaler
 from threadpoolctl import ThreadpoolController, threadpool_limits
 
 from search_support import (CandidateEvaluator, array_fingerprint, data_fingerprint,
-                            eligible_accuracy, exception_details, json_safe,
+                            eligible_accuracy, exception_details, json_safe, preserve_text_sequence,
                             write_failure_json, write_json_atomic)
 from search_support import (ACCURACY_AGGREGATION, accuracy_fraction, accuracy_evidence,
                             apply_accuracy_evidence, score_ranks, score_value)
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
 from ensemble_dwd._validation import _class_mask, _label_value
-from dwd._validation import exact_sparse_uint64_target
+from dwd._validation import _comparison_labels, exact_sparse_uint64_target
 from work_reporting import summarize_records
 import mnist_preprocessing
 from mnist_preprocessing import UnitPixelScaler
@@ -1182,7 +1182,8 @@ def _saved_identity(path, *, schema=SCHEMA):
 
 def _training_labels(y):
     # The caller can reuse these observations for every subset and pair.
-    return y if type(y) is np.ndarray else np.asarray(exact_sparse_uint64_target(y))
+    labels = y if type(y) is np.ndarray else np.asarray(exact_sparse_uint64_target(y))
+    return _comparison_labels(labels)
 
 
 def _row_diagnostics(rows, y=None):
@@ -1420,7 +1421,7 @@ def _fold_equivalence(candidate, identity, fold, y_train):
         return False
     if contains_callable(getattr(model, 'kernel_kws', None)):
         return None
-    labels, sizes = np.unique(y_train, return_counts=True)
+    labels, sizes = np.unique(_training_labels(y_train), return_counts=True)
     if len(labels) < 2 or (not is_ovo and len(labels) != 2):
         return None
     if is_ovo:
@@ -2079,7 +2080,8 @@ class CheckpointedCV:
         self.folder = _io_path(Path(run_dir) / 'cv-checkpoints')
         # Caller-owned arrays and RNG objects may change after entering a context.
         # Own immutable data and a cloned estimator so saved identities stay true.
-        self.estimator, self.X, self.y = clone(estimator), np.array(X, copy=True), np.array(y, copy=True)
+        self.estimator, self.X = clone(estimator), np.array(X, copy=True)
+        self.y = np.array(preserve_text_sequence(y), copy=True)
         self.cv_seeds = validate_cv_seeds(cv_seeds)
         self.seed_parameter = seed_parameter
         if self.cv_seeds is None:

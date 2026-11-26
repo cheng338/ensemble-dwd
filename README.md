@@ -118,9 +118,9 @@ exact paired DWD and ensemble-DWD artifacts with detached tests and origin check
 
 The test extra includes pandas for the binary and multiclass DataFrame
 feature-name checks. A missing or broken pandas import fails those tests rather
-than skipping them. Pandas remains optional for ordinary package use. The test
-extra requires pandas 2.2.2 or later on Python 3.11 and 3.12, and pandas
-2.2.3 or later on Python 3.13 and later.
+than skipping them. Pandas remains optional for ordinary package use. The pandas
+minimum for the test extra is 2.2.0 on Python 3.11 and 3.12, 2.2.3 on
+Python 3.13, 2.3.3 on Python 3.14, and 3.0.6 on Python 3.15 and later.
 
 The dependency also reuses bounded temporary buffers and avoids repeated work
 within eligible prediction calls. These changes apply to base and final DWD

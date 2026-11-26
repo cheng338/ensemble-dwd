@@ -8,7 +8,10 @@ import numpy as np
 from joblib import Parallel, delayed
 from joblib.parallel import get_active_backend
 from sklearn.base import BaseEstimator, clone
-from dwd._validation import ExactLabelClassifierMixin, _discrete_training_labels, exact_sparse_uint64_target
+from dwd._validation import (
+    ExactLabelClassifierMixin, _comparison_labels, _discrete_training_labels, _validate_prepared_X_y,
+    exact_sparse_uint64_target,
+)
 from sklearn.utils import get_tags
 from sklearn.utils.validation import check_is_fitted, validate_data
 
@@ -216,9 +219,13 @@ class OvOClassifier(ExactLabelClassifierMixin, BaseEstimator):
             _reject_complex(X, "Features")
             y = exact_sparse_uint64_target(y)
             _reject_complex(y, "Labels")
-            X, y = validate_data(self, X, y, accept_sparse=False, dtype=np.float64)
+            X, y = _validate_prepared_X_y(X, y, estimator=self, accept_sparse=False, dtype=np.float64)
             y = _discrete_training_labels(y)
+            label_dtype = y.dtype
+            y = _comparison_labels(y)
             classes = np.unique(y)
+            if label_dtype.kind == "T":
+                classes = classes.astype(label_dtype)
             if len(classes) < 2:
                 raise ValueError("OvOClassifier requires at least 2 classes; got 1 class.")
             class_pairs = np.asarray(list(combinations(range(len(classes)), 2)),

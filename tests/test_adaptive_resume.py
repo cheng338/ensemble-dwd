@@ -115,6 +115,37 @@ class AdaptiveResumeTests(unittest.TestCase):
         self.assertEqual(first['completed'], resumed['completed'])
         self.assertEqual(counts, (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions)))
 
+    @unittest.skipUnless(hasattr(np.dtypes, 'StringDType'), 'NumPy has no StringDType')
+    def test_completed_resume_rejects_string_sentinel_with_custom_equality(self):
+        from test_evaluation_reporting import CaseFolded, string_sentinel_holdout
+
+        class TextSurface(InterruptibleSurface):
+            def predict(self, X):
+                return self.classes_[super().predict(X)]
+
+        self.pipeline.set_params(ensemble=TextSurface())
+        self.y = np.where(self.y == 0, 'a', 'b')
+        self.test_y = string_sentinel_holdout('A')
+        first = self.run_search()
+        self.assertEqual(first['completed']['held_out_accuracy'], .5)
+        counts = (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions))
+
+        self.test_y = string_sentinel_holdout('A')
+        replay = self.run_search(resume=True)
+        self.assertTrue(replay['resumed_completed'])
+        self.assertEqual(replay['completed'], first['completed'])
+        self.assertEqual(counts, (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions)))
+
+        saved = {path: path.read_bytes() for path in
+                 (self.run_dir / 'run.json', self.run_dir / 'status.json', self.run_dir / 'completed.json',
+                  self.run_dir / 'cv-checkpoints/artifacts/completed.json')}
+        self.test_y = string_sentinel_holdout(CaseFolded('A'))
+        with self.assertRaisesRegex(ValueError, 'Cannot fingerprint'):
+            self.run_search(resume=True)
+        self.assertEqual(counts, (len(InterruptibleSurface.attempts), len(InterruptibleSurface.predictions)))
+        for path, content in saved.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
+
     def test_changed_data_refuses_resume_before_fit_or_status_replacement(self):
         InterruptibleSurface.fail_at = 5
         with self.assertRaises(KeyboardInterrupt):

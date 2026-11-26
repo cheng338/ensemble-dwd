@@ -20,8 +20,9 @@ from sklearn.svm import SVC
 from sklearn.utils.multiclass import check_classification_targets
 
 from dwd.gen_kern_dwd import KernGDWD
+from dwd._validation import _comparison_labels
 from ensemble_dwd import EnsembleKernelDWD, EnsembleKernelSVM, OvOClassifier
-from search_support import _io_path, write_json_atomic
+from search_support import _io_path, preserve_text_sequence, write_json_atomic
 from near_coordinates import console_notice
 from mnist_preprocessing import UnitPixelScaler
 
@@ -79,7 +80,7 @@ def _seeds(value):
 
 
 def _fold_classes(y, folds):
-    labels = np.asarray(y)
+    labels = _comparison_labels(np.asarray(preserve_text_sequence(y)))
     if labels.ndim != 1 or not len(labels):
         raise ValueError("y must be a nonempty one-dimensional label vector")
     if labels.dtype.kind in "fc" and not np.isfinite(labels).all():

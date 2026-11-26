@@ -14,6 +14,18 @@ def extended_path(path):
     return absolute
 
 
+def ordinary_path(path):
+    """Return the ordinary spelling of an extended drive or network-share path."""
+    value = os.fspath(path)
+    if os.name == "nt" and value.startswith("\\\\?\\"):
+        tail = value[4:]
+        if tail[:4].upper() == "UNC\\":
+            return Path("\\\\" + tail[4:])
+        if tail[1:3] == ":\\":
+            return Path(tail)
+    return Path(value)
+
+
 @contextmanager
 def extended_temporary_environment():
     """Normalize candidates before tempfile probes them; restore caller state."""

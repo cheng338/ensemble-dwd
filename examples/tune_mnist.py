@@ -26,7 +26,6 @@ from time import perf_counter
 import numpy as np
 from joblib import hash as joblib_hash, parallel_config
 from sklearn.base import clone
-from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV, ParameterGrid, StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
 from threadpoolctl import threadpool_limits
@@ -44,6 +43,7 @@ from search_support import (_io_path, _resolved_public_path, CandidateEvaluator,
                             parameter_snapshot, prefix_grid, record_failure,
                             write_failure_json, write_json_atomic)
 from search_support import score_value
+from search_support import label_accuracy_score as accuracy_score, preserve_text_sequence
 from mnist_preprocessing import (add_preprocessing_arguments, make_preprocessor,
                                  preprocessing_metadata)
 
@@ -369,8 +369,10 @@ def run_search_workflow(pipeline, grid, X_train, y_train, X_test, y_test, folds,
     folds = [(np.asarray(train, dtype=np.int64), np.asarray(test, dtype=np.int64))
              for train, test in folds]
     native_preflight = _noncheckpoint_preflight_final_native_threads(final_native_threads, pipeline)
-    identity = {'training': data_fingerprint(X_train, y_train),
-                'held_out': data_fingerprint(X_test, y_test)}
+    y_train = preserve_text_sequence(y_train)
+    y_test = preserve_text_sequence(y_test)
+    identity = {'training': data_fingerprint(X_train, y_train, required=False),
+                'held_out': data_fingerprint(X_test, y_test, required=False)}
     metadata = {
         'schema_version': 1, 'data': identity,
         'final_thread_policy_sha256': final_thread_policy_sha256(),

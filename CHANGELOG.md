@@ -5,8 +5,9 @@ accompanying his dissertation.
 
 ## 0.4.1
 
-- The test extra supports pandas 2.2.2 on Python 3.11 and 3.12 and requires
-  pandas 2.2.3 or later on Python 3.13 and later.
+- The pandas minimum for the test extra is 2.2.0 on Python 3.11 and 3.12,
+  2.2.3 on Python 3.13, 2.3.3 on Python 3.14, and 3.0.6 on Python 3.15
+  and later.
 
 - Require NumPy 1.26.3 or later and SciPy 1.11.4 or later, matching the
   paired DWD release.

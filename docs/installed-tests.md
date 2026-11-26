@@ -30,7 +30,11 @@ detached test bundle from the verified extraction. It checks the README body,
 metadata separator and exact unconditional DWD requirement in both distributions.
 
 Each job checks dependency consistency and runs the complete detached suite
-once. On Ubuntu 3.12 the JUnit report must show the real adaptive Clarabel
+once. On Ubuntu 3.12, the modules that use optional conic solvers run in a
+separate Python process. This keeps their loaded native libraries out of the
+cache-reuse and thread-budget tests. When adding a test module that loads a
+conic solver, include it in the workflow's `conic_tests` list.
+The conic JUnit report must show the real adaptive Clarabel
 refit passed, including four FAER threads on the CV fits and one on the selected
 refit. On each native Windows job the report must show the real ordered-gradient
 reducer ran in both the Ensemble base and final learners.

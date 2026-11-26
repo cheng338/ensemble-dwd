@@ -4,11 +4,11 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
-import psutil
 import pytest
 
-from path_support import extended_path
+from path_support import extended_path, ordinary_path
 
 
 def test_deep_temporary_reads_and_cleanup(tmp_path):
@@ -48,13 +48,30 @@ def test_default_temp_name_and_cleanup_are_extended_on_windows():
     assert not Path(name).exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive and network-share spelling")
+@pytest.mark.parametrize("root", [r"C:\test directory", r"\\server\share\test directory"])
+def test_fresh_process_receives_ordinary_temp_path(root):
+    requested = Path(root).joinpath(*["long directory " * 4 + "child"] * 5)
+    deep = Path(extended_path(requested))
+    with patch.object(subprocess, "run") as launch:
+        _run_deep_temp_probe(deep)
+    launch.assert_called_once()
+    assert launch.call_args.args[0][-1] == str(deep)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        assert launch.call_args.kwargs["env"][name] == str(requested)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows extended temporary-path spelling")
 def test_fresh_process_keeps_requested_deep_temp_and_restores_environment(tmp_path):
     deep = Path(extended_path(tmp_path))
     for _ in range(6):
         deep /= "requested-deep-temp-" * 3
     deep.mkdir(parents=True)
-    ordinary = str(deep)[4:]
+    _run_deep_temp_probe(deep)
+
+
+def _run_deep_temp_probe(deep):
+    ordinary = str(ordinary_path(deep))
     assert len(ordinary) > 260
     env = os.environ.copy()
     env.update(TEMP=ordinary, TMP=ordinary, TMPDIR=ordinary)
@@ -77,14 +94,8 @@ with extended_temporary_environment():
 assert dict(os.environ) == before
 assert tempfile.tempdir is cached
 '''
-    child = psutil.Popen([sys.executable, "-B", "-c", code,
-                          str(Path(__file__).parent), str(deep)], env=env,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    try:
-        stdout, stderr = child.communicate(timeout=20)
-        assert child.wait() == 0, (stdout, stderr)
-        assert not child.is_running()
-    finally:
-        if child.poll() is None:
-            child.kill()
-        child.wait(timeout=10)
+    # This probe needs only the standard library and the helper passed below.
+    subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", code, str(Path(__file__).parent), str(deep)],
+        env=env, stdin=subprocess.DEVNULL, check=True, timeout=20,
+    )

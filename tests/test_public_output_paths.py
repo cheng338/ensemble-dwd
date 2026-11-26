@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from path_support import ordinary_path
 from runtime_test_support import synthetic_runtime
 from sklearn.base import BaseEstimator, ClassifierMixin
 
@@ -35,15 +36,6 @@ class PathWorkflowClassifier(ClassifierMixin, BaseEstimator):
     def predict(self, X):
         type(self).predictions += 1
         return (X[:, 0] > 0).astype(int)
-
-
-def ordinary_path(path):
-    value = str(path)
-    if os.name == 'nt' and value.startswith('\\\\?\\UNC\\'):
-        value = '\\\\' + value[8:]
-    elif os.name == 'nt' and value.startswith('\\\\?\\'):
-        value = value[4:]
-    return Path(value)
 
 
 class PublicOutputPathTests(unittest.TestCase):
@@ -147,14 +139,14 @@ class PublicOutputPathTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows path syntax')
     def test_windows_drive_unc_and_already_extended_normalization(self):
-        drive = self.root / 'name with spaces' / 'status.json'
+        drive = Path(r'C:\name with spaces\status.json')
         self.assertEqual(str(support._io_path(drive)), '\\\\?\\' + str(drive))
         unc = Path('\\\\server\\share\\folder\\status.json')
         self.assertEqual(str(support._io_path(unc)), '\\\\?\\UNC\\server\\share\\folder\\status.json')
         for path in (support._io_path(drive), support._io_path(unc)):
             self.assertEqual(support._io_path(path), path)
-        # Only local paths are resolved; the UNC assertion above makes no
-        # network request or assumption that a share is available.
+        # The spelling checks above do not access either synthetic path.
+        # Use the actual temporary directory to exercise creation and resume.
         extended_run = support._io_path(self.root / 'extended-run')
         self.assertEqual(support.new_run_directory(extended_run), extended_run)
         self.assertEqual(support.new_run_directory(extended_run, resume=True), extended_run)
