@@ -606,7 +606,7 @@ The 0.3.9 release was paired with DWD 1.3.14. See the
 The records below retain their original workload and version scope; they are
 not new full MNIST searches for version 0.3.9. DWD's
 [1.3.10 validation scope and timing follow-up](https://github.com/cheng338/dwd/blob/f6db6e45463554db52385caba8c6c1c1f63fcd8b/docs/validation-1.3.10.md)
-remains historical evidence for the previous dependency release.
+remains historical evidence for an earlier dependency release.
 
 ## 0.3.6: final-fit native threads
 

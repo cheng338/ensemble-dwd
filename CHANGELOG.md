@@ -773,6 +773,12 @@ defaults and parameter grids are unchanged. The cache synchronization repair
 does not change numerical results. The DWD dependency update improves numerical
 robustness while preserving the objective and unregularized intercept.
 
+## 0.2.0
+
+- Added `OvOClassifier`, which fits one binary classifier per class pair and
+  predicts by maximum-wins voting. See the [0.2.0 multiclass validation
+  record](docs/validation-0.2.0.md).
+
 ## 0.1.1 — 2026-09-07
 
 - Add optional process-safe base-stage caching and optional storage without

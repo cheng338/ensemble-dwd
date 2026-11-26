@@ -1,6 +1,9 @@
 # Three-pair MNIST validation
 
-This completed comparison used 20% of the official training rows for each
+This comparison used Ensemble DWD 0.3.0, in which base subsets could overlap.
+Version 0.3.2 introduced disjoint base subsets.
+
+The study used 20% of the official training rows for each
 pair, selected reproducibly with seed 42. It used the full official test rows
 for those digits only after training-only CV and parameter selection.
 Images were flattened to 784 float64 features, and StandardScaler was fitted

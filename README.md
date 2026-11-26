@@ -96,10 +96,11 @@ describes the compiler and runtime requirements.
 ## Test the matching package pair
 
 Complete-suite validation targets Python 3.11 and 3.12. Python 3.13 and later
-Python 3.x releases are supported without dedicated complete-suite runs.
-Recorded numerical checks cover 3.11 through 3.13; forward eligibility does not
-claim testing on future interpreters. Earlier 3.13 results retain their
-historical scope. This runtime change leaves the ensemble method unchanged.
+Python 3.x releases are also supported. Earlier numerical checks covered
+Python 3.13. On standard CPython 3.14 and 3.15, the portable wheels for
+Ensemble DWD 0.4.1 and DWD 2.0.2 passed focused pandas tests on Windows and
+Linux. Binary and multiclass fits preserved unsigned class labels, predictions
+and scores. The Python 3.16 check covered the pandas dependency marker only.
 
 To run this checkout's test suite, use a fresh development or CI environment.
 Run these commands from the Ensemble DWD checkout with the matching

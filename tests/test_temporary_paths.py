@@ -94,8 +94,14 @@ with extended_temporary_environment():
 assert dict(os.environ) == before
 assert tempfile.tempdir is cached
 '''
-    # This probe needs only the standard library and the helper passed below.
+    executable = sys.executable
+    if os.name == "nt":
+        base = getattr(sys, "_base_executable", None)
+        if base and os.path.normcase(base) != os.path.normcase(executable):
+            # Bypass the Windows venv launcher with a deep TEMP, keeping the venv identity.
+            env["__PYVENV_LAUNCHER__"] = executable
+            executable = base
     subprocess.run(
-        [sys.executable, "-I", "-S", "-B", "-c", code, str(Path(__file__).parent), str(deep)],
+        [executable, "-I", "-S", "-B", "-c", code, str(Path(__file__).parent), str(deep)],
         env=env, stdin=subprocess.DEVNULL, check=True, timeout=20,
     )

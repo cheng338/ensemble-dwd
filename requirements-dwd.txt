@@ -1,4 +1,4 @@
 # DWD 2.0.2 native Windows and portable wheels for Ensemble DWD 0.4.1.
 dwd==2.0.2 \
-    --hash=sha256:67d70caedbe6d7a2725bfcf30a3f25fb224130c8b577a21b7903e1c7692c05dd \
-    --hash=sha256:503d72130f04ed2666093f67ae06f4a19975dfd859c103d7d2c476a08784d5fe
+    --hash=sha256:f966fca9aed3e02aff96049d0b77e9eb998a890eaf14235dcdf3da5e314bed03 \
+    --hash=sha256:fe489839b0d4d3b311b031cd160ddf32e9490081774f0c6d749d0b4ae61ee4eb
