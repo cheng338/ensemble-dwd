@@ -1,9 +1,8 @@
-name: Tests
+name: Windows temporary-directory diagnostics
 
 on:
   push:
-    branches: ["**"]
-  pull_request:
+    branches: ["diagnostics/windows-deep-temp-20261125"]
   workflow_dispatch:
 
 permissions:
@@ -11,16 +10,11 @@ permissions:
 
 jobs:
   tests:
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
-        include:
-          - os: ubuntu-latest
-            python-version: "3.12"
-            socp: true
     defaults:
       run:
         shell: bash
@@ -28,31 +22,29 @@ jobs:
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
-      DWD_DEVELOPMENT_REF: ${{ vars.DWD_DEVELOPMENT_REF }}
-      DWD_BUILD_ACCEL: ${{ matrix.os == 'windows-latest' && '1' || '0' }}
+      DWD_DEVELOPMENT_REF: 61034be92a9064b00ec96651c3aff67adce1f7a5
+      ENSEMBLE_RELEASE_REF: f4149c4389f23d466e2ae9728436ef212daed511
+      DWD_BUILD_ACCEL: "1"
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Require the published commit of the paired DWD development source
-        run: |
-          if [[ ! "$DWD_DEVELOPMENT_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo 'Set DWD_DEVELOPMENT_REF to the full 40-hex commit SHA of the paired DWD source.' >&2
-            exit 1
-          fi
       - name: Check out the paired DWD source
         uses: actions/checkout@v7.0.1
         with:
           repository: cheng338/dwd
-          ref: ${{ vars.DWD_DEVELOPMENT_REF }}
+          ref: ${{ env.DWD_DEVELOPMENT_REF }}
           path: .ci-dwd-source
-      - name: Verify and record the two checked-out commits
+      - name: Verify the paired sources
         run: |
           dwd_sha=$(git -C .ci-dwd-source rev-parse HEAD)
           ensemble_sha=$(git rev-parse HEAD)
-          [[ "$dwd_sha" == "${DWD_DEVELOPMENT_REF,,}" && "$ensemble_sha" == "$GITHUB_SHA" ]]
-          printf -- '- DWD commit `%s`\n- Ensemble DWD commit `%s`\n' "$dwd_sha" "$ensemble_sha" | tee -a "$GITHUB_STEP_SUMMARY"
+          [[ "$dwd_sha" == "$DWD_DEVELOPMENT_REF" && "$ensemble_sha" == "$GITHUB_SHA" ]]
+          git diff --exit-code "$ENSEMBLE_RELEASE_REF" HEAD -- . ':(exclude).github'
+          printf -- '- DWD commit `%s`\n- Ensemble release commit `%s`\n- Diagnostic commit `%s`\n' "$dwd_sha" "$ENSEMBLE_RELEASE_REF" "$ensemble_sha" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Create the isolated wheel test environment
         run: |
           python -m venv "$RUNNER_TEMP/ensemble-wheel-env"
@@ -61,71 +53,36 @@ jobs:
           from pathlib import Path
           root = Path(os.environ['RUNNER_TEMP']) / 'ensemble-wheel-env'
           with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as paths:
-              print(root / ('Scripts' if os.name == 'nt' else 'bin'), file=paths)
+              print(root / 'Scripts', file=paths)
           PY
       - name: Build the paired DWD wheel
         run: |
           python -I -c "import os,pathlib,sys; assert pathlib.Path(sys.prefix).resolve() == (pathlib.Path(os.environ['RUNNER_TEMP'])/'ensemble-wheel-env').resolve()"
           python -m pip wheel --no-cache-dir --no-deps --wheel-dir .ci-wheels/dwd ./.ci-dwd-source
       - name: Install the paired base DWD wheel
-        if: ${{ !matrix.socp }}
         run: python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/dwd
-      - name: Install the paired DWD conic extra with the FAER-enabled Clarabel wheel
-        if: matrix.socp
-        run: |
-          export PIP_CONSTRAINT="$RUNNER_TEMP/ensemble-socp-constraints.txt"
-          echo 'clarabel==0.11.0' > "$PIP_CONSTRAINT"
-          python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/dwd --extras socp
-      - name: Build the Ensemble source distribution
-        if: matrix.socp
-        run: |
-          python -m pip install build
-          python -m build --sdist --outdir .ci-sdists .
-      - name: Verify the source distribution against the tracked checkout files
-        id: sdist
-        if: matrix.socp
-        run: >-
-          python -I -B tests/ci_pair.py extract --sdist-dir .ci-sdists
-          --dwd-source .ci-dwd-source --destination "${{ runner.temp }}/ensemble-sdist" --github-output
       - name: Build and install the Ensemble wheel
-        env:
-          ENSEMBLE_SOURCE: ${{ !matrix.socp && github.workspace || steps.sdist.outputs.source }}
         run: |
-          test -n "$ENSEMBLE_SOURCE"
-          python -m pip wheel --no-cache-dir --no-deps --wheel-dir .ci-wheels/ensemble "$ENSEMBLE_SOURCE"
+          python -m pip wheel --no-cache-dir --no-deps --wheel-dir .ci-wheels/ensemble .
           python -I -B tests/ci_artifacts.py install --wheel-dir .ci-wheels/ensemble --extras test
           python -m pip check
-      - name: Verify the source and rebuilt wheel README and paired DWD pin
-        if: matrix.socp
-        run: |
-          python -I -B tests/ci_pair.py metadata --source "${{ steps.sdist.outputs.source }}" --wheel-dir .ci-wheels/ensemble --dwd-wheel-dir .ci-wheels/dwd
-          python -I - <<'PY'
-          from importlib.metadata import version
-          import clarabel
-          import cvxpy
-          assert version('clarabel') == '0.11.0'
-          assert 'CLARABEL' in cvxpy.installed_solvers()
-          assert callable(clarabel.DefaultSolver.get_info)
-          PY
       - name: Require the base environment to be free of CVXPY
-        if: ${{ !matrix.socp }}
         run: python -I -c "import importlib.util; assert importlib.util.find_spec('cvxpy') is None"
       - name: Prepare tests outside the package source tree
-        run: >-
-          python -I -B tests/ci_artifacts.py bundle
-          --source "${{ !matrix.socp && github.workspace || steps.sdist.outputs.source }}"
-          --destination "${{ runner.temp }}/ensemble-installed-tests"
+        run: |
+          bundle="$RUNNER_TEMP/ensemble-installed-tests"
+          python -I -B tests/ci_artifacts.py bundle --source . --destination "$bundle"
+          git show "$ENSEMBLE_RELEASE_REF:.github/workflows/tests.yml" > "$bundle/.github/workflows/tests.yml"
+          cp .github/temp_probe_observer.py .github/temp_probe_native.py "$bundle/tests/"
+          printf '\npytest_plugins = ["temp_probe_observer"]\n' >> "$bundle/tests/conftest.py"
       - name: Verify both installed wheels with the paired DWD route checks
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: >-
           python -I -B "${{ github.workspace }}/.ci-dwd-source/tests/ci_artifacts.py" check
           --dwd-wheel-dir "${{ github.workspace }}/.ci-wheels/dwd"
           --ensemble-wheel-dir "${{ github.workspace }}/.ci-wheels/ensemble"
-          --backend "${{ runner.os == 'Windows' && 'native' || 'portable' }}"
-          --route-contract current
-          --expected-platform "${{ runner.os == 'Windows' && 'windows' || 'linux' }}"
-          --expected-python "${{ matrix.python-version }}"
-          | tee wheel-report.json
+          --backend native --route-contract current --expected-platform windows
+          --expected-python "${{ matrix.python-version }}" | tee wheel-report.json
       - name: Record the verified wheel hashes with the source commits
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: |
@@ -139,33 +96,47 @@ jobs:
                   wheel = report[key]
                   print(f"- {Path(wheel['wheel']).name} SHA-256 `{wheel['wheel_sha256']}`", file=summary)
           PY
-      - name: Run the complete bundled test suite
-        if: ${{ !matrix.socp }}
-        working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        run: python -I -B -m pytest tests -o "python_files=test*.py" -ra --junitxml=results.xml
-      - name: Run the bundled tests with conic imports in a separate process
-        if: matrix.socp
-        working-directory: ${{ runner.temp }}/ensemble-installed-tests
+      - name: Prepare diagnostic output collection
         run: |
-          # Optional solvers can load a separate BLAS after a cache snapshot.
-          conic_tests=(
-            tests/test_adaptive_conic_refit.py
-            tests/test_nested_search_refit_timing.py
-            tests/test_noncheckpoint_conic_refit.py
-          )
-          ignore_conic=()
-          for file in "${conic_tests[@]}"; do
-            ignore_conic+=("--ignore=$file")
-          done
+          cat > "$RUNNER_TEMP/run-temp-probe.sh" <<'SH'
           status=0
-          python -I -B -m pytest tests "${ignore_conic[@]}" -o "python_files=test*.py" -ra --junitxml=results.xml || status=1
-          python -I -B -m pytest "${conic_tests[@]}" -o "python_files=test*.py" -ra --junitxml=conic-results.xml || status=1
+          python -I -B -m pytest "$@" || status=$?
+          python -I -B - <<'PY'
+          import os
+          from pathlib import Path
+          directory = Path(os.environ['TEMP_DIAG_OUT'])
+          files = sorted(p for p in directory.glob('*') if p.is_file() and p.suffix in {'.jsonl', '.trace', '.log'})
+          if not files:
+              print('The observer produced no diagnostic files.')
+          for path in files:
+              print(f'::group::{path.name}')
+              print(path.read_text(encoding='utf-8', errors='replace'))
+              print('::endgroup::')
+          PY
+          printf -- '- %s pytest exit code `%s`\n' "$PROBE_STAGE" "$status" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$status"
+          SH
+      - name: Run the focused fresh-process test
+        id: focused
+        working-directory: ${{ runner.temp }}/ensemble-installed-tests
+        env:
+          TEMP_DIAG_OUT: ${{ runner.temp }}/temp-probe-focused
+          PROBE_STAGE: Focused
+        run: >-
+          bash "$RUNNER_TEMP/run-temp-probe.sh"
+          tests/test_temporary_paths.py::test_fresh_process_keeps_requested_deep_temp_and_restores_environment
+          -o "python_files=test*.py" -ra --junitxml=focused-results.xml
+      - name: Run the complete bundled test suite
+        id: full
+        if: ${{ !cancelled() && (steps.focused.outcome == 'success' || steps.focused.outcome == 'failure') }}
+        working-directory: ${{ runner.temp }}/ensemble-installed-tests
+        env:
+          TEMP_DIAG_OUT: ${{ runner.temp }}/temp-probe-full
+          PROBE_STAGE: Full
+        run: >-
+          bash "$RUNNER_TEMP/run-temp-probe.sh"
+          tests -o "python_files=test*.py" -ra --junitxml=results.xml
       - name: Require the real ordered-gradient base and final fit to pass
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && (steps.full.outcome == 'success' || steps.full.outcome == 'failure') }}
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
         run: python -I -B tests/ci_pair.py result --junit results.xml --require native
-      - name: Require the real adaptive conic refit to pass
-        if: matrix.socp
-        working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        run: python -I -B tests/ci_pair.py result --junit conic-results.xml --require conic
