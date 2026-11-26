@@ -71,10 +71,7 @@ jobs:
       - name: Prepare tests outside the package source tree
         run: |
           bundle="$RUNNER_TEMP/ensemble-installed-tests"
-          release_source="$RUNNER_TEMP/ensemble-release-bundle-source"
-          mkdir -p "$release_source"
-          git archive "$ENSEMBLE_RELEASE_REF" | tar -xf - -C "$release_source"
-          python -I -B tests/ci_artifacts.py bundle --source "$release_source" --destination "$bundle"
+          python -I -B tests/ci_artifacts.py bundle --source . --destination "$bundle"
           git show "$ENSEMBLE_RELEASE_REF:.github/workflows/tests.yml" > "$bundle/.github/workflows/tests.yml"
       - name: Verify both installed wheels with the paired DWD route checks
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
