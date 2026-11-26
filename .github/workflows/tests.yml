@@ -43,7 +43,7 @@ jobs:
           dwd_sha=$(git -C .ci-dwd-source rev-parse HEAD)
           ensemble_sha=$(git rev-parse HEAD)
           [[ "$dwd_sha" == "$DWD_DEVELOPMENT_REF" && "$ensemble_sha" == "$GITHUB_SHA" ]]
-          git diff --exit-code "$ENSEMBLE_RELEASE_REF" HEAD -- . ':(exclude).github'
+          git diff --exit-code "$ENSEMBLE_RELEASE_REF" HEAD -- . ':(exclude).github' ':(exclude)tests/test_temporary_paths.py'
           printf -- '- DWD commit `%s`\n- Ensemble release commit `%s`\n- Diagnostic commit `%s`\n' "$dwd_sha" "$ENSEMBLE_RELEASE_REF" "$ensemble_sha" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Create the isolated wheel test environment
         run: |
@@ -94,6 +94,15 @@ jobs:
                   wheel = report[key]
                   print(f"- {Path(wheel['wheel']).name} SHA-256 `{wheel['wheel_sha256']}`", file=summary)
           PY
-      - name: Verify the temporary-directory probe
+      - name: Verify the integrated test bytes in the bundle
         working-directory: ${{ runner.temp }}/ensemble-installed-tests
-        run: python -I -B "${{ github.workspace }}/.github/verify_temp_probe.py"
+        run: |
+          echo '2b2de1d117d9941b934811c2683e7e1b9760b0075c756199605b157244d5e041  tests/test_temporary_paths.py' | sha256sum --check
+      - name: Run the complete bundled test suite
+        working-directory: ${{ runner.temp }}/ensemble-installed-tests
+        run: python -I -B -m pytest tests -o "python_files=test*.py" -ra --junitxml=results.xml
+      - name: Require the integrated probe and native route to pass
+        working-directory: ${{ runner.temp }}/ensemble-installed-tests
+        run: |
+          python -I -B tests/ci_pair.py result --junit results.xml --require native
+          python -I -B -c "from xml.etree import ElementTree as ET; cases=[case for case in ET.parse('results.xml').iter('testcase') if case.get('name') == 'test_fresh_process_keeps_requested_deep_temp_and_restores_environment']; assert len(cases) == 1 and all(cases[0].find(tag) is None for tag in ('failure','error','skipped')), 'Deep temporary-directory test did not pass'; print('Integrated deep temporary-directory probe passed')"
